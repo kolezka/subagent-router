@@ -3113,4 +3113,3 @@ Ta mapa pokazuje miejsce implementacji, nie zaliczenie testów. Wykonawca uzupe�
 - [ ] Merge, push i publikacja są osobnymi działaniami wymagającymi zgody użytkownika.
 
 ---
-
