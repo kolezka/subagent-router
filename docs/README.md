@@ -4,7 +4,7 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Projekt jest na et
 
 ## Aktualny stan
 
-- Specyfikacja: [draft routingu modeli subagentów](superpowers/specs/2026-09-06-subagent-model-routing-design.md), rewizja 2 z rozstrzygniętymi decyzjami projektowymi i tabelą pomiarów do wykonania przed wdrożeniem.
+- Specyfikacja: [draft routingu modeli subagentów](superpowers/specs/2026-09-06-subagent-model-routing-design.md), rewizja 3. Zachowuje pomiary rewizji 2 i dodaje projektowany kontrakt read-only discovery ról, katalogu modeli, CLI oraz route preview. Nie opisuje zaimplementowanego runtime.
 - Plan implementacji: jeszcze nie napisany.
 - Kod, testy integracyjne i dokumentacja działających bloków: jeszcze nie istnieją.
 

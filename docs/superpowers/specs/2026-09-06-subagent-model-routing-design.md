@@ -2,7 +2,7 @@
 
 Date: 2026-09-06
 
-Status: draft (rewizja 2, luki rozstrzygnięte, do przeglądu)
+Status: draft (rewizja 3, do przeglądu)
 
 ## Cel
 
@@ -10,7 +10,7 @@ Status: draft (rewizja 2, luki rozstrzygnięte, do przeglądu)
 
 Projekt ma być małym pakietem Bun + TypeScript. Ma działać jako biblioteka importowana przez inne narzędzia oraz samodzielnie przez CLI. Jest to jeden pakiet, nie monorepo.
 
-Dokument opisuje proponowany projekt. Status `draft` nie oznacza akceptacji wszystkich szczegółów ani zgody na rozpoczęcie implementacji. Rewizja 2 zamyka otwarte decyzje projektowe z rewizji 1 i zamienia pozostałe luki na konkretne pomiary z kryteriami.
+Dokument opisuje proponowany projekt. Status `draft` nie oznacza akceptacji wszystkich szczegółów ani zgody na rozpoczęcie implementacji. Rewizja 2 zamknęła otwarte decyzje projektowe z rewizji 1 i zamieniła pozostałe luki na konkretne pomiary z kryteriami. Rewizja 3 dodaje projektowany, niezweryfikowany kontrakt katalogu modeli, odkrywania, podglądu tras i małego CLI. Nie oznacza to, że CLI, discovery ani routing runtime istnieją.
 
 ## Stan i zakres dowodów
 
@@ -71,21 +71,21 @@ Odczyt `--version` na maszynie autora, 2026-09-06. [verified]
 2. Core MUSI być czysty i importowalny bez obowiązkowego procesu serwera.
 3. Core NIE MOŻE zależeć od SDK harnessów.
 4. Bun jest dozwolony w CLI i trybie standalone, ale core NIE MOŻE wymagać API specyficznego dla Bun.
-5. CLI MOŻE wystawić jawny config, hook entry, generator konfiguracji harnessu i `serve`.
-6. CLI NIE MOŻE automatycznie modyfikować istniejących globalnych ustawień użytkownika. Generator zapisuje tylko do wskazanej ścieżki i nie nadpisuje istniejących plików bez jawnej flagi.
-7. Projekt NIE MOŻE tworzyć własnego agent loop, MCP runner, schedulera, UI ani bazy danych.
-8. Projekt NIE OBEJMUJE auth kont dostawców, protocol translation, obowiązkowego provider discovery ani automatycznego fallbacku do innego modelu.
+5. Projektowany CLI `subagent-router` ma być małym interfejsem tekstowym. NIE OBEJMUJE TUI, managera daemonów ani instalatora.
+6. Żadna komenda NIE MOŻE automatycznie zmienić natywnych plików harnessu. Eksport zapisuje tylko do odrębnego katalogu artefaktów, nigdy do katalogu źródłowego agentów, także przy `--force`.
+7. Projekt NIE MOŻE tworzyć własnego agent loop, MCP runnera, schedulera, UI ani bazy danych.
+8. Projekt NIE OBEJMUJE auth kont dostawców, translacji protokołów, provider-specific discovery ani automatycznego fallbacku do innego modelu. Odkrywanie katalogu przez CLI pozostaje oddzielną operacją, nie zależnością request-time.
 
 ### Wybór modelu
 
-9. Rodzic MUSI móc wybrać model dla konkretnego dziecka z katalogu opisów modeli.
-10. Core MUSI walidować każdy jawny wybór względem katalogu allowlist.
-11. Core MOŻE stosować jawne modele domyślne ról.
-12. Core NIE MOŻE uruchamiać dodatkowego LLM do klasyfikacji zadania albo wyboru modelu.
-13. Różne dzieci MUSZĄ móc używać różnych modeli i dostawców w tej samej sesji.
+9. Rodzic MUSI móc wybrać model dla konkretnego dziecka z katalogu opisów opartego na snapshotcie załadowanym przez daną instancję.
+10. Core MUSI walidować każdy jawny wybór względem snapshotu i `modelOverrides`.
+11. Core MOŻE stosować jawne nadpisania tras istniejących ról oraz globalny model domyślny dzieci.
+12. Core NIE MOŻE uruchamiać dodatkowego LLM do klasyfikacji zadania, wyboru modelu ani tworzenia opisu modelu.
+13. Różne dzieci MUSZĄ móc używać różnych modeli i dostawców w tej samej sesji, o ile skonfigurowana brama je obsługuje.
 14. Wybór dziecka NIE MOŻE zmieniać modelu rodzica.
-15. Identyfikator modelu upstream MUSI być opaque. Pakiet NIE MOŻE rozgałęziać logiki po nazwie vendora ani definiować `providers/*`.
-16. Katalog allowlist NIE MOŻE być nadpisany tekstem promptu, historią, rezultatem narzędzia ani cytatem.
+15. Identyfikator upstream MUSI być opaque. Pakiet NIE MOŻE rozgałęziać logiki po nazwie vendora ani definiować `providers/*`.
+16. Katalog allowlist i definicje ról NIE MOGĄ być nadpisane promptem, historią ani wynikiem narzędzia. Jawny wybór rodzica z katalogu jest przekazywany autoryzowanym kanałem D2, a nie traktowany jako edycja konfiguracji.
 17. Skonfigurowana rola sama w sobie NIE JEST dowodem, że dowolny request pochodzi od dziecka.
 
 ### Deterministyczne reguły decyzji
@@ -132,6 +132,15 @@ Odczyt `--version` na maszynie autora, 2026-09-06. [verified]
 45. `subagent-router` MUSI być niezależny od obu tych projektów.
 46. Pakiet NIE MOŻE zawierać adapterów bram, implementacji auth dostawców ani routingu po vendorze.
 47. Wymiana endpointu bramy przy tych samych opaque model identifiers NIE MOŻE wymagać gałęzi kodu routera.
+
+### Katalog i inspekcja
+
+48. Model obecny w snapshotcie i włączony MOŻE być wybrany jawnie bez lokalnego opisu, ale bez opisu NIE MOŻE trafić do sugestii dla rodzica.
+49. `modelOverrides` NIE MOŻE aktywować modelu nieobecnego w pobranym katalogu. Opis modelu oznaczonego jako `missing` pozostaje zachowany.
+50. Upstream IDs i aliasy są porównywane case-sensitive. Upstream ID NIE MOŻE być przycinany, normalizowany ani wyprowadzany z aliasu. Nazwę roli dostarcza natywny resolver.
+51. Wybór modelu `missing` albo wyłączonego MUSI zakończyć się jawnym błędem bez fallbacku.
+52. Natywne definicje agentów, w tym `model: inherit`, MUSZĄ pozostać niezmienione. Podgląd nie zastępuje pomiaru modelu użytego przez działający harness.
+53. CLI MUSI zapewniać inspekcję offline oraz maszynowe wyjście JSON. Komendy zapisujące mają jawny zakres zapisu i odrzucają konflikt współbieżnej edycji.
 
 ## Architektura i odpowiedzialności
 
@@ -188,15 +197,16 @@ Handler utrzymuje wyłącznie ulotną pamięć korelacji opisaną w sekcji o kan
 
 ### Konfiguracja
 
-Konfiguracja jest jednym plikiem JSON z polem `version`. Core przyjmuje ten sam kształt jako zwykły obiekt, więc aplikacja embed nie musi używać pliku. Format opisano w sekcji „Decyzja D4”.
+Projekt rozdziela operatorowy plik `subagent-router.json` od generowanego snapshotu `models.lock.json`. Core przyjmuje te same już wczytane obiekty od callera, więc aplikacja embed nie musi czytać plików ani środowiska. Dokładny format opisuje „Decyzja D4”.
 
 Konfiguracja MUSI rozdzielać:
 
 - `clientModel`, gdy adapter go potrzebuje,
-- `upstreamModel`, gdy handler routuje request,
-- role i ich defaulty,
-- allowlist modeli,
-- endpoint i nagłówki przekazywane przez caller lub środowisko.
+- exact opaque `upstreamModel` ze snapshotu,
+- opcjonalne `routeOverrides` istniejących effective agent names,
+- operatorowe opisy, aliasy i status modeli,
+- endpoint oraz referencje do auth i nagłówków wyłącznie w konfiguracji operatora lub środowisku,
+- snapshot katalogu bez sekretów i bez surowej odpowiedzi bramy.
 
 ## Kontrakty i invariants
 
@@ -251,14 +261,14 @@ Rozstrzyga lukę 4 i lukę 9.
 Marker ma postać jednego znacznika w jednej linii i występuje w dokładnie dwóch wariantach gramatyki:
 
 ```text
-<subagent-router v="1" model="ID"/>
+<subagent-router v="1" model="ALIAS"/>
 <subagent-router v="1" role="NAME" agent="AGENT_ID" token="HMAC"/>
 ```
 
 Zasady:
 
 - `v` to wersja składni. Nieznana wersja w autoryzowanej pozycji jest błędem `invalid-marker`.
-- Wariant rodzica ma wyłącznie atrybuty `v` i `model`. `model` to opaque identyfikator z katalogu. Dozwolone znaki: litery, cyfry, `.`, `_`, `-`, `:`, `/`.
+- Wariant rodzica ma wyłącznie atrybuty `v` i `model`. `model` to bezpieczny lokalny alias, nie upstream ID. Alias ma regex `^[A-Za-z][A-Za-z0-9_-]{0,126}$` i jest unikalny w bieżącym snapshotcie. Adapter mapuje alias na exact opaque ID przed wywołaniem core. Dzięki temu marker przyjmuje upstream IDs zawierające spacje lub Unicode, a upstream ID nigdy nie jest zmieniane.
 - Wariant adaptera ma wyłącznie atrybuty `v`, `role`, `agent` i `token`. `role` to nazwa roli z konfiguracji, `agent` to identyfikator dziecka znany hookowi, `token` to HMAC liczony z sekretu wspólnego dla adaptera i handlera na tej samej maszynie nad ciągiem `v|role|agent`. Token obejmuje więc każde pole, które wpływa na routing. Sekret pochodzi ze środowiska, nigdy z pliku konfiguracji ani z promptu.
 - Każde odstępstwo od tych dwóch gramatyk w autoryzowanej pozycji, w tym mieszanie atrybutów obu wariantów, niedozwolone znaki, brak zamknięcia albo nieznany atrybut, to błąd `invalid-marker`, nie brak markeru.
 - Markery są klasyfikowane według źródła: `explicit` dla wariantu rodzica, `role-default` dla wariantu adaptera. Między źródłami obowiązuje kolejność z wymagania 18, więc marker rodzica wygrywa z markerem roli. Dwa różne markery z tego samego źródła to błąd `conflicting-markers`. Identyczne markery są traktowane jak jeden.
@@ -275,7 +285,7 @@ Ryzyko resztkowe kanału rodzica: rodzic, który skopiuje obcy tekst z markerem 
 
 Kanały, którymi wybór dociera do dziecka:
 
-- Kanał A, jawny wybór rodzica: rodzic umieszcza marker jako pierwszą linię promptu delegacji. Opis narzędzia delegacji, dostarczony przez adapter jako instrukcja w kontekście rodzica, wymienia katalog i składnię. Prompt delegacji jest pierwszą wiadomością `user` każdego kolejnego turnu świeżego subagenta, więc wybór jest widoczny w każdym requeście bez pamięci po stronie handlera. [inferred z pozycji parsowania CCR i z budowy rozmowy subagenta]
+- Kanał A, jawny wybór rodzica: rodzic umieszcza marker jako pierwszą linię promptu delegacji. Opis narzędzia delegacji, dostarczony przez adapter jako idempotentne uzupełnienie kontekstu rodzica, wymienia tylko aktywne modele z lokalnym opisem, ich aliasy i składnię. Prompt delegacji jest pierwszą wiadomością `user` każdego kolejnego turnu świeżego subagenta, więc wybór jest widoczny w każdym requeście bez pamięci po stronie handlera. [inferred z pozycji parsowania CCR i z budowy rozmowy subagenta]
 - Kanał B, domyślny model roli: hook `SubagentStart` adaptera zna `agent_id` i `agent_type`, liczy `token` i wstrzykuje wariant adaptera markeru przez `additionalContext`. Dzięki temu rola ma model domyślny nawet wtedy, gdy rodzic nie wskazał modelu. Jeżeli pomiar M3 wykaże, że `additionalContext` nie trafia do bloku `system` ani do pierwszej wiadomości `user`, adapter przełącza się na kanał B2: hook rejestruje parę `agent_id` i rola bezpośrednio w handlerze przez lokalny endpoint uwierzytelniony tym samym sekretem. Kanał B2 nie zależy od treści promptu.
 - Kanał C, korelacja po identyfikatorze dziecka: przy pierwszym routowanym requeście handler zapamiętuje parę identyfikator dziecka i decyzja w ulotnej mapie procesu z limitem czasu. Kolejne requesty z tym samym identyfikatorem i potwierdzonym pochodzeniem otrzymują tę samą decyzję ze źródłem `correlated`, także gdy kompakcja usunęła marker z historii. Identyfikator pochodzi z nagłówka `x-claude-code-agent-id`. Claude Code nie wysyła osobnego identyfikatora sesji, więc klucz nie może zawierać sesji, a bezpieczeństwo kanału opiera się na losowości identyfikatora dziecka. Kanał C jest aktywny tylko wtedy, gdy pomiar M1 potwierdzi dla danej wersji obecność nagłówka w każdym requeście dziecka oraz losowość identyfikatora wystarczającą, by kolizja między sesjami była praktycznie niemożliwa. Adapter przechowuje listę wersji z zaliczonym M1 i nie ma ustawienia, które włącza kanał C bez tego zaliczenia. Bez zaliczenia kanał C jest wyłączony, a utrata markeru kończy się według wymagania 19.
 
@@ -291,34 +301,44 @@ Fork dziedziczy model, kontekst i historię rozmowy głównej. Prompt delegacji 
 
 Decyzja: pierwsza implementacja nie obiecuje routingu forków. Request forka bez rozpoznanego pochodzenia jest traktowany jak rodzic i przechodzi pass-through. Request forka z rozpoznanym pochodzeniem, ale bez wskazania, podlega wymaganiu 19 jak każde inne dziecko. Kryterium akceptacyjne 6 pozostaje w specyfikacji jako cel drugiego etapu i zależy od pomiaru M4. Wymagania 27 do 30 pozostają w mocy jako opis docelowy.
 
-### Decyzja D4: format konfiguracji i granica między caller a środowiskiem
+### Decyzja D4: rozdzielony config operatora i snapshot katalogu
 
-Rozstrzyga lukę 8.
+Rozstrzyga lukę 8 oraz projektuje kontrakt discovery. Ten kontrakt jest wymagany dla przyszłej implementacji, ale nie jest jeszcze zweryfikowany przeciw działającej bramie ani CLI.
 
-Jeden plik `subagent-router.json`:
+`subagent-router.json` jest plikiem operatora. Zawiera referencje do źródła katalogu, lokalne nakładki modeli i trasy ról, lecz nie zawiera ręcznej listy modeli ani sekretów:
 
 ```json
 {
   "version": 1,
-  "models": {
+  "modelSource": {
+    "sourceId": "primary-gateway",
+    "baseUrlEnv": "SUBAGENT_ROUTER_GATEWAY_URL",
+    "endpointPath": "/v1/models",
+    "authEnv": "SUBAGENT_ROUTER_MODELS_AUTH",
+    "headersEnv": ["SUBAGENT_ROUTER_MODELS_HEADERS"],
+    "timeoutMs": 10000,
+    "fetchLimit": 1000,
+    "staleAfterSeconds": 86400
+  },
+  "modelOverrides": {
     "gateway/fast-worker": {
       "alias": "fast",
       "description": "Szybkie zadania mechaniczne i wyszukiwanie.",
+      "enabled": true,
       "clientModel": "haiku"
-    },
-    "gateway/reviewer": {
-      "alias": "review",
-      "description": "Niezależny przegląd i trudne debugowanie.",
-      "clientModel": "sonnet"
     }
   },
   "roles": {
-    "explorer": { "default": "gateway/fast-worker" },
-    "reviewer": { "default": "gateway/reviewer" }
+    "claude-code:explorer": { "routeOverride": "gateway/fast-worker" }
   },
   "defaults": {
     "child": null,
     "unmarkedSubagent": "error"
+  },
+  "agentRoots": {
+    "claude-code": { "configRoot": null },
+    "opencode": { "configRoot": null },
+    "codex": { "configRoot": null }
   },
   "gateway": {
     "urlEnv": "SUBAGENT_ROUTER_GATEWAY_URL",
@@ -332,38 +352,66 @@ Jeden plik `subagent-router.json`:
 }
 ```
 
+`models.lock.json` jest generowanym, atomowym snapshotem po udanym `models sync`:
+
+```json
+{
+  "version": 1,
+  "sourceId": "primary-gateway",
+  "sourceFingerprint": "96b80377b311dc1765bde8e0ec7bae4efa848497ad0245cfb927653ba2d0527b",
+  "fetchedAt": "2026-09-06T12:00:00Z",
+  "models": [
+    {
+      "id": "gateway/fast-worker",
+      "alias": "m-6414d01405c95a7bd2b2a13b415d7685a1673f800ca90dd031a5eeb1776dc81d",
+      "status": "available",
+      "metadata": { "displayName": "Fast worker" }
+    }
+  ]
+}
+```
+
 Zasady:
 
-- `models` to allowlist. Klucz jest opaque `upstreamModel`. `alias` jest krótką, unikalną nazwą używaną w nazwach wariantów agentów i w katalogu pokazywanym rodzicowi. `description` zasila ten katalog. `clientModel` jest opcjonalny i używany tylko przez adaptery, które inicjalizują harness aliasem.
-- `roles` mapują nazwę roli harnessu, na przykład `agent_type` w Claude Code, nazwę agenta w OpenCode albo nazwę roli w Codex, na model domyślny.
-- `defaults.child` to globalny model domyślny dzieci albo `null`. `defaults.unmarkedSubagent` przyjmuje `error` albo `inherit`. Wartością domyślną jest `error`. `inherit` jest jawną zgodą operatora opisaną w wymaganiu 19 i walidator wymaga przy niej pola `"unmarkedSubagentAcknowledged": true`, żeby zgoda była widoczna w pliku.
-- `gateway` nie zawiera wartości URL ani nagłówków. Zawiera nazwy zmiennych środowiskowych. Wartości nagłówków są czytane ze środowiska w chwili startu i nigdy nie są logowane.
-- `harness.claudeCode.correlation` przyjmuje `auto` albo `off`. `auto` włącza kanał C tylko dla wersji z zaliczonym M1 na liście adaptera. Nie ma wartości wymuszającej kanał C bez zaliczenia. `secretEnv` wskazuje zmienną z sekretem tokenu markeru.
-- `harness.opencode.providerId` to identyfikator providera z `opencode.json`, którego generator używa w polu `model` wariantów.
-- `harness.codex.emitModelCatalog` włącza generowanie `model_catalog` z allowlist, gdy pomiar M5 wykaże, że Codex odrzuca modele spoza katalogu. Wpis katalogu ma identyfikator równy `upstreamModel` i nazwę równą `alias`.
-- Precedencja: argumenty caller, potem środowisko, potem plik. Aplikacja embed przekazuje obiekt bezpośrednio i może pominąć plik oraz środowisko.
-- Plik NIE MOŻE zawierać sekretów. Walidator konfiguracji odrzuca wartości nagłówków podane inline.
-- Nieznane pola i nieznana `version` są błędem walidacji, nie ostrzeżeniem.
+- `sourceId` jest nadanym przez operatora identyfikatorem źródła. `sourceFingerprint` to SHA-256 UTF-8 zwartej tablicy JSON `[sourceId, effectiveGatewayUrl, effectiveModelsUrl]`. Efektywne URL są kanoniczne, bez końcowego `/`; URL z userinfo, query lub fragmentem są odrzucane, a auth trafia wyłącznie do nagłówków. Dzięki temu zmiana endpointu przy niezmienionym `sourceId` także unieważnia snapshot. Fingerprint przykładu wyliczono dla `https://gateway.example/v1` oraz `https://gateway.example/v1/models`; nie jest to pomiar bramy.
+- Snapshot przechowuje exact opaque `id`, deterministyczny alias `m-` plus hash SHA-256 UTF-8 ID oraz minimalne metadane. NIE przechowuje całej odpowiedzi bramy, auth, nagłówków ani zmiennych środowiskowych. Metadane bramy nie są zaufanym opisem ani instrukcją dla rodzica.
+- Domyślny alias to `m-` oraz pełny hash SHA-256 UTF-8 dokładnego ID. Nakładka może zastąpić go aliasem spełniającym regex markera. Kolizja aliasów, także z ID innego modelu, jest błędem konfiguracji. CLI przyjmuje ID albo alias, ale zapisuje referencje jako dokładne ID. Zmiana aliasu nie zmienia referencji ról ani danych źródła. Ręczny alias nie jest wymagany.
+- `modelOverrides[id]` może ustawić tylko `description`, `alias`, `enabled` i `clientModel`. Nakładka dla nieobecnego ID pozostaje zachowana jako nieaktywna, nie dodaje modelu do allowlist. `enabled` domyślnie oznacza `true` tylko dla `status: available`. Lokalny opis zaginionego modelu można nadal edytować. `--clear` usuwa opis i wyklucza model z sugestii, bez przejmowania opisu providera. Brak `clientModel` lub wartość `inherit` nie blokuje routingu.
+- `roles` zawiera opcjonalne wpisy dla istniejących nazw w formacie `<client>:<effective-name>`, na przykład `claude-code:explorer`. Pole `routeOverride` wskazuje dokładny upstream ID, nigdy alias ani nową definicję roli. Referencja do nieistniejącej roli, modelu `missing` lub wyłączonego jest błędem `config check`; osierocony opis bez trasy jest tylko ostrzeżeniem. Klienci to `claude-code`, `opencode` i `codex`.
+- `agentRoots.<client>.configRoot` jest jawnym rootem przekazywanym do natywnego resolvera. `null` oznacza reguły aktywnego harnessu. Nie tworzy własnej precedencji.
+- `baseUrlEnv`, `endpointPath`, auth i nagłówki są wyłącznie operatorową konfiguracją lub środowiskiem. Wartość z promptu, wpisu modelu lub odpowiedzi discovery NIE MOŻE zmienić URL ani nagłówków.
+- `endpointPath` domyślnie wynosi `/v1/models`. Konstrukcja endpointu używa segmentów URL i nie dokleja `/v1` drugi raz, gdy `baseUrlEnv` już kończy się `/v1`. Zmieniony path pozostaje literalną konfiguracją operatora.
+- Caller przekazuje do biblioteki już sparsowane `operatorConfig`, `catalogSnapshot` i wynik native resolvera. Core nie czyta plików, środowiska ani sieci.
+- Nieznane pola, nieznana `version`, inline header values i snapshot o niezgodnym `sourceId` lub `sourceFingerprint` są błędami walidacji.
+- `defaults.child` wskazuje dokładny ID modelu domyślnego albo `null`. `defaults.unmarkedSubagent` przyjmuje `error` lub jawne `inherit`, które wymaga `defaults.unmarkedSubagentAcknowledged: true`. Semantykę utraty trasy określa wymaganie 19.
+- `gateway.urlEnv` wskazuje URL upstream. Pola `gateway.headersEnv` i `modelSource.headersEnv` wskazują zmienne z obiektami JSON string-to-string. Opcjonalne `modelSource.authEnv` zawiera token Bearer do endpointu modeli. Zduplikowane nazwy nagłówków z różnych źródeł, niezależnie od wielkości liter, są błędem zamiast niejawnego nadpisania. Żadnych rozstrzygniętych wartości auth ani nagłówków CLI nie wypisuje.
+- `harness.claudeCode.correlation` przyjmuje `auto` lub `off`; `auto` dopuszcza korelację tylko dla wersji z zaliczonym M1. `secretEnv` wskazuje sekret hooka, nigdy jego wartość w pliku. `harness.opencode.providerId` wskazuje natywnego providera dla eksportowanych wariantów. `harness.codex.emitModelCatalog` włącza eksport katalogu z dostępnych modeli, jeśli wymaga tego wynik M5.
+- Zmiana `sourceId` albo endpointu wymaga jawnego pełnego synchronizowania. Brak snapshotu wskazuje `models sync`, nigdy nie powoduje ukrytego pobrania w request-time.
+- Sync nie zmienia pliku operatora. Nowe ID jest dostępne dopiero po pełnym udanym sync. Snapshot zachowuje zniknięte wpisy jako `status: missing`, bez prawa routingu. Ponowne pojawienie się dokładnego ID przywraca `available`; opis i alias operatora pozostają zachowane. `--allow-empty` dopuszcza brak aktywnych wpisów, nie usuwa ich opisów ani tras.
+- `models.lock.json` leży obok wskazanego pliku `--config`. Domyślny config to `./subagent-router.json`, bez niejawnego scalania plików nadrzędnych. Czytelnik ładuje i waliduje pełną parę config/snapshot. Zapis sprawdza wersję wejściową obu plików przed zatwierdzeniem i odrzuca konflikt, zamiast nadpisywać równoległą edycję.
+- Aktywne `serve` ładuje niezmienny config oraz snapshot przy starcie i pokazuje ich hash jako `snapshotGeneration`. CLI preview pokazuje generację plików, nie trwającego procesu. Nowe opisy, aliasy i modele wymagają nowej instancji, nie przełączają bieżących sesji. Projekt nie zakłada hot reloadu ani schedulera.
 
-Generatory konfiguracji harnessów czytają ten sam plik i produkują: definicje subagentów oraz instrukcję katalogu dla Claude Code, warianty agentów dla OpenCode, pliki ról i `default_subagent_model` dla Codex.
-
-### Decyzja D5: adapter OpenCode przez generowane warianty agentów
+### Decyzja D5: OpenCode używa istniejących ról i eksportu do ręcznej integracji
 
 Rozstrzyga lukę 6.
 
-Ponieważ Task nie przyjmuje modelu, wybór modelu dla dziecka jest wyborem agenta. Generator tworzy dla każdej pary rola i model wariant agenta o nazwie `ROLE@ALIAS`, gdzie `ALIAS` to pole `alias` modelu z konfiguracji. Wariant kopiuje z agenta bazowego prompt, narzędzia, uprawnienia i tryb, a ustawia `model` na `PROVIDER_ID/upstreamModel` z `harness.opencode.providerId` oraz `hidden: true`, żeby nie zaśmiecać autouzupełniania. Opis wariantu zawiera opis modelu z katalogu, więc rodzic wybiera wariant przez `subagent_type` na podstawie opisu. Generator dopisuje też brakujące identyfikatory z allowlist do sekcji `models` wskazanego providera, bo według odczytu źródła OpenCode odrzuca model spoza tej sekcji; pomiar M6 to potwierdza.
+Adapter odczytuje istniejące natywne definicje OpenCode jako źródło ról. Gdy wybór wymaga wariantu `ROLE@ALIAS`, `config export --client opencode` może wyeksportować taki wariant wraz z fragmentem katalogu providera wyłącznie do wskazanego katalogu artefaktów. Użytkownik integruje artefakt ręcznie. Eksport nigdy nie podmienia pliku bazowego, nie dopisuje modeli do aktywnego `opencode.json` i nie tworzy roli za usunięty lub niedostępny plik.
 
-Plugin nie jest wymagany w pierwszej implementacji. Opcjonalny plugin `chat.headers` dodaje nagłówek diagnostyczny z nazwą agenta do requestów, co ułatwia test akceptacyjny z kontrolowaną bramą. Plugin `tool.execute.before` NIE JEST używany do podmiany `subagent_type`, bo wybór ma pochodzić od rodzica, nie od ukrytej reguły.
+Wariant zachowuje prompt, narzędzia, uprawnienia i tryb definicji źródłowej, zmienia jedynie nazwę, opis, `hidden` i model `PROVIDER_ID/upstreamModel`. Opis może korzystać wyłącznie z lokalnego `description`, nie z opisu bramy. Brak natywnej definicji roli jest jawnym błędem eksportu albo preview, nie sygnałem do wygenerowania zastępstwa.
 
-Warunek zaliczenia: pomiar M6 potwierdza, że wariant dziedziczy prompt, narzędzia i uprawnienia agenta bazowego oraz że wznowienie dziecka zachowuje model wariantu.
+Plugin nie jest wymagany w pierwszej implementacji. Opcjonalny plugin `chat.headers` może dodać nagłówek diagnostyczny z nazwą agenta do requestów. `tool.execute.before` NIE JEST używany do ukrytej podmiany `subagent_type`.
 
-### Decyzja D6: adapter Codex przez role, model w spawn i hook walidujący
+Warunek zaliczenia pozostaje bez zmian: M6 potwierdza dziedziczenie promptu, narzędzi i uprawnień oraz zachowanie modelu wariantu po wznowieniu.
+
+### Decyzja D6: Codex używa istniejących ról, hooka walidującego i eksportu
 
 Rozstrzyga lukę 7.
 
-Rodzic podaje `model` w `spawn_agent` bezpośrednio jako opaque identyfikator bramy. Generator tworzy pliki ról z modelem domyślnym roli i ustawia `agents.default_subagent_model`, gdy skonfigurowano `defaults.child`. Hook `PreToolUse` z matcherem `Agent` jest obowiązkową częścią adaptera: waliduje `model` względem allowlist i odrzuca wywołanie z niedozwolonym modelem przez `permissionDecision: "deny"`. Hook NIE stosuje `updatedInput` do cichej podmiany modelu, bo byłoby to fallbackiem sprzecznym z wymaganiem 23.
+Rodzic podaje `model` w `spawn_agent` jako opaque identyfikator bramy. Hook `PreToolUse` z matcherem `Agent` jest obowiązkową częścią adaptera: waliduje `model` względem snapshotu i odrzuca niedozwolony model przez `permissionDecision: "deny"`. Hook NIE stosuje `updatedInput` do podmiany modelu, bo byłoby to fallbackiem sprzecznym z wymaganiem 23.
 
-Jeżeli pomiar M7 wykaże, że hook nie otrzymuje `model` albo `deny` nie zatrzymuje uruchomienia dziecka, adapter Codex odmawia działania dla tej wersji z kodem `unsupported-path`, zgodnie z wymaganiem 33. Tryb „tylko role” nie jest dopuszczalnym zamiennikiem, bo nie zatrzymuje bezpośredniego `spawn_agent` z modelem spoza allowlist. Sam generator ról nie jest walidacją runtime i nie spełnia wymagania 10.
+`config export --client codex` może przygotować role z domyślną trasą oraz opcjonalny `model_catalog` w osobnym katalogu artefaktów, gdy M5 to uzasadni. Nie modyfikuje `config.toml`, katalogu natywnych ról ani istniejącej roli. Usunięta lub niedostępna rola nie może zostać zastąpiona nową rolą o tej samej nazwie.
+
+Jeżeli M7 wykaże, że hook nie otrzymuje `model` albo `deny` nie zatrzymuje uruchomienia dziecka, adapter Codex odmawia działania dla tej wersji z kodem `unsupported-path`, zgodnie z wymaganiem 33. Tryb „tylko role” nie jest dopuszczalnym zamiennikiem, bo nie zatrzymuje bezpośredniego `spawn_agent` z modelem spoza snapshotu.
 
 Precedencja między jawnym `model` w `spawn_agent` a modelem roli nie wynika jednoznacznie ze źródła. Pomiar M9 ją ustala. Do czasu wyniku adapter zakłada, że jawna wartość wygrywa, zgodnie z dokumentacją subagentów, i zgłasza `unsupported-path`, gdy M9 wykaże inaczej dla wspieranej wersji.
 
@@ -382,6 +430,58 @@ Ta decyzja zamyka lukę jako świadomie przyjęte ograniczenie. Pomiar M8 jest i
 Rozstrzyga lukę 1.
 
 Wersje bazowe pierwszej implementacji to wersje zmierzone w tym dokumencie: Claude Code 2.1.263, OpenCode 1.18.29, Codex co najmniej rust-v0.153.4, Bun 1.3.11. Adapter deklaruje wersję bazową w kodzie i odmawia działania z kodem `unsupported-path`, gdy wykryta wersja jest niższa. Nowsza wersja jest dopuszczana z ostrzeżeniem w diagnostyce do czasu zaliczenia scenariuszy akceptacyjnych.
+
+### Decyzja D9: natywne definicje agentów są read-only źródłem ról
+
+Ta decyzja rozszerza D5 i D6. Kontrakt jest wymagany, ale niezweryfikowany w działających resolverach wszystkich harnessów.
+
+- Claude odczytuje projektowe `.claude/agents` oraz katalog `agents` aktywnego katalogu konfiguracji. Standardowo jest to `~/.claude/agents`, ale resolver respektuje `CLAUDE_CONFIG_DIR` i jawny `configRoot`.
+- OpenCode i Codex odczytują swoje natywne źródła wyłącznie przez adaptery.
+- `--agents-dir` dodaje jawny read-only root dla komend inspekcyjnych i eksportu. Nie zmienia plików ani nie definiuje własnej hierarchii.
+- Dokładna precedencja, namespace i effective name należą do natywnego resolvera harnessu. Router nie wymyśla kolejności katalogów. Frontmatter `name` albo namespace może różnić się od nazwy pliku.
+- Inspekcja pokazuje source path, scope, effective name, declared model, w tym `inherit`, oraz shadowed entries. Gdy adapter nie może potwierdzić modelu runtime, pokazuje `unknown`, nie zgaduje.
+- Built-in, pluginowe i dynamiczne agenty bez pliku mają ograniczoną widoczność jako `fileless`. Pusty skan katalogu nie oznacza, że nie istnieją. Gdy dostępny jest natywny tool schema, adapter pobiera z niego znane role.
+- Nieznanej lub usuniętej roli nie wolno odtwarzać przez generator. `hidden` oznacza widoczność interfejsu, nie nieistnienie roli. Rola `fileless` potwierdzona przez resolver może być pokazana i użyta w preview; eksport wymagający jej niedostępnej pełnej definicji zgłasza ograniczenie zamiast odtwarzać instrukcje.
+
+Dla Claude router nie generuje zamienników agentów ani `model` per plik. Idempotentnie dodaje katalog opisanych modeli i instrukcję wyboru do opisów narzędzi rodzica `Agent`, `Task` i `Workflow`, a także do opisu promptu, jeżeli taki kanał istnieje. Zachowuje istniejące opisy narzędzi, uprawnienia i narzędzia. Rodzic zapisuje wybrany alias w markerze, a handler obsługuje marker requestu dziecka. To jest podstawowy sposób jawnego wyboru, niezależny od skuteczności `PreToolUse.updatedInput`. Hooki ról są tylko optymalizacją lub defaultem.
+
+### Decyzja D10: automatyczne discovery i snapshot offline
+
+Discovery pobiera katalog wyłącznie z konfigurowalnego endpointu modeli bramy. Standardowy endpoint ma path `/v1/models` i kontrakt JSON `{"data":[{"id":"nonempty string"}]}`. Projekt nie deklaruje, że jakakolwiek konkretna brama została nim sprawdzona.
+
+- Synchronizacja wymaga poprawnej pozytywnej kontroli, schematu i niepustych, unikalnych IDs. Powtarzające się ID są błędem.
+- Projektowany profil stronicowania przyjmuje `has_more: true` z niepustym `next_cursor`; kolejne pobranie na ten sam endpoint używa parametru `cursor`. `has_more: false` kończy pobieranie. Zwykłe `data` bez metadanych stronicowania oznacza pełną listę w tym kontrakcie. Sprzeczne lub nierozpoznane sygnały dalszych stron, brak kursora, powtarzający się kursor i cykl stron są błędami. Jest to wybrany profil adaptera, nie twierdzenie o standardzie wszystkich bram.
+- Limit pobrania jest konfigurowalny. Jego przekroczenie jest błędem. Timeout, auth failure, zły JSON, niepełna paginacja i nieoczekiwanie pusty katalog nie zastępują ostatniego poprawnego snapshotu.
+- Pełny snapshot zapisuje się atomowo tylko po sukcesie. Pusty snapshot można zapisać wyłącznie z `--allow-empty`.
+- Redirect na inny origin jest odrzucany przed przekazaniem credentials. Żadna wartość z odpowiedzi nie steruje URL, auth ani headers.
+- Ostatni poprawny snapshot może działać offline, lecz `list`, `show`, `preview`, `doctor` i `serve` pokazują `fetchedAt` oraz ostrzeżenie `stale`, gdy odpowiedni próg konfiguracji został przekroczony.
+- Core request-time, `route preview` i komendy inspekcji domyślnie nie wykonują sieci. W warstwie zarządzania sieć wykonuje tylko jawne `models sync` lub `doctor --connect`. Transport requestów przez `serve` pozostaje oddzielną funkcją handlera. Pozytywna kontrola schematu jest wymogiem testów discovery, a nie dodatkowym ukrytym requestem CLI.
+
+### Decyzja D11: projektowany interfejs CLI i podgląd trasy
+
+Poniższe komendy są projektowanym interfejsem. Nie istnieją jeszcze i nie stanowią instrukcji uruchomienia runtime.
+
+| Komenda | Odczyt | Sieć | Zapis |
+|---|---|---:|---:|
+| `models sync [--dry-run] [--allow-empty]` | operator config i endpoint modeli | tak | tylko `models.lock.json` po udanym sync bez `--dry-run`; pokazuje `added`, `changed`, `missing` |
+| `models list`, `models show <id-or-alias>` | config i snapshot | nie | nie; pokazuje ID, alias, opis, source, status i czas snapshotu |
+| `models describe <id-or-alias> --text "..." \| --file <path> \| --clear` | config i snapshot | nie | tylko opis w `modelOverrides`, atomowo; konflikty współbieżnej edycji są odrzucane |
+| `agents list --client <client>`, `agents show <name> --client <client>` | native resolver i explicit roots | nie | nie; pokazuje effective precedence, scope, declared model i router override |
+| `route preview --client <client> --agent <name> [--model <id-or-alias>] [--parent-model <model>]` | config, snapshot, native resolver i core | nie | nie; symuluje uwierzytelniony kontekst dziecka |
+| `config show`, `config check` | config, snapshot i resolver | nie | nie; pokazuje provenance, schema i refs |
+| `config export --client <client> --output <dir> [--dry-run]` | config, snapshot i native definitions | nie | tylko osobne fragmenty, overlaye i przykłady do ręcznej integracji |
+| `doctor [--connect]` | config, snapshot, ścieżki i dostępność | tylko z `--connect` | nie; `--connect` sprawdza endpoint modeli i schema bez completion ani uruchamiania agenta |
+| `serve` | config i snapshot przy starcie | zgodnie z projektowanym handlerem | brak automatycznych aktualizacji snapshotu |
+
+Dodatkowe zasady projektowanego CLI:
+
+- `models describe` ma dokładnie jeden z trybów `--text`, `--file` albo `--clear`. Edycja opisu zaginionego ID z zachowaną nakładką jest dozwolona, ale nie aktywuje ID.
+- `route preview` nie uruchamia agenta, nie wysyła promptu i nie wywołuje narzędzi. Wynik jest oznaczony jako `simulation` i zawiera wybrany model lub default, powód, alias, exact `upstreamModel`, `clientModel` albo `unknown`, a także błędy `missing` i `disabled`. `--parent-model` jest dosłownym wejściem symulacji. Preview nie zgaduje modelu rodzica ani nie składa deklaracji o bieżącym runtime.
+- `config export` odrzuca katalog źródłowy agentów zawsze, również z `--force`. Porównuje rzeczywiste ścieżki po rozwiązaniu symlinków i nie zapisuje przez link poza katalog eksportu. `--force` pozwala tylko zastąpić uprzednio obejrzany artefakt eksportu w dozwolonym katalogu. Eksport czyta snapshot offline i nigdy nie modyfikuje globalnego lub natywnego configu.
+- `doctor` rozróżnia stan skonfigurowany, zmierzony i `pending E2E`. Sukces `config check` albo `doctor` nie jest gwarancją kompatybilności modeli.
+- Globalne opcje to `--config`, `--json`, `--help`, `--version`, `--no-color` oraz `--client` tam, gdzie dotyczy. `--client` przyjmuje `claude-code`, `opencode` lub `codex`. `--agents-dir` dotyczy inspekcji ról, preview i eksportu. Argumenty ID zawierające spacje należy cytować, na przykład `--model 'gateway/Model with spaces'`.
+- `list`, `show` i `agents` pokazują także nieaktywne wpisy i błędne referencje, zamiast ukrywać je za błędem całego katalogu. Brak snapshotu nie blokuje samej inspekcji plików agentów, ale wybór trasy wymaga snapshotu. `config check` waliduje również referencje tras. Żadna komenda nie wypisuje rozstrzygniętych wartości auth, sekretu ani nagłówków, także przy błędzie lub `--json`.
+- Przy `--json` stdout zawiera wyłącznie dane maszynowe. Progress i błędy trafiają na stderr bez sekretów. Exit code to `0` dla sukcesu, także `--dry-run` z diffem, `1` dla błędu operacyjnego i `2` dla błędu użycia, konfiguracji lub wyboru. Gdy stdout nie jest TTY albo użyto `--no-color`, CLI nie emituje ANSI. Dane katalogu i opisów są renderowane z escapowaniem znaków sterujących; reprezentacja terminalowa nie zmienia przechowywanego upstream ID.
 
 ## Pomiary wymagane przed statusem implemented
 
@@ -407,7 +507,7 @@ Pomiar informacyjny, poza bramką statusu:
 
 Diagnostyka MOŻE zawierać nazwę adaptera, identyfikator korelacyjny, wybrany identyfikator modelu, `clientModel`, źródło decyzji, kod decyzji i listę zignorowanych markerów bez ich treści. NIE MOŻE zawierać promptów, wyników narzędzi, treści odpowiedzi, sekretu tokenu ani wartości nagłówków autoryzacji.
 
-Do zamknięcia pozostają wyłącznie pomiary M1 do M7, M9 i M10. Każdy wynik ujemny ma z góry ustalony skutek, więc żadna decyzja projektowa nie jest otwarta. Wersję klienta można oznaczyć jako wspieraną dopiero po zaliczeniu jej scenariuszy akceptacyjnych.
+Pomiary M1 do M7, M9 i M10 nadal pozostają niewykonane. Rewizja 3 dodaje kryteria katalogu, resolverów i CLI poniżej; ich dopisanie nie jest dowodem działania. Wersję klienta można oznaczyć jako wspieraną dopiero po zaliczeniu scenariuszy odpowiedniego adaptera.
 
 ## Alternatywy i decyzje
 
@@ -459,6 +559,18 @@ Odrzucone. Ukrywa błąd i łamie intencję jawnego routingu dziecka.
 
 Nie jest wymagana. CCR jest inspiracją dla wzorca marker plus routing, nie publicznym kontraktem składni markeru.
 
+### Obowiązkowe discovery lub pobranie w czasie requestu
+
+Odrzucone. Discovery jest jawną komendą operatora i nie jest provider integration. Core oraz preview używają tylko istniejącego snapshotu offline.
+
+### Generowanie lub podmiana natywnych agentów
+
+Odrzucone. Natywne definicje są read-only źródłem ról. Eksport jest oddzielnym artefaktem do ręcznej integracji i nie odtwarza brakującej definicji.
+
+### Hot reload katalogu i scheduler synchronizacji
+
+Odrzucone. Aktywny handler używa snapshotu z chwili startu. Zmiana katalogu wymaga jawnego sync i nowej instancji.
+
 ## Kryteria akceptacji
 
 Następujące kryteria są wymaganiami przyszłego wdrożenia. Nie są obecnie spełnione ani przetestowane.
@@ -476,7 +588,19 @@ Następujące kryteria są wymaganiami przyszłego wdrożenia. Nie są obecnie s
 11. Testy fake gateway są hermetyczne i stanowią pierwszą linię walidacji.
 12. Opt-in testy realnych harnessów działają przeciw zewnętrznej bramie, nie przechowują sekretów i raportują wersje harnessów.
 13. Walidator konfiguracji odrzuca plik z nieznaną wersją, nieznanym polem albo wartością nagłówka podaną inline.
-14. Generator konfiguracji harnessu nie nadpisuje istniejącego pliku bez jawnej flagi i nie dotyka plików poza wskazaną ścieżką.
+14. `config export` nie zmienia żadnego pliku natywnego. Suma SHA-256 natywnych plików agentów przed i po eksporcie jest identyczna, a istniejąca deklaracja `inherit` pozostaje bez zmian.
+15. Fake endpoint modeli ma pozytywną kontrolę z poprawnym `data[].id`, a osobne scenariusze odrzucają zły schema, auth failure, malformed JSON, duplikaty, nieobsługiwaną niepełną paginację, przekroczony limit i nieoczekiwanie pusty katalog bez `--allow-empty`.
+16. Nieudany sync zachowuje hash poprzedniego `models.lock.json`. Poprawny sync zapisuje cały nowy snapshot atomowo i pokazuje `added`, `changed`, `missing`.
+17. Lokalny opis, alias i routing roli przetrwają zniknięcie oraz ponowne pojawienie się ID. Zniknięty, wyłączony albo nieobecny ID nie routuje i nie korzysta z fallbacku.
+18. Fixture obejmuje upstream IDs ze spacjami, Unicode i różnicą wielkości liter. Alias mapuje do dokładnego ID, kolizja aliasów jest błędem, a marker nie przenosi surowego ID.
+19. Fixture resolvera obejmuje kolizje scope, effective naming inne niż nazwa pliku, `inherit`, shadowed entries i role fileless. Pusty skan katalogu nie usuwa roli ujawnionej przez native tool schema.
+20. `route preview` nie wykonuje sieci, nie uruchamia narzędzi ani agenta i pokazuje symulację z aliasem, actual `upstreamModel`, `clientModel` albo `unknown`. Nie składa twierdzenia o bieżącym runtime.
+21. Wszystkie komendy inspekcji obsługują `--json`, domyślnie działają offline, nie wypisują sekretów i zwracają właściwe exit codes. Sieciowy `doctor --connect` jest testowany jako jawny wyjątek bez zapisu. Brak koloru przy non-TTY jest testowany.
+22. Równoczesne edycje `subagent-router.json` przez `models describe` są wykrywane i druga edycja jest odrzucona bez nadpisania pierwszej.
+23. Dodanie lokalnego opisu do modelu ze snapshotu nie definiuje modelu ręcznie, a istniejące opisy narzędzi rodzica są zachowane po idempotentnym dodaniu katalogu.
+24. Zmiana endpointu przy tym samym `sourceId` odrzuca stary snapshot. Sync z `--dry-run` nie zmienia hashów configu ani snapshotu. Cykl kursora, sprzeczna paginacja i redirect między originami nie zapisują częściowego katalogu.
+25. Zmiana aliasu zachowuje przypisania ról zapisane jako ID. `hidden` nie jest mylone z brakującą rolą, a symlink prowadzący z katalogu eksportu do natywnego configu jest odrzucany także z `--force`.
+26. Wynik preview podaje generację wczytanych plików. Nie przedstawia jej jako generacji działającego procesu, który nadal używa konfiguracji ze swojego startu.
 
 ## Strategia testów
 
@@ -484,8 +608,11 @@ Następujące kryteria są wymaganiami przyszłego wdrożenia. Nie są obecnie s
 
 - Testy core sprawdzają katalog, priorytet decyzji, allowlist, konflikty markerów, brak fallbacku, izolację sesji i kody decyzji.
 - Testy handlera z fake gateway przechwytują request, `upstreamModel`, body bez markera, anulowanie, backpressure oraz zachowanie mapy korelacji po limicie czasu.
-- Testy generatorów porównują wyprodukowaną konfigurację harnessu z oczekiwanym wynikiem i sprawdzają odmowę nadpisania.
-- Testy adaptera potwierdzają przekazanie wiarygodnego kontekstu dziecka oraz jawny błąd na nieobsługiwanej ścieżce.
+- Testy eksportu porównują artefakty z oczekiwanym wynikiem, odrzucają katalog źródłowy i kolizję wyjścia oraz porównują SHA-256 natywnych definicji przed i po operacji.
+- Testy discovery używają fake endpointu z pozytywną kontrolą i fixtures błędów schema, auth, paginacji, limitu i pustego katalogu. Testy potwierdzają atomowość snapshotu oraz zachowanie hash poprzedniej wersji po błędzie.
+- Testy CLI obejmują tryb offline, `--json`, stderr bez sekretów, exit codes, non-TTY, konflikty współbieżnej edycji i preview bez sieci lub narzędzi.
+- Testy resolverów sprawdzają effective name, scope, shadowing, `inherit`, aliasy oraz role fileless dostarczone przez native schema.
+- Testy adaptera potwierdzają przekazanie wiarygodnego kontekstu dziecka, idempotentne zachowanie istniejących opisów narzędzi oraz jawny błąd na nieobsługiwanej ścieżce.
 - Testy E2E są opt-in, nie zapisują sekretów, raportują wersję harnessu oraz bramy i realizują pomiary M1 do M7, M9 i M10 jako osobne, nazwane scenariusze bramkujące. Pomiar M8 jest osobnym scenariuszem informacyjnym, którego wynik trafia do dokumentacji bloku.
 
 Sukces E2E wymaga zarówno capture z kontrolowanej bramy, jak i znaczącego, zdekodowanego roundtripu narzędzia dziecka oraz wyniku końcowego. Sam tekst odpowiedzi modelu nie wystarcza.
