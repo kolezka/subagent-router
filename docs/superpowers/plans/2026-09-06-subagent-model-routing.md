@@ -8,11 +8,25 @@
 
 **Tech Stack:** TypeScript strict, Bun 1.3.11, `bun:test`, Web Crypto oraz standardowe Request/Response/ReadableStream. Wbudowane parsery Bun dla YAML i TOML są ograniczone do warstwy adapterów. Rdzeń nie ma zależności runtime ani importów Bun. Deklaracje typów generuje TypeScript.
 
-**Spec:** [Routing modeli subagentów, rewizja 3](../specs/2026-09-06-subagent-model-routing-design.md), baza Git `721ca0065c94ee5b1e5fa7b765b464f3f5e6201c`.
+**Spec:** [Routing modeli subagentów, rewizja 4](../specs/2026-09-06-subagent-model-routing-design.md). Historyczna baza rewizji 3: Git `721ca0065c94ee5b1e5fa7b765b464f3f5e6201c`.
 
 Date: 2026-09-06
 
 Status: draft planu, do przeglądu; wykonanie nie rozpoczęte.
+
+## Rewizja 2 planu, 2026-09-07
+
+Źródłem tej rewizji jest specyfikacja rewizji 4. Pin `721ca0065c94ee5b1e5fa7b765b464f3f5e6201c` pozostaje historyczną bazą rewizji 3, a nie deklaracją aktualności rewizji 4. Wykonanie nadal nie rozpoczęte. Nie wykonano testów, probe, zmian harnessów ani aktualizacji ich konfiguracji.
+
+Changelog rewizji 2:
+
+- doprecyzowano granice pojedynczego pakietu routera, zewnętrznej bramy i osobnego KB;
+- rozdzielono czystą decyzję core od mierzonego natywnego egzekwowania OpenCode i Codex;
+- zaostrzono profile capability, kanały markerów, B2 i korelację do fail-closed;
+- dodano wykonywalne wejścia pluginu i hooka, kontrolowany eksport ich konfiguracji oraz dowody odmowy;
+- uściślono forwarding bez dekodowania odpowiedzi i bramkę E2E dla wszystkich trzech klientów;
+- dodano mapę wymaganie do sekcji specyfikacji, kroku i nazwanego testu. Mapa opisuje planowane testy, nie wyniki;
+- po review zsynchronizowano zaufany kontekst lifecycle, jawne bramki handlera, producenta hooka Claude, profile transportu, build entrypointów i rozdzielenie testów hermetycznych od dowodów native E2E. Żaden adapter produkcyjny nie przejmuje wykonania narzędzi ani lifecycle; continuation występuje tylko w sterownikach testowych.
 
 Użytkownik zlecił przygotowanie planu na bazie specyfikacji. Nie jest to polecenie uruchomienia implementacji, płatnych testów ani publikacji paczki. Spec pozostaje nadrzędnym kontraktem; plan nie zmienia jej statusu ani zakresu.
 
@@ -42,6 +56,18 @@ Użytkownik zlecił przygotowanie planu na bazie specyfikacji. Nie jest to polec
 - Fork nie jest gwarancją pierwszego wydania według D3, ale wymaga pomiaru M4 i osobnego przypadku. Nie wolno utożsamiać go ze zwykłym agentem z `model: inherit`.
 - Wszystkie pliki tymczasowe i izolowane config roots testów powstają pod wskazanym katalogiem roboczym testów. Przykłady nie dotykają prawdziwego HOME operatora.
 
+## Granice rewizji 2
+
+| Obszar | W zakresie tego planu | Poza zakresem i właściciel |
+|---|---|---|
+| Core | Katalog ze snapshotu, aliasy, walidacja, czysta decyzja `upstreamModel`, konfiguracja i deterministyczne defaulty. `upstreamModel` jest opaque i case-sensitive. Core dostaje exact resolved ID, na przykład `gateway/fast-worker`, i nie zna natywnego `providerId`; natywne pole może być `gateway/gateway/fast-worker`, gdy provider to `gateway`, ale drugi człon pozostaje niezmienionym ID core. | Żaden provider, auth, normalizacja, strip prefixu, LLM chooser, fallback ani stan sesji. |
+| Adaptery | Read-only inventory, marker i HMAC Claude, natywne bramki OpenCode i Codex, profile pomiarów oraz eksport ręcznej integracji. | Agent loop, narzędzia, lifecycle, UI, scheduler i manager daemonów pozostają własnością natywnych harnessów. |
+| Handler i forwarding | Tylko Claude Code w trybie `marker-routed`: rozpoznaje potwierdzone dziecko, podejmuje decyzję, usuwa marker z kopii body i przekazuje request do skonfigurowanej bramy. | Handler nie jest bramą dostawcy, nie wykonuje auth dostawców, translacji protokołów, decode/re-encode odpowiedzi ani nowego runtime. LiteLLM, OmniRoute lub inna brama obsługuje dostawców. |
+| Katalog i CLI | Offline inspection, discovery na jawne żądanie, snapshot, preview, diagnostyka, kontrolowany eksport i `serve`. | KB jest osobnym systemem Markdown/Git plus PostgreSQL i Weaviate z własnym CLI/MCP. Router nie importuje KB, nie otwiera połączenia z jego storage i nie wywołuje MCP KB. |
+| E2E | Fake gateway, opt-in uruchomienie realnych klientów przez ich natywne CLI, capture mierzonego `upstreamModel`, transport i dowody native enforcement. | Nie powstaje własny agent runtime ani wrapper AI SDK. Core i handler nie mają obowiązkowej zależności AI SDK. |
+
+Rozróżnienie pojęć: klient AI SDK jest biblioteką requestów, agent runtime zarządza dzieckiem, narzędziami i lifecycle, a forwarding routera przenosi request i odpowiedź do bramy. Sama biblioteka SDK nie jest pętlą agenta, lecz router nie planuje jej używać ani oferować wrappera. Core i handler nie wymagają AI SDK. Jeśli adapter fetch runtime automatycznie dekompresuje odpowiedź lub zmienia semantykę `content-encoding` albo `content-length`, adapter nie może obiecywać transparentności. Zadanie 9 wymaga wtedy mierzonej odmowy `unsupported-path`, nie udokumentowanego ograniczenia zaliczającego pass-through, zamiast SDK decode i ponownej generacji odpowiedzi.
+
 ---
 
 ## Zakres dowodów i polecenia
@@ -56,7 +82,7 @@ Komendy `bun test`, `bun run typecheck` i `bun run build` w zadaniach uruchamia 
 
 ## Rozstrzygnięcia integracyjne planu
 
-1. **Walidacja OpenCode jest bramką, nie generatorem.** Wymaganie 33 wymusza kontrolę runtime. D5 nazywa plugin opcjonalnym, ale sam eksport nie może wymusić allowlist. Task 10 projektuje guard walidujący wybrany wariant bez zmiany argumentów Task. Jeżeli pomiary nie potwierdzą takiego zaczepienia, adapter tej wersji pozostaje `unsupported`; nie zastępuj kontroli zaufaniem do instrukcji modelu.
+1. **Walidacja OpenCode jest bramką, nie generatorem.** Wymaganie 33 wymusza kontrolę runtime. D5 rewizji 3 nazywała plugin opcjonalnym; rewizja 4 rozdziela opcjonalną diagnostykę od obowiązkowego guardu. Sam eksport nie może wymusić allowlist. Task 10 projektuje guard walidujący wybrany wariant bez zmiany argumentów Task. Jeżeli pomiary nie potwierdzą takiego zaczepienia, adapter tej wersji pozostaje `unsupported`; nie zastępuj kontroli zaufaniem do instrukcji modelu.
 2. **Profil nie powstaje z numeru wersji ani wyglądu ID.** M1 wymaga dowodu stabilnej tożsamości i jej generowania. Kilka różnych ciągów o długości 64 bitów nie dowodzi losowości. Brak dowodu utrzymuje korelację wyłączoną. Pozostałe niezależne zadania można nadal wykonywać.
 3. **RED to porażka zachowania.** Po napisaniu testu można dodać wyłącznie eksportowany, type-correct pusty szkielet, aby import nie był przyczyną porażki. Potem uruchom asercję. Nie uznawaj błędu importu, składni ani konfiguracji test runnera za RED danej funkcji.
 4. **Błąd nie zalicza działającej integracji.** Test odmowy nie uprawnia do oznaczenia całego klienta jako wspieranego. Finalna bramka wymaga requestu odebranego przez kontrolowaną bramę, roundtripu narzędzia i zdekodowanego wyniku dziecka.
@@ -101,10 +127,13 @@ src/
     markers.ts
     correlation.ts
     opencode.ts
+    opencode-plugin.ts
     codex.ts
+    codex-hook.ts
   transport/
     handler.ts
     hooks.ts
+    claude-hook.ts
   cli/
     args.ts
     output.ts
@@ -343,7 +372,9 @@ export interface RouteInput {
   explicitIds: readonly string[];
   roleDefaultId?: string;
   correlatedId?: string;
+  freshDelegation?: boolean;
   markerError?: 'invalid-marker' | 'conflicting-markers';
+  explicitError?: 'unknown-model';
   clientModel?: string;
   ignoredMarkers: number;
 }
@@ -397,14 +428,73 @@ export interface SyncResult {
   missing: string[];
 }
 
+export type ProbeResult = 'passed' | 'failed' | 'pending';
+export type LifecyclePhase = 'next-turn' | 'resume' | 'compaction' | 'nested' | 'parallel';
+
+export interface TrustedLifecycleContext {
+  lifecyclePhase?: LifecyclePhase;
+  freshDelegation: boolean;
+}
+
+export interface NativeConfigWitness {
+  source: 'authoritative-native-resolver';
+  providerId?: string;
+  effectiveModel: string;
+  expectedGeneration: string;
+  actualGeneration: string;
+  artifactHash: string;
+}
+
+export interface NativeRuntimeContext extends TrustedLifecycleContext {
+  nativeConfig: NativeConfigWitness;
+}
+
+export interface FreshDelegationEnvelope {
+  version: 1;
+  handlerInstanceId: string;
+  agentId: string;
+  role: string;
+  nonce: string;
+  issuedAtMs: number;
+  proof: string;
+}
+
+export interface FreshDelegationReceipt {
+  agentId: string;
+  role: string;
+  nonce: string;
+}
+
+export type ConsumeFreshDelegation = (agentId: string) => FreshDelegationReceipt | undefined;
+
 export interface CapabilityProfile {
   client: ClientId;
   version: string;
   status: 'pending' | 'supported' | 'unsupported';
   correlation: boolean;
+  correlationEntropy: ProbeResult;
   fork: boolean;
-  probes: Readonly<Record<string, 'passed' | 'failed' | 'pending'>>;
+  adapterMarkerPosition: 'system' | 'first-user' | 'b2' | 'unknown';
+  diagnostics?: readonly string[];
+  probes: Readonly<Record<string, ProbeResult>>;
+  lifecycle: Readonly<Record<LifecyclePhase, ProbeResult>>;
 }
+
+export interface TransportCapabilityProfile {
+  adapterId: string;
+  runtimeVersion: string;
+  status: ProbeResult;
+  gzipBytes: ProbeResult;
+  responseHeaders: ProbeResult;
+}
+
+export type CapabilityGate =
+  | 'claude-marker'
+  | 'claude-correlation'
+  | 'claude-fork'
+  | 'opencode-native-runtime'
+  | 'codex-native-runtime'
+  | 'codex-explicit-over-role';
 
 export interface CliDeps {
   cwd: string;
@@ -414,6 +504,9 @@ export interface CliDeps {
   stderr: (text: string) => void;
   isTTY: boolean;
   fetch: FetchLike;
+  fetchAdapter: { id: string; runtimeVersion: string };
+  loadProfile: (client: ClientId, version: string) => Promise<CapabilityProfile>;
+  loadTransportProfile: (adapterId: string, runtimeVersion: string) => Promise<TransportCapabilityProfile>;
   now: () => Date;
 }
 
@@ -927,7 +1020,7 @@ import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fix
 const OTHER = 'gateway/other';
 
 function child(patch: Partial<RouteInput>): RouteInput {
-  return { client: 'claude-code', scope: 'child', explicitIds: [], ignoredMarkers: 0, ...patch };
+  return { client: 'claude-code', scope: 'child', explicitIds: [], freshDelegation: true, ignoredMarkers: 0, ...patch };
 }
 
 describe('resolveRoute', () => {
@@ -937,12 +1030,15 @@ describe('resolveRoute', () => {
     ['jawny wybór wygrywa z rolą', child({ explicitIds: [OTHER], roleDefaultId: FIXTURE_MODEL_ID }), { kind: 'route', upstreamModel: OTHER, source: 'explicit', ignoredMarkers: 0 }],
     ['rola bez jawnego wyboru', child({ role: 'claude-code:explorer', roleDefaultId: FIXTURE_MODEL_ID }), { kind: 'route', upstreamModel: FIXTURE_MODEL_ID, clientModel: 'haiku', source: 'role-default', ignoredMarkers: 0 }],
     ['korelacja bez markera', child({ correlatedId: OTHER }), { kind: 'route', upstreamModel: OTHER, source: 'correlated', ignoredMarkers: 0 }],
+    ['korelacja wygrywa z domyślną trasą roli', child({ role: 'claude-code:explorer', roleDefaultId: FIXTURE_MODEL_ID, correlatedId: OTHER }), { kind: 'route', upstreamModel: OTHER, source: 'correlated', ignoredMarkers: 0 }],
     ['jawny wybór zgodny z korelacją', child({ explicitIds: [OTHER], correlatedId: OTHER }), { kind: 'route', upstreamModel: OTHER, source: 'explicit', ignoredMarkers: 0 }],
     ['jawny wybór sprzeczny z korelacją', child({ explicitIds: [FIXTURE_MODEL_ID], correlatedId: OTHER }), { kind: 'error', code: 'correlation-conflict', ignoredMarkers: 0 }],
     ['nieznany jawny model nie spada do roli', child({ explicitIds: ['gateway/none'], roleDefaultId: FIXTURE_MODEL_ID }), { kind: 'error', code: 'unknown-model', ignoredMarkers: 0 }],
+    ['adapter oznacza nierozwiązany jawny token jako błąd przed defaultem', child({ explicitIds: [], explicitError: 'unknown-model', roleDefaultId: FIXTURE_MODEL_ID }), { kind: 'error', code: 'unknown-model', ignoredMarkers: 0 }],
     ['dwa różne jawne markery', child({ explicitIds: [OTHER, FIXTURE_MODEL_ID] }), { kind: 'error', code: 'conflicting-markers', ignoredMarkers: 0 }],
     ['niepoprawny marker w autoryzowanej pozycji', child({ markerError: 'invalid-marker', roleDefaultId: FIXTURE_MODEL_ID }), { kind: 'error', code: 'invalid-marker', ignoredMarkers: 0 }],
-    ['dziecko bez wskazania', child({}), { kind: 'error', code: 'missing-selection', ignoredMarkers: 0 }],
+    ['dziecko bez wskazania mimo świeżej delegacji', child({}), { kind: 'error', code: 'missing-selection', ignoredMarkers: 0 }],
+    ['brak dowodu świeżej delegacji nie stosuje role defaultu', child({ freshDelegation: false, roleDefaultId: FIXTURE_MODEL_ID }), { kind: 'error', code: 'missing-selection', ignoredMarkers: 0 }],
   ];
 
   test.each(cases)('%s', async (_name, input, expected) => {
@@ -1004,12 +1100,17 @@ export function resolveRoute(input: RouteInput, config: OperatorConfig, catalog:
   const ignoredMarkers = input.ignoredMarkers;
   if (input.scope === 'parent') return { kind: 'pass-through', reason: 'parent', ignoredMarkers };
   if (input.markerError) return { kind: 'error', code: input.markerError, ignoredMarkers };
+  if (input.explicitError) return { kind: 'error', code: input.explicitError, ignoredMarkers };
   const explicit = [...new Set(input.explicitIds)];
   if (explicit.length > 1) return { kind: 'error', code: 'conflicting-markers', ignoredMarkers };
 
   const candidates: Array<[string, RouteDecision extends { source: infer S } ? S : never]> = [];
   if (explicit[0] !== undefined) candidates.push([explicit[0], 'explicit']);
   else if (input.correlatedId !== undefined) candidates.push([input.correlatedId, 'correlated']);
+  else if (input.freshDelegation !== true) {
+    if (config.defaults.unmarkedSubagent === 'inherit') return { kind: 'pass-through', reason: 'inherit-allowed', ignoredMarkers };
+    return { kind: 'error', code: 'missing-selection', ignoredMarkers };
+  }
   else if (input.roleDefaultId !== undefined) candidates.push([input.roleDefaultId, 'role-default']);
   else if (config.defaults.child !== null) candidates.push([config.defaults.child, 'global-default']);
 
@@ -1042,7 +1143,7 @@ Typ `source` w kandydatach wykonawca zapisze jako jawny alias `RouteSource`, że
 bun test ./tests/core/route.test.ts
 ```
 
-Oczekiwane: 14 pass. Mutacja kontrolna: zamień kolejność `correlated` i `role-default` w implementacji, uruchom ponownie i sprawdź, że przypadek „korelacja bez markera” nadal przechodzi, a przypadek z rolą i korelacją, który wykonawca dopisuje jako 15. wiersz (`child({ role: 'claude-code:explorer', roleDefaultId: FIXTURE_MODEL_ID, correlatedId: OTHER })` oczekujący `correlated`), pada. Przywróć kolejność.
+Oczekiwane: wszystkie opisane przypadki pass, 0 fail. Mutacja kontrolna: zamień kolejność `correlated` i `role-default` w implementacji, uruchom ponownie i sprawdź, że przypadek z rolą i korelacją (`child({ role: 'claude-code:explorer', roleDefaultId: FIXTURE_MODEL_ID, correlatedId: OTHER })` oczekujący `correlated`) pada. Przywróć kolejność.
 
 - [ ] **Step 5: Commit**
 
@@ -1647,13 +1748,16 @@ git commit -m "feat: read native agent definitions read-only"
 - Create: `tests/fixtures/capabilities/claude-code-2.1.263.json`
 - Create: `tests/fixtures/capabilities/opencode-1.18.29.json`
 - Create: `tests/fixtures/capabilities/codex-pending.json`
+- Create: `tests/fixtures/capabilities/transport-bun-fetch-1.3.11.json`
 - Test: `tests/adapters/capabilities.test.ts`
 
 **Interfaces:**
 - Consumes: typ `CapabilityProfile`, `RouterError`.
-- Produces: `startCaptureGateway(): Promise<{ url: string; requests: CapturedRequest[]; close: () => Promise<void> }>` z `CapturedRequest { method: string; path: string; headers: Record<string, string>; model?: string; agentId?: string; isChild?: boolean; body: unknown }`; `assertCapability(profile: CapabilityProfile, feature: 'native' | 'marker' | 'correlation' | 'fork'): void`; `loadCapabilityProfile(client: ClientId, version: string, fixturesDir: string): Promise<CapabilityProfile>`.
+- Produces: `startCaptureGateway(): Promise<{ url: string; requests: CapturedRequest[]; close: () => Promise<void> }>` z `CapturedRequest { method: string; path: string; headers: Record<string, string>; rawRequestBody: Uint8Array; model?: string; agentId?: string; isChild?: boolean; body: unknown }`; `assertCapability(profile: CapabilityProfile, gate: CapabilityGate, context: TrustedLifecycleContext): void`; `loadCapabilityProfile(client: ClientId, version: string, fixturesDir: string): Promise<CapabilityProfile>`; `loadTransportCapabilityProfile(adapterId: string, runtimeVersion: string, fixturesDir: string): Promise<TransportCapabilityProfile>`.
 
-Profil startowy każdego klienta ma `status: 'pending'` i wszystkie próby `pending`. Zmiana na `supported` następuje wyłącznie przez zapis wyniku próby z `tests/probes/run.ts`, uruchomionej ręcznie przeciw prawdziwemu harnessowi w izolowanym katalogu konfiguracji, z bramą capture jako celem. Wynik zapisany w fixture zawiera wersję binarium, datę i identyfikatory bez treści promptów.
+Profil startowy każdego klienta ma `status: 'pending'`, wszystkie próby `pending`, `correlationEntropy: 'pending'` i osobny stan każdego przejścia lifecycle. Zmiana wersji produkcyjnej na `supported` następuje wyłącznie przez zapis wyniku próby z `tests/probes/run.ts`, uruchomionej ręcznie przeciw prawdziwemu harnessowi w izolowanym katalogu konfiguracji, z bramą capture jako celem. Wynik zapisany w fixture zawiera wersję binarium, datę, model z bramy, pozycję markera i identyfikatory bez treści promptów. Hermetyczne testy późniejszych zadań dostają osobny jawnie syntetyczny profil `FIXTURE_SUPPORTED_PROFILE` przez dependency injection i nie zapisują go jako dowodu wersji produkcyjnej. Status profilu nie jest skrótem dla wszystkich funkcji: każda bramka sprawdza klienta, właściwy pomiar i właściwy lifecycle fail-closed.
+
+`TrustedLifecycleContext` może powstać wyłącznie w adapterze kontekstu natywnego harnessu. Nigdy nie jest budowany z promptu, `tool_input`, `args`, historii ani wyniku narzędzia. Brak rozpoznanej fazy pozostawia `lifecyclePhase` jako `undefined`. `NativeConfigWitness` także pochodzi z dostarczonego, authoritative resolvera natywnego, a nie z files-only inventory, sidecara lub wartości zadeklarowanej przez callera bez pomiaru M6-runtime albo M7. Fixture tych kontraktów jest oznaczony jako synthetic i testuje przepływ danych, nie runtime proof.
 
 - [ ] **Step 1: Napisz failing test bramy capture**
 
@@ -1693,6 +1797,20 @@ describe('capture gateway', () => {
       await gateway.close();
     }
   });
+
+  test('scripted fixture emituje tool_use, potem odbija tylko matching tool_result nonce', async () => {
+    const gateway = await startCaptureGateway();
+    try {
+      const first = await fetch(`${gateway.url}/v1/messages`, { method: 'POST', body: JSON.stringify({ model: 'm', tools: [{ name: 'read_fixture', input_schema: { type: 'object' } }], messages: [] }) });
+      const started = await first.json() as { content: Array<{ type: string; id?: string }> };
+      const toolUseId = started.content.find((part) => part.type === 'tool_use')?.id;
+      const nonce = 'fixture-file-nonce-7c10';
+      const second = await fetch(`${gateway.url}/v1/messages`, { method: 'POST', body: JSON.stringify({ model: 'm', messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: nonce }] }] }) });
+      expect(JSON.stringify(await second.json())).toContain(nonce);
+    } finally {
+      await gateway.close();
+    }
+  });
 });
 ```
 
@@ -1702,7 +1820,7 @@ Szkielet startuje `Bun.serve` na porcie 0 i zwraca 404 dla wszystkiego. Uruchom 
 
 - [ ] **Step 3: Zaimplementuj bramę**
 
-Brama parsuje JSON, wyciąga `model`, nagłówek `x-claude-code-agent-id`, wykrywa `cc_is_subagent=true` w pierwszym bloku `system`, zapisuje request do tablicy i zwraca minimalną poprawną odpowiedź Anthropic (`message` z jednym blokiem tekstu) albo SSE z `message_start`, `content_block_delta`, `message_stop`. Brama jest narzędziem testowym: działa tylko na `127.0.0.1`, nie loguje treści na dysk.
+Brama parsuje JSON, wyciąga `model`, nagłówek `x-claude-code-agent-id`, wykrywa `cc_is_subagent=true` w pierwszym bloku `system`, zapisuje request do tablicy i zwraca minimalną poprawną odpowiedź Anthropic albo SSE z `message_start`, `content_block_delta`, `message_stop`. Ma deterministyczny kontrakt testowy dla roundtripu: pierwszy request zawierający narzędzie fixture `read_fixture` dostaje scripted `tool_use`; drugi request dostaje blok tekstu zawierający wyłącznie ostatni syntetyczny `tool_result` powiązany z tym `tool_use_id`, jeżeli jego treść ma oczekiwany format nonce fixture. Nie odbija dowolnego promptu ani wcześniejszych wyników. To jest skryptowana fixture odpowiedzi, nie router model loop i nie dowód natywnego wykonania narzędzia. Brama działa tylko na `127.0.0.1` i nie loguje treści na dysk.
 
 - [ ] **Step 4: GREEN**
 
@@ -1710,35 +1828,64 @@ Brama parsuje JSON, wyciąga `model`, nagłówek `x-claude-code-agent-id`, wykry
 bun test ./tests/probes/evidence.test.ts
 ```
 
-Oczekiwane: 2 pass.
+Oczekiwane: wszystkie opisane przypadki pass, 0 fail. To pozostaje wynik planowany, nie wykonany.
 
 - [ ] **Step 5: Napisz failing test profili**
 
 ```ts
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
-import { assertCapability, loadCapabilityProfile } from '../../src/adapters/capabilities';
+import { assertCapability, loadCapabilityProfile, loadTransportCapabilityProfile } from '../../src/adapters/capabilities';
 import { RouterError } from '../../src/core/errors';
 
 const FIXTURES = join(import.meta.dir, '..', 'fixtures', 'capabilities');
 
+const TRUSTED_NEXT = { lifecyclePhase: 'next-turn', freshDelegation: false } as const;
+const TRUSTED_UNKNOWN = { freshDelegation: false } as const;
+
+const ALL_LIFECYCLE_PASSED = {
+  'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed',
+} as const;
+
 describe('capabilities', () => {
-  test('profil pending odmawia każdej funkcji kodem unsupported-path', async () => {
+  test('profil pending odmawia każdej bramki runtime kodem unsupported-path', async () => {
     const profile = await loadCapabilityProfile('codex', 'pending', FIXTURES);
-    for (const feature of ['native', 'marker', 'correlation', 'fork'] as const) {
-      expect(() => assertCapability(profile, feature)).toThrow(RouterError);
+    for (const gate of ['claude-marker', 'claude-correlation', 'claude-fork', 'opencode-native-runtime', 'codex-native-runtime', 'codex-explicit-over-role'] as const) {
+      expect(() => assertCapability(profile, gate, TRUSTED_UNKNOWN)).toThrow(RouterError);
     }
   });
 
-  test('profil supported bez zaliczonego M1 nadal odmawia korelacji', async () => {
+  test('profil Claude bez M1 i dowodu entropy odmawia korelacji', async () => {
     const profile = await loadCapabilityProfile('claude-code', '2.1.263', FIXTURES);
     expect(profile.status).toBe('pending');
     expect(profile.probes.M1).toBe('pending');
-    expect(() => assertCapability(profile, 'correlation')).toThrow(RouterError);
+    expect(profile.correlationEntropy).toBe('pending');
+    expect(() => assertCapability(profile, 'claude-correlation', TRUSTED_NEXT)).toThrow(RouterError);
   });
 
-  test('nieznana wersja nie jest mapowana na najbliższy profil', async () => {
-    await expect(loadCapabilityProfile('claude-code', '2.1.999', FIXTURES)).rejects.toBeInstanceOf(RouterError);
+  test('znana z zaufanego adaptera faza sprawdza swój dowód, a nieznana wymaga wszystkich pięciu', () => {
+    const onePending = { ...ALL_LIFECYCLE_PASSED, resume: 'pending' } as const;
+    const opencode = { client: 'opencode', version: '1.18.29', status: 'supported', correlation: false, correlationEntropy: 'pending', fork: false, adapterMarkerPosition: 'unknown', probes: { M6: 'passed', 'M6-runtime': 'passed', M10: 'passed' }, lifecycle: onePending } as const;
+    expect(() => assertCapability(opencode, 'opencode-native-runtime', TRUSTED_NEXT)).not.toThrow();
+    expect(() => assertCapability(opencode, 'opencode-native-runtime', TRUSTED_UNKNOWN)).toThrow(RouterError);
+  });
+
+  test('Codex wymaga M7, a osobna ścieżka rola plus model wymaga M9', () => {
+    const codexWithoutM9 = { client: 'codex', version: '0.153.4', status: 'supported', correlation: false, correlationEntropy: 'pending', fork: false, adapterMarkerPosition: 'unknown', probes: { M7: 'passed', M9: 'failed', M10: 'passed' }, lifecycle: ALL_LIFECYCLE_PASSED } as const;
+    expect(() => assertCapability(codexWithoutM9, 'codex-native-runtime', TRUSTED_UNKNOWN)).not.toThrow();
+    expect(() => assertCapability(codexWithoutM9, 'codex-explicit-over-role', TRUSTED_UNKNOWN)).toThrow(RouterError);
+  });
+
+  test('transport profile jest związany z adapterem i wersją runtime, a pending nie jest assumed passed', async () => {
+    const profile = await loadTransportCapabilityProfile('bun-fetch', '1.3.11', FIXTURES);
+    expect(profile).toMatchObject({ adapterId: 'bun-fetch', runtimeVersion: '1.3.11', status: 'pending', gzipBytes: 'pending', responseHeaders: 'pending' });
+  });
+
+  test('nowsza wersja dostaje ostrzeżenie, ale żadna bramka nie dziedziczy dowodów starszej', async () => {
+    const profile = await loadCapabilityProfile('claude-code', '2.1.999', FIXTURES);
+    expect(profile.status).toBe('pending');
+    expect(profile.diagnostics).toContain('capability-newer-version-unmeasured');
+    expect(() => assertCapability(profile, 'claude-marker', TRUSTED_NEXT)).toThrow(RouterError);
   });
 });
 ```
@@ -1751,26 +1898,65 @@ Fixture `claude-code-2.1.263.json`:
   "version": "2.1.263",
   "status": "pending",
   "correlation": false,
+  "correlationEntropy": "pending",
   "fork": false,
-  "probes": { "M1": "pending", "M2": "pending", "M3": "pending", "M4": "pending", "M10": "pending" }
+  "adapterMarkerPosition": "unknown",
+  "probes": { "M1": "pending", "M2": "pending", "M3": "pending", "M4": "pending", "M10": "pending" },
+  "lifecycle": { "next-turn": "pending", "resume": "pending", "compaction": "pending", "nested": "pending", "parallel": "pending" }
 }
 ```
 
+Fixture `transport-bun-fetch-1.3.11.json` zaczyna jako wynik niezmierzony:
+
+```json
+{
+  "adapterId": "bun-fetch",
+  "runtimeVersion": "1.3.11",
+  "status": "pending",
+  "gzipBytes": "pending",
+  "responseHeaders": "pending"
+}
+```
+
+Profil transportu jest przypięty do konkretnego adaptera `FetchLike` i wersji runtime. Custom fetch przekazany przez aplikację embed wymaga profilu przekazanego przez tego samego callera dla tej dokładnej pary; brak profilu, inny adapter lub wynik `pending` albo `failed` nigdy nie jest domyślnie `passed`.
+
 - [ ] **Step 6: Szkielet, RED, implementacja, GREEN**
 
-Szkielet `assertCapability` nic nie robi, `loadCapabilityProfile` zwraca stały obiekt `supported`. Uruchom `bun test ./tests/adapters/capabilities.test.ts` i zaobserwuj porażki `toThrow`. Implementacja: plik `<client>-<version>.json` czytany dosłownie, brak pliku to `RouterError('capability-unknown-version')`; `assertCapability` wymaga `status === 'supported'` oraz dla `correlation` pola `correlation: true`, dla `fork` pola `fork: true`, dla `marker` zaliczonego `M3` lub `M10`, dla `native` zaliczonego `M10`; każdy brak rzuca `RouterError('unsupported-path')`.
+Szkielet `assertCapability` nic nie robi, `loadCapabilityProfile` zwraca stały obiekt `supported`. Uruchom `bun test ./tests/adapters/capabilities.test.ts` i zaobserwuj porażki `toThrow`. Implementacja: plik `<client>-<version>.json` czytany dosłownie. Wersja niższa albo nierozpoznawalna daje `RouterError('capability-unknown-version')`. Wersja nowsza od najwyższego znanego profilu dostaje syntetyczny profil `pending` z diagnostyką `capability-newer-version-unmeasured`, nie dziedziczy żadnego `passed` z profilu starszego i każda bramka zwraca `unsupported-path` do czasu właściwych probe. `assertCapability` najpierw wymaga zgodnego `client` i `status === 'supported'`. Odczytuje fazę wyłącznie z `TrustedLifecycleContext` dostarczonego przez zaufany adapter kontekstu, nigdy z argumentów narzędzia. Gdy faza jest wiarygodnie znana, wymaga `profile.lifecycle[context.lifecyclePhase] === 'passed'`. Gdy faza jest nieznana, dopuszcza drogę tylko wtedy, gdy wszystkie wymagane fazy `next-turn`, `resume`, `compaction`, `nested` i `parallel` mają `passed` dla tej wersji. Nie zakłada domyślnie `next-turn`. Potem stosuje wyłącznie następujące bramki:
+
+- `claude-marker`: klient `claude-code` oraz M10 `passed` z zaliczonym lifecycle. Wariant rodzica kanału A jest niezależny od M3. Każdy wariant adaptera kanału B wymaga HMAC, zgodnego `agent`, zgodnego nagłówka `x-claude-code-agent-id`, M3 `passed`, profilu zapisującego dokładną zmierzoną pozycję, domyślnie `system`, ewentualnie `first-user`, oraz osobno skonsumowanego trusted freshness witness. Kanał B2 wymaga `harness.claudeCode.correlation === 'auto'`, M1, `M3-B2` i `M10-freshness` jako obowiązkowych `passed`, nie możliwego przyszłego dodatku. M10 nie zastępuje M3 dla kanału adaptera, a M3 nie zastępuje M10 ani freshness proof.
+- `claude-correlation`: klient `claude-code`, M1 `passed`, `correlation: true` oraz artefakt M1 z dowodem entropy ze źródła identyfikatora. Lista kilku różnych ID nie jest dowodem entropy.
+- `claude-fork`: klient `claude-code`, M4 `passed`, `fork: true` oraz osobny zaliczony lifecycle forka.
+- `opencode-native-runtime`: klient `opencode`, M6, `M6-runtime` i M10 `passed`; M6-runtime obejmuje zarejestrowany hook `tool.execute.before`, wykonanie bramki przed spawn, negatywną odmowę bez requestu i pozytywny pomiar effective modelu dla każdej deklarowanej ścieżki. Role i global default wymagają dodatkowo podprzypadku `M10-freshness` potwierdzającego świeżą delegację.
+- `codex-native-runtime`: klient `codex`, M7 `passed` i M10 `passed`; M7 obejmuje wykonywalny hook stdin/stdout `PreToolUse`, otrzymanie pola `model` i dowód, że `permissionDecision: "deny"` blokuje spawn.
+- `codex-explicit-over-role`: klient `codex`, M9 `passed`; ta bramka jest dodatkowa, nie jest implikowana przez M7 ani M10.
+
+Każdy brak, niezgodny klient, nieznany profil, pending albo failed rzuca `RouterError('unsupported-path')`. Nie ma ogólnej bramki `native`, bo M10 sam certyfikuje wyłącznie lifecycle, a nie marker, hook ani natywne egzekwowanie. Fork pozostaje osobną bramką M4. Nierozpoznany fork przechodzi jak parent, natomiast rozpoznany fork bez wyboru podlega wymaganiu 19 i nie otrzymuje automatycznego inherit.
+
+`assertCapability(profile, 'claude-marker', context)` sprawdza wspólną bramkę M10. Szczególne warunki B i B2 dotyczące źródła markera, configu operatora i skonsumowanego receipt sprawdza handler w Task 9 po ekstrakcji. Nie są bezwarunkowym wymogiem kanału A i nie mogą zależeć od danych, których funkcja `assertCapability` nie otrzymuje.
+
+`loadTransportCapabilityProfile` nie wykonuje sieci. Czyta profil dokładnej pary adapter plus runtime. Handler może zostać utworzony tylko przy `status`, `gzipBytes` i `responseHeaders` równych `passed`. Brak lub rozbieżność profilu odmawia startu `serve` albo utworzenia handlera embed z `unsupported-path`, zanim zostanie przyjęty ruch. Nie jest to per-request blokada parent i nie ma ukrytego self-check requestu.
 
 ```bash
 bun test ./tests/adapters/capabilities.test.ts
 ```
 
-Oczekiwane: 3 pass.
+Oczekiwane: wszystkie opisane przypadki pass, 0 fail.
 
 - [ ] **Step 7: Napisz runner prób jako narzędzie ręczne**
 
-`tests/probes/run.ts` przyjmuje argumenty `--client`, `--probe`, `--config-root <tmp>` i `--binary <path>`. Uruchamia bramę capture, przygotowuje izolowany katalog konfiguracji z syntetycznymi agentami, uruchamia harness w trybie nieinteraktywnym z endpointem bramy i zapisuje do stdout JSON `{ probe, client, version, result: 'passed' | 'failed', evidence: { requestCount, distinctAgentIds, childRequests } }`. Skrypt nie zapisuje fixtures automatycznie; operator kopiuje wynik do `tests/fixtures/capabilities` świadomie. Skrypt nie może dotykać prawdziwego `HOME` operatora: ustawia `HOME`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME` i `CODEX_HOME` na katalog tymczasowy. Uruchomienie prawdziwego harnessu jest krokiem opt-in poza `bun test`.
+`tests/probes/run.ts` przyjmuje argumenty `--client`, `--probe`, `--config-root <tmp>` i `--binary <path>`. Uruchamia bramę capture, przygotowuje izolowany katalog konfiguracji z syntetycznymi agentami, uruchamia harness w trybie nieinteraktywnym z endpointem bramy i zapisuje do stdout JSON `{ probe, client, version, result: 'passed' | 'failed', evidence }`. `evidence` zawiera tylko dane potrzebne do decyzji, bez promptów, sekretów i nagłówków auth:
 
-Test jednostkowy skryptu w `tests/probes/evidence.test.ts` sprawdza wyłącznie funkcję czystą `summarizeEvidence(requests: CapturedRequest[]): Evidence`: dwa requesty z tym samym `agentId` dają `distinctAgentIds: 1`, request bez `isChild` nie liczy się do `childRequests`.
+- M1: requesty każdego dziecka po zwykłym turnie, resume i compaction oraz dowód generowania ID z kontrolowanego źródła entropy lub adekwatnej inspekcji implementacji, nie tylko `distinctAgentIds`.
+- M3: pozycję markeru w body przechwyconym przez bramę.
+- M6: rejestrację i wywołanie `tool.execute.before`, skuteczną odmowę direct invalid task oraz `effectiveModel` odebrany przez bramę po natywnej precedencji.
+- M7: wejście i stdout rzeczywistego hooka `PreToolUse`, zawartość `tool_input.model` oraz brak procesu dziecka po `deny`.
+- M9: model odebrany przez bramę dla roli B i jawnego modelu C.
+- M10: wynik osobno dla `next-turn`, `resume`, `compaction`, `nested` i `parallel`, bez podnoszenia statusu całego adaptera przez jeden pozytywny przypadek. Podprzypadek `M10-freshness` musi potwierdzić sygnał świeżej delegacji przed pierwszym requestem i rozróżnić go od odtworzonego lub utraconego stanu przez resume, compaction, wygaśnięcie TTL i restart, bez heurystyki długości historii.
+
+Skrypt nie zapisuje fixtures automatycznie; operator kopiuje wynik do `tests/fixtures/capabilities` świadomie. Skrypt nie może dotykać prawdziwego `HOME` operatora: ustawia `HOME`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME` i `CODEX_HOME` na katalog tymczasowy. Uruchomienie prawdziwego harnessu jest krokiem opt-in poza `bun test`.
+
+Test jednostkowy skryptu w `tests/probes/evidence.test.ts` sprawdza `summarizeEvidence(requests: CapturedRequest[]): Evidence` oraz nazwane przypadki `rejects-m1-identifier-variety-without-entropy-evidence`, `requires-opencode-hook-invocation-and-effective-model`, `requires-codex-deny-without-child-request` i `keeps-lifecycle-phases-separate`. Dwa requesty z tym samym `agentId` dają `distinctAgentIds: 1`, request bez `isChild` nie liczy się do `childRequests`, ale te liczniki nie mogą samodzielnie podnieść żadnej bramki.
 
 - [ ] **Step 8: Commit**
 
@@ -1791,9 +1977,9 @@ git commit -m "feat: add capture gateway, probe runner and capability profiles"
 
 **Interfaces:**
 - Consumes: `EffectiveCatalog`, `resolveModel`, `RouteInput`, `CapabilityProfile`, `sha256`.
-- Produces: `parseMarker(text: string): ParsedMarker | 'invalid' | null` z `ParsedMarker = { kind: 'parent'; alias: string } | { kind: 'adapter'; role: string; agent: string; token: string }`; `signRoleMarker(secret: string, role: string, agent: string): Promise<string>`; `extractMarkers(body: Record<string, unknown>, agentId: string | undefined, secret: string | undefined): Promise<{ explicitAliases: string[]; roleFromAdapter?: string; markerError?: 'invalid-marker' | 'conflicting-markers'; ignored: number; stripped: Record<string, unknown> }>`; `class CorrelationStore { constructor(now: () => number, ttlMs: number); get(agentId: string): string | undefined; bind(agentId: string, modelId: string): void }`; `enrichParentTools(body: Record<string, unknown>, catalog: EffectiveCatalog): Record<string, unknown>`; `normalizeClaudeRequest(body: Record<string, unknown>, headers: Headers, options: { secret?: string; profile: CapabilityProfile; correlation?: CorrelationStore; catalog: EffectiveCatalog; roles: OperatorConfig['roles'] }): Promise<{ input: RouteInput; forwardBody: Record<string, unknown>; agentId?: string }>`.
+- Produces: `parseMarker(text: string): ParsedMarker | 'invalid' | null` z `ParsedMarker = { kind: 'parent'; alias: string } | { kind: 'adapter'; role: string; agent: string; token: string }`; `signRoleMarker(secret: string, role: string, agent: string): Promise<string>`; `extractMarkers(body: Record<string, unknown>, agentId: string | undefined, secret: string | undefined, adapterMarkerPosition: CapabilityProfile['adapterMarkerPosition'] = 'system'): Promise<{ explicitAliases: string[]; roleFromAdapter?: string; markerError?: 'invalid-marker' | 'conflicting-markers'; ignored: number; stripped: Record<string, unknown> }>`; `class CorrelationStore { constructor(now: () => number, ttlMs: number); get(agentId: string): string | undefined; bind(agentId: string, modelId: string): void }`; `enrichParentTools(body: Record<string, unknown>, catalog: EffectiveCatalog): Record<string, unknown>`; `normalizeClaudeRequest(body: Record<string, unknown>, headers: Headers, options: { secret?: string; profile: CapabilityProfile; correlation?: CorrelationStore; catalog: EffectiveCatalog; roles: OperatorConfig['roles'] }): Promise<{ input: RouteInput; forwardBody: Record<string, unknown>; agentId?: string; adapterRole?: string }>`.
 
-Gramatyka markera jest dokładnie tą ze spec D2. Token to `sha256` HMAC: `HMAC-SHA-256(secret, 'v=1|role=<role>|agent=<agent>')` liczony przez `crypto.subtle` z kluczem `HMAC`. Pozycje autoryzowane: dowolny blok `system` (tylko wariant adaptera z poprawnym tokenem i zgodnym `agent`), pierwsza linia pierwszego bloku tekstowego pierwszej wiadomości `user` bez `tool_result` (tylko wariant rodzica). Wszystkie inne wystąpienia liczą się do `ignored`.
+Gramatyka markera jest dokładnie tą ze spec D2. Token to `sha256` HMAC: `HMAC-SHA-256(secret, 'v=1|role=<role>|agent=<agent>')` liczony przez `crypto.subtle` z kluczem `HMAC`. Pozycje autoryzowane: wariant adaptera w `system` tylko z poprawnym tokenem i zgodnym `agent`; wariant rodzica tylko jako pierwsza linia pierwszego bloku tekstowego pierwszej wiadomości `user` bez `tool_result`; wariant adaptera w tej pozycji `user` tylko gdy profil ma `adapterMarkerPosition: 'first-user'` i zaliczone M3. `system` z HMAC jest domyślną pozycją adaptera. `unknown` nie rozszerza gramatyki ani autoryzacji, a `b2` oznacza wyłącznie rejestr lokalny z Task 9, nie marker w body. Wszystkie inne wystąpienia liczą się do `ignored`.
 
 - [ ] **Step 1: Napisz failing testy parsera**
 
@@ -1844,12 +2030,19 @@ describe('extractMarkers', () => {
   test('marker adaptera w system jest przyjęty tylko z poprawnym tokenem i zgodnym agentem', async () => {
     const token = await signRoleMarker(SECRET, 'reviewer', 'agent-1');
     const ok = body([{ type: 'text', text: `<subagent-router v="1" role="reviewer" agent="agent-1" token="${token}"/>` }], []);
-    expect((await extractMarkers(ok, 'agent-1', SECRET)).roleFromAdapter).toBe('reviewer');
-    const wrongAgent = await extractMarkers(ok, 'agent-2', SECRET);
+    expect((await extractMarkers(ok, 'agent-1', SECRET, 'system')).roleFromAdapter).toBe('reviewer');
+    const wrongAgent = await extractMarkers(ok, 'agent-2', SECRET, 'system');
     expect(wrongAgent.roleFromAdapter).toBeUndefined();
     expect(wrongAgent.ignored).toBe(1);
     const forged = body([{ type: 'text', text: '<subagent-router v="1" role="reviewer" agent="agent-1" token="0000"/>' }], []);
-    expect((await extractMarkers(forged, 'agent-1', SECRET)).ignored).toBe(1);
+    expect((await extractMarkers(forged, 'agent-1', SECRET, 'system')).ignored).toBe(1);
+  });
+
+  test('marker adaptera w user wymaga zmierzonego profilu first-user, a unknown go nie autoryzuje', async () => {
+    const token = await signRoleMarker(SECRET, 'reviewer', 'agent-1');
+    const input = body([], [{ role: 'user', content: `<subagent-router v="1" role="reviewer" agent="agent-1" token="${token}"/>\nZadanie` }]);
+    expect((await extractMarkers(input, 'agent-1', SECRET, 'unknown')).roleFromAdapter).toBeUndefined();
+    expect((await extractMarkers(input, 'agent-1', SECRET, 'first-user')).roleFromAdapter).toBe('reviewer');
   });
 
   test('marker rodzica w system oraz marker z CLAUDE.md są ignorowane', async () => {
@@ -1886,7 +2079,7 @@ Parser oparty o jedno wyrażenie regularne dla całej linii: `^<subagent-router(
 bun test ./tests/adapters/markers.test.ts
 ```
 
-Oczekiwane: 12 pass.
+Oczekiwane: wszystkie opisane przypadki pass, 0 fail.
 
 - [ ] **Step 5: Napisz failing test korelacji i zaimplementuj**
 
@@ -1912,6 +2105,13 @@ describe('CorrelationStore', () => {
     store.bind('agent-1', 'gateway/a');
     expect(store.get('agent-2')).toBeUndefined();
   });
+
+  test('conflicting-binding-never-reroutes', () => {
+    const store = new CorrelationStore(() => 0, 1000);
+    store.bind('agent-1', 'gateway/a');
+    expect(() => store.bind('agent-1', 'gateway/b')).toThrow('correlation-conflict');
+    expect(store.get('agent-1')).toBe('gateway/a');
+  });
 });
 ```
 
@@ -1921,7 +2121,7 @@ Szkielet zwraca `undefined`; RED na `toBe('gateway/a')`. Implementacja: `Map<str
 bun test ./tests/adapters/correlation.test.ts
 ```
 
-Oczekiwane: 2 pass.
+Oczekiwane: wszystkie opisane przypadki pass, 0 fail.
 
 - [ ] **Step 6: Napisz failing test adaptera Claude**
 
@@ -1933,7 +2133,7 @@ import { buildCatalog } from '../../src/core/catalog';
 import type { CapabilityProfile } from '../../src/core/types';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
 
-const profile: CapabilityProfile = { client: 'claude-code', version: '2.1.263', status: 'pending', correlation: false, fork: false, probes: {} };
+const profile: CapabilityProfile = { client: 'claude-code', version: '2.1.263', status: 'pending', correlation: false, correlationEntropy: 'pending', fork: false, adapterMarkerPosition: 'unknown', probes: {}, lifecycle: { 'next-turn': 'pending', resume: 'pending', compaction: 'pending', nested: 'pending', parallel: 'pending' } };
 
 describe('enrichParentTools', () => {
   test('dodaje katalog tylko do narzędzi Agent, Task i Workflow, idempotentnie i bez modeli bez opisu', async () => {
@@ -1972,11 +2172,21 @@ describe('normalizeClaudeRequest', () => {
     expect((result.forwardBody.messages as Array<{ content: string }>)[0]?.content).toBe('Zadanie');
   });
 
-  test('nieznany alias w markerze rodzica trafia do core jako explicitId, nie jako brak markera', async () => {
-    const catalog = buildCatalog(configFixture(), await snapshotFixture());
+  test('nieznany alias markera nie może zostać odczytany jako przypadkowe raw upstream ID', async () => {
+    const catalog = buildCatalog(configFixture(), await snapshotFixture([FIXTURE_MODEL_ID, 'ghost']));
     const body = { model: 'x', system: [{ type: 'text', text: 'x-anthropic-billing-header: cc_is_subagent=true' }], messages: [{ role: 'user', content: '<subagent-router v="1" model="ghost"/>' }] };
     const result = await normalizeClaudeRequest(body, new Headers(), { profile, catalog, roles: configFixture().roles });
-    expect(result.input.explicitIds).toEqual(['ghost']);
+    expect(result.input.explicitIds).toEqual([]);
+    expect(result.input.explicitError).toBe('unknown-model');
+  });
+
+  test('nie usuwa zwykłego pierwszego bloku system, a parent enrichment jest jedyną zmianą rodzica', async () => {
+    const catalog = buildCatalog(configFixture(), await snapshotFixture());
+    const body = { model: 'claude-opus', system: [{ type: 'text', text: 'zwykły system' }], tools: [{ name: 'Bash', description: 'Run', input_schema: {} }], messages: [] };
+    const result = await normalizeClaudeRequest(body, new Headers(), { profile, catalog, roles: configFixture().roles });
+    expect(result.input.scope).toBe('parent');
+    expect(result.forwardBody.system).toEqual(body.system);
+    expect(result.forwardBody.tools).toEqual(body.tools);
   });
 
   test('korelacja jest używana tylko przy profilu z correlation true', async () => {
@@ -1986,7 +2196,7 @@ describe('normalizeClaudeRequest', () => {
     const body = { model: 'x', system: [{ type: 'text', text: 'x-anthropic-billing-header: cc_is_subagent=true' }], messages: [{ role: 'user', content: 'bez markera' }] };
     const off = await normalizeClaudeRequest(body, new Headers({ 'x-claude-code-agent-id': 'agent-1' }), { profile, catalog, roles: configFixture().roles, correlation: store });
     expect(off.input.correlatedId).toBeUndefined();
-    const on = await normalizeClaudeRequest(body, new Headers({ 'x-claude-code-agent-id': 'agent-1' }), { profile: { ...profile, status: 'supported', correlation: true }, catalog, roles: configFixture().roles, correlation: store });
+    const on = await normalizeClaudeRequest(body, new Headers({ 'x-claude-code-agent-id': 'agent-1' }), { profile: { ...profile, status: 'supported', correlation: true, correlationEntropy: 'passed', probes: { M1: 'passed' } }, catalog, roles: configFixture().roles, correlation: store });
     expect(on.input.correlatedId).toBe(FIXTURE_MODEL_ID);
   });
 });
@@ -1994,13 +2204,15 @@ describe('normalizeClaudeRequest', () => {
 
 - [ ] **Step 7: Szkielet, RED, implementacja, GREEN**
 
-Szkielety: `enrichParentTools` zwraca wejście, `normalizeClaudeRequest` zwraca `scope: 'parent'`. Uruchom `bun test ./tests/adapters/claude-code.test.ts`, zaobserwuj porażki. Implementacja `enrichParentTools`: klon body; dla narzędzi o nazwach `Agent`, `Task`, `Workflow` (porównanie bez wielkości liter) dopisz do `description` blok zaczynający się od `\n\n<subagent-router catalog>` z listą `alias: opis` wyłącznie dla modeli `enabled` z opisem oraz instrukcją umieszczenia markera w pierwszej linii promptu; opis pola `prompt` dostaje zdanie o pierwszej linii; jeśli blok już istnieje, nie dopisuj. `normalizeClaudeRequest`: rozpoznaj dziecko przez `cc_is_subagent=true` w pierwszym bloku `system` (obsłuż JSON i format `k=v;`), usuń ten blok z `forwardBody`; wywołaj `extractMarkers`; alias rodzica mapuj na ID przez `catalog.byAlias`, nieznany alias przekaż dosłownie w `explicitIds`; `roleFromAdapter` mapuj przez `roles[`claude-code:${role}`]?.routeOverride` do `roleDefaultId`; korelację czytaj tylko gdy `profile.correlation && agentId`; `clientModel` to `body.model`.
+Szkielety: `enrichParentTools` zwraca wejście, `normalizeClaudeRequest` zwraca `scope: 'parent'`. Uruchom `bun test ./tests/adapters/claude-code.test.ts`, zaobserwuj porażki. Implementacja `enrichParentTools`: klon body; dla narzędzi o nazwach `Agent`, `Task`, `Workflow` (porównanie bez wielkości liter) dopisz do `description` blok zaczynający się od `\n\n<subagent-router catalog>` z listą `alias: opis` wyłącznie dla modeli `enabled` z opisem oraz instrukcją umieszczenia markera w pierwszej linii promptu; opis pola `prompt` dostaje zdanie o pierwszej linii; jeśli blok już istnieje, nie dopisuj. `normalizeClaudeRequest`: rozpoznaj dziecko przez prawidłowe `cc_is_subagent=true` w rozpoznanym billing metadata bloku `system` (obsłuż JSON i format `k=v;`). Z `forwardBody` usuń wyłącznie ten rozpoznany child billing metadata blok, nigdy pierwszy dowolny blok `system` rodzica lub dziecka; dla rodzica system, permissions i schema pozostają niezmienione, z wyjątkiem idempotentnego opisu dopasowanego narzędzia i opisu jego pola `prompt`; `enrichParentTools` nie zmienia żadnego innego pola. Wywołaj `extractMarkers` z `profile.adapterMarkerPosition`; wynik `roleFromAdapter` użyj wyłącznie gdy `profile.probes.M3 === 'passed'` i pozycja z profilu odpowiada pozycji markera, w przeciwnym razie traktuj go jako `ignored-marker`. Alias rodzica mapuj wyłącznie przez `catalog.byAlias`; nieznany alias ustawia `explicitError: 'unknown-model'` i pustą listę `explicitIds`, nawet jeśli ten sam tekst jest raw upstream ID w `catalog.byId`. `roleFromAdapter` zwróć także jako `adapterRole` i mapuj przez `roles[`claude-code:${role}`]?.routeOverride` do `roleDefaultId`. `normalizeClaudeRequest` zawsze ustawia `freshDelegation: false`, bo request, prompt, marker, HMAC `v|role|agent`, nagłówek i tool result nie są dowodem freshness. Dopiero handler może zastąpić tę wartość wynikiem atomowego `consumeFreshDelegation(agentId)` ze swojego osobnego, zaufanego control state. Korelację czytaj tylko przy przekazanym `CorrelationStore`, `profile.correlation === true`, `profile.probes.M1 === 'passed'`, `profile.correlationEntropy === 'passed'` i obecnym `agentId`. Task 9 tworzy i przekazuje store wyłącznie przy `config.harness.claudeCode.correlation === 'auto'` oraz zaliczonej bramce M1 z entropy; `clientModel` to `body.model`.
 
 ```bash
 bun test ./tests/adapters/claude-code.test.ts
 ```
 
-Oczekiwane: 5 pass.
+Oczekiwane: wszystkie opisane przypadki pass, 0 fail.
+
+Dopisz `normalizeClaudeRequest::adapter-system-marker-remains-ignored-until-m3` z poprawnym HMAC i profilem `adapterMarkerPosition: 'system'`, lecz M3 `pending`; test oczekuje braku `roleDefaultId` i `ignored-marker`, a nie routingu roli.
 
 - [ ] **Step 8: Commit**
 
@@ -2014,26 +2226,33 @@ git commit -m "feat: add Claude Code marker parsing, tool catalog and correlatio
 **Files:**
 - Create: `src/transport/handler.ts`
 - Create: `src/transport/hooks.ts`
+- Create: `src/transport/claude-hook.ts`
 - Test: `tests/transport/handler.test.ts`
 - Test: `tests/transport/hooks.test.ts`
+- Test: `tests/transport/claude-hook.test.ts`
 
 **Interfaces:**
-- Consumes: `normalizeClaudeRequest`, `enrichParentTools`, `resolveRoute`, `CorrelationStore`, `buildCatalog`, `SourceContext`, `signRoleMarker`.
-- Produces: `createHandler(options: { config: OperatorConfig; snapshot: CatalogSnapshot; source: SourceContext; profile: CapabilityProfile; secret?: string; fetch: FetchLike; now: () => number }): (request: Request) => Promise<Response>`; `createClaudeStartOutput(input: { agent_id: string; agent_type: string }, options: { secret: string; roles: OperatorConfig['roles'] }): Promise<Record<string, unknown>>`.
+- Consumes: `normalizeClaudeRequest`, `enrichParentTools`, `resolveRoute`, `CorrelationStore`, `buildCatalog`, `SourceContext`, `signRoleMarker`, `assertCapability`, `TrustedLifecycleContext`, `TransportCapabilityProfile`.
+- Produces: `createHandler(options: { config: OperatorConfig; snapshot: CatalogSnapshot; source: SourceContext; profile: CapabilityProfile; transportProfile: TransportCapabilityProfile; secret?: string; fetch: FetchLike; fetchAdapter: { id: string; runtimeVersion: string }; trustedContext: (request: Request) => TrustedLifecycleContext; now: () => number; nonce: () => string; instanceId: () => string }): (request: Request) => Promise<Response>`; `createClaudeStartOutput(input: { agent_id: string; agent_type: string }, options: { secret: string; roles: OperatorConfig['roles']; profile: CapabilityProfile; fresh: boolean }): Promise<Record<string, unknown>>`; `signFreshDelegation(secret: string, envelope: Omit<FreshDelegationEnvelope, 'proof'>): Promise<string>`; `class FreshDelegationStore { readonly handlerInstanceId: string; register(envelope: FreshDelegationEnvelope): Promise<void>; consumeFreshDelegation(agentId: string): FreshDelegationReceipt | undefined }`; `runClaudeSubagentStartHook(stdin: ReadableStream<Uint8Array>, stdout: WritableStream<Uint8Array>, deps: ClaudeHookDeps): Promise<void>`.
 
-Zakres handlera: `POST /v1/messages` i `POST /v1/messages/count_tokens` przechodzą przez normalizację i decyzję; pozostałe ścieżki są przekazywane bez odczytu body. Endpoint kontrolny `POST /subagent-router/register` przyjmuje `{ agent, role, token }` i zapisuje rolę dla `agent` w pamięci procesu po weryfikacji tokenu; nigdy nie jest przekazywany upstream. Nagłówki bramy z `source.headers` są dodawane do requestu upstream, nagłówek `host` jest usuwany.
+Zakres handlera: `POST /v1/messages` i `POST /v1/messages/count_tokens` przechodzą przez normalizację i decyzję; pozostałe ścieżki są przekazywane bez odczytu body. `GET /subagent-router/control/instance` zwraca wyłącznie nie-sekretny `handlerInstanceId`. `POST /subagent-router/control/delegations` przyjmuje `FreshDelegationEnvelope` i nigdy nie jest przekazywany upstream. Freshness `proof` jest HMAC-SHA-256 nad canonical JSON `['subagent-router:freshness:v1', 1, handlerInstanceId, agentId, role, nonce, issuedAtMs]` z istniejącego sekretu wskazanego przez `harness.claudeCode.secretEnv`. Jest to odrębna domena od HMAC markera `v|role|agent`; poprawny lub powtórzony token markera nie może zarejestrować świeżości. Store wiąże wpis z konkretną instancją handlera i dzieckiem, ma krótki konfigurowalny TTL, utrzymuje zużyte nonce do ich wygaśnięcia, konsumuje wpis atomowo dokładnie raz i traci wszystko po restarcie. Nie jest bazą danych ani managerem lifecycle.
+
+Kanał B używa roli z autoryzowanego markera dopiero wraz z osobno skonsumowanym receipt dla tego samego `agentId` i roli. Kanał B2 używa roli z receipt bez markera tylko przy `config.harness.claudeCode.correlation === 'auto'`, profilu `adapterMarkerPosition: 'b2'` oraz M1, `M3-B2`, entropy i `M10-freshness` równych `passed`. Rozbieżność roli między receipt, autoryzowanym markerem B i stanem B2 tego samego dziecka daje `conflicting-markers`. Receipt zużyty przed takim błędem nie wraca do store. Brak, wygaśnięcie, replay albo konflikt wpisu nie mogą przeliczyć nowego role defaultu. Request z istniejącą korelacją i utraconym markerem zachowuje już zbindowaną decyzję. Nagłówki bramy z `source.headers` są dodawane do requestu upstream, a `host` jest usuwany.
+
+`ClaudeHookDeps` zawiera `controlBaseUrl`, `secret`, `roles`, `profile`, `fetch`, `now`, `nonce` oraz `resolveTrustedStart(input): TrustedLifecycleContext`. Ostatnia funkcja jest osobnym adapterem zaufanego zdarzenia native. Nie czyta freshness z event name, promptu ani stdin fields bez zaliczonego M10-freshness. Hermetyczny test może wstrzyknąć wynik `freshDelegation: true` wyłącznie jako `synthetic-trusted-start`; wersja produkcyjna pozostaje unsupported, dopóki realny pomiar M10-freshness nie potwierdzi producenta.
 
 - [ ] **Step 1: Napisz failing testy handlera z fake fetch**
 
 ```ts
 import { describe, expect, test } from 'bun:test';
 import { signRoleMarker } from '../../src/adapters/markers';
-import type { CapabilityProfile, FetchLike } from '../../src/core/types';
-import { createHandler } from '../../src/transport/handler';
+import type { CapabilityProfile, FetchLike, FreshDelegationEnvelope } from '../../src/core/types';
+import { createHandler, signFreshDelegation } from '../../src/transport/handler';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
 
 const source = { sourceId: 'test-gateway', effectiveGatewayUrl: 'http://127.0.0.1:8000/v1', effectiveModelsUrl: 'http://127.0.0.1:8000/v1/models', headers: { 'X-Team': 'router' } };
-const profile: CapabilityProfile = { client: 'claude-code', version: '2.1.263', status: 'supported', correlation: false, fork: false, probes: { M3: 'passed', M10: 'passed' } };
+const FIXTURE_SUPPORTED_PROFILE: CapabilityProfile = { client: 'claude-code', version: 'synthetic-hermetic', status: 'supported', correlation: true, correlationEntropy: 'passed', fork: false, adapterMarkerPosition: 'b2', probes: { M1: 'passed', 'M3-B2': 'passed', M10: 'passed', 'M10-freshness': 'passed' }, lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' } };
+const FIXTURE_TRANSPORT_PROFILE = { adapterId: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic', status: 'passed', gzipBytes: 'passed', responseHeaders: 'passed' } as const;
 const CHILD_SYSTEM = [{ type: 'text', text: 'x-anthropic-billing-header: cc_is_subagent=true' }];
 
 function upstream(): { fetch: FetchLike; seen: Array<{ url: string; body: Record<string, unknown>; headers: Headers }> } {
@@ -2045,8 +2264,15 @@ function upstream(): { fetch: FetchLike; seen: Array<{ url: string; body: Record
   return { fetch, seen };
 }
 
-async function handlerWith(fetch: FetchLike) {
-  return createHandler({ config: configFixture(), snapshot: await snapshotFixture(), source, profile, secret: 'test-secret', fetch, now: () => 0 });
+async function handlerWith(fetch: FetchLike, patch: Partial<Parameters<typeof createHandler>[0]> = {}) {
+  return createHandler({
+    config: configFixture(), snapshot: await snapshotFixture(), source,
+    profile: FIXTURE_SUPPORTED_PROFILE,
+    transportProfile: FIXTURE_TRANSPORT_PROFILE,
+    secret: 'test-secret', fetch, fetchAdapter: { id: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic' },
+    trustedContext: () => ({ freshDelegation: false }), now: () => 0,
+    nonce: () => 'fixture-nonce', instanceId: () => 'fixture-handler-instance', ...patch,
+  });
 }
 
 function post(path: string, body: unknown, headers: Record<string, string> = {}): Request {
@@ -2076,6 +2302,28 @@ describe('createHandler', () => {
     expect(seen).toHaveLength(0);
   });
 
+  test('pending i nieznany profil odmawiają child przed upstream', async () => {
+    for (const profile of [
+      { ...FIXTURE_SUPPORTED_PROFILE, status: 'pending' as const },
+      { ...FIXTURE_SUPPORTED_PROFILE, version: 'unmeasured', status: 'pending' as const, diagnostics: ['capability-unknown-version'] },
+    ]) {
+      const { fetch, seen } = upstream();
+      const handler = await handlerWith(fetch, { profile });
+      const response = await handler(post('/v1/messages', { model: 'x', system: CHILD_SYSTEM, messages: [{ role: 'user', content: '<subagent-router v="1" model="fast"/>\nZadanie' }] }));
+      expect(response.status).toBe(422);
+      expect(((await response.json()) as { error: { code: string } }).error.code).toBe('unsupported-path');
+      expect(seen).toHaveLength(0);
+    }
+  });
+
+  test('parent przechodzi i zachowuje model przy pending child profile', async () => {
+    const { fetch, seen } = upstream();
+    const handler = await handlerWith(fetch, { profile: { ...FIXTURE_SUPPORTED_PROFILE, status: 'pending' } });
+    await handler(post('/v1/messages', { model: 'claude-opus', messages: [{ role: 'user', content: 'rodzic' }] }));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.body.model).toBe('claude-opus');
+  });
+
   test('rodzic z cytowanym markerem w tool_result przechodzi bez zmian', async () => {
     const { fetch, seen } = upstream();
     const handler = await handlerWith(fetch);
@@ -2083,17 +2331,48 @@ describe('createHandler', () => {
     expect(seen[0]?.body.model).toBe('claude-opus');
   });
 
-  test('rejestracja roli przez endpoint kontrolny działa tylko z poprawnym tokenem i nie idzie upstream', async () => {
+  test('B2 wymaga osobnego one-shot freshness proof i nie przekazuje control upstream', async () => {
     const { fetch, seen } = upstream();
     const handler = await handlerWith(fetch);
-    const bad = await handler(post('/subagent-router/register', { agent: 'agent-1', role: 'explorer', token: '0000' }));
+    const instance = await handler(new Request('http://router.local/subagent-router/control/instance'));
+    const handlerInstanceId = ((await instance.json()) as { handlerInstanceId: string }).handlerInstanceId;
+    const unsigned = { version: 1, handlerInstanceId, agentId: 'agent-1', role: 'explorer', nonce: 'fresh-1', issuedAtMs: 0 } as const;
+    const bad = await handler(post('/subagent-router/control/delegations', { ...unsigned, proof: await signRoleMarker('test-secret', 'explorer', 'agent-1') }));
     expect(bad.status).toBe(401);
-    const token = await signRoleMarker('test-secret', 'explorer', 'agent-1');
-    const good = await handler(post('/subagent-router/register', { agent: 'agent-1', role: 'explorer', token }));
-    expect(good.status).toBe(204);
+    const envelope: FreshDelegationEnvelope = { ...unsigned, proof: await signFreshDelegation('test-secret', unsigned) };
+    expect((await handler(post('/subagent-router/control/delegations', envelope))).status).toBe(204);
     await handler(post('/v1/messages', { model: 'x', system: CHILD_SYSTEM, messages: [{ role: 'user', content: 'bez markera' }] }, { 'x-claude-code-agent-id': 'agent-1' }));
     expect(seen).toHaveLength(1);
     expect(seen[0]?.body.model).toBe(FIXTURE_MODEL_ID);
+    expect((await handler(post('/subagent-router/control/delegations', envelope))).status).toBe(409);
+    expect(seen).toHaveLength(1);
+  });
+
+  test('system B default działa tylko z trusted one-shot freshness receipt tej samej roli', async () => {
+    const { fetch, seen } = upstream();
+    const systemProfile = { ...FIXTURE_SUPPORTED_PROFILE, adapterMarkerPosition: 'system' as const, probes: { ...FIXTURE_SUPPORTED_PROFILE.probes, M3: 'passed' as const } };
+    const handler = await handlerWith(fetch, { profile: systemProfile });
+    const instance = await handler(new Request('http://router.local/subagent-router/control/instance'));
+    const handlerInstanceId = ((await instance.json()) as { handlerInstanceId: string }).handlerInstanceId;
+    const unsigned = { version: 1, handlerInstanceId, agentId: 'agent-b', role: 'explorer', nonce: 'fresh-b', issuedAtMs: 0 } as const;
+    const envelope = { ...unsigned, proof: await signFreshDelegation('test-secret', unsigned) };
+    expect((await handler(post('/subagent-router/control/delegations', envelope))).status).toBe(204);
+    const marker = await signRoleMarker('test-secret', 'explorer', 'agent-b');
+    const system = [...CHILD_SYSTEM, { type: 'text', text: `<subagent-router v="1" role="explorer" agent="agent-b" token="${marker}"/>` }];
+    expect((await handler(post('/v1/messages', { model: 'x', system, messages: [] }, { 'x-claude-code-agent-id': 'agent-b' }))).status).toBe(200);
+    expect(seen[0]?.body.model).toBe(FIXTURE_MODEL_ID);
+  });
+
+  test('stary lub sam powtórzony marker B bez fresh receipt nie inicjuje defaultu', async () => {
+    const { fetch, seen } = upstream();
+    const systemProfile = { ...FIXTURE_SUPPORTED_PROFILE, adapterMarkerPosition: 'system' as const, probes: { ...FIXTURE_SUPPORTED_PROFILE.probes, M3: 'passed' as const } };
+    const handler = await handlerWith(fetch, { profile: systemProfile });
+    const marker = await signRoleMarker('test-secret', 'explorer', 'agent-stale');
+    const system = [...CHILD_SYSTEM, { type: 'text', text: `<subagent-router v="1" role="explorer" agent="agent-stale" token="${marker}"/>` }];
+    const response = await handler(post('/v1/messages', { model: 'x', system, messages: [] }, { 'x-claude-code-agent-id': 'agent-stale' }));
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe('missing-selection');
+    expect(seen).toHaveLength(0);
   });
 
   test('strumień i anulowanie są przekazywane bez buforowania', async () => {
@@ -2122,13 +2401,34 @@ describe('createHandler', () => {
 });
 ```
 
+Dopisz do tego pliku następujące nazwane testy transportu, bez AI SDK:
+
+- `forwards-parent-enrichment-to-upstream-without-changing-parent-model`: parent z narzędziem `Agent` trafia do upstream z wzbogaconym opisem narzędzia i jego pola `prompt`; `model`, system, permissions i cała pozostała schema są byte-for-byte lub strukturalnie równe wejściu stosownie do pola.
+- `passes-raw-request-bytes-on-non-routing-path`: dla ścieżki bez parsowania handler wysyła identyczne `Uint8Array` body do upstream.
+- `passes-through-sse-unknown-events-errors-content-and-usage`: kontrolowana brama emituje sekwencję SSE z nieznanym eventem oraz polami `error`, `content` i `usage`; klient otrzymuje dokładnie te bytes, kolejność i status.
+- `passes-through-error-body-and-headers`: odpowiedź 4xx lub 5xx z nietypowymi nagłówkami i surowym body nie jest zamieniana na JSON routera.
+- `preserves-backpressure-with-a-slow-consumer`: celowo wolny klient i instrumentowany upstream sprawdzają bounded pull lub prefetch zgodny z `highWaterMark`, bez nieograniczonego wyprzedzania producenta.
+- `aborts-upstream-on-client-disconnect`: anulowanie lub zamknięcie czytelnika propaguje `AbortSignal` do requestu upstream i kończy jego stream.
+- `measures-selected-fetch-compression-contract`: uruchamia wskazany realny adapter `fetch`, nie fake, przeciw lokalnej odpowiedzi gzip bez transformacji po drodze. Porównuje identyczność bytes upstream body z bytes odebranymi przez klienta oraz odpowiadające `content-encoding` i `content-length`. Korekta samych nagłówków nie zalicza W42. Wynik zapisuje się w `TransportCapabilityProfile` dla dokładnego `adapterId` i `runtimeVersion`. `pending` albo `failed` blokuje utworzenie handlera przy starcie `serve` lub embed, bez własnego decode/re-encode i bez self-check przy każdej operacji.
+- `rejects-unmeasured-or-mismatched-transport-profile-before-handler-start`: pending, failed, inny `adapterId` lub inna wersja runtime rzucają `unsupported-path` podczas `createHandler`, zanim istnieje handler obsługujący parent lub child.
+
 - [ ] **Step 2: Szkielet i RED**
 
 Szkielet zwraca `new Response(null, { status: 501 })`. Uruchom `bun test ./tests/transport/handler.test.ts`; oczekiwane porażki na statusach i `seen`.
 
 - [ ] **Step 3: Zaimplementuj handler**
 
-Struktura: `catalog = buildCatalog(config, snapshot)` raz na instancję; `roles` z configu; `registry = new Map<string, string>()` dla rejestracji hooka; `correlation = profile.correlation ? new CorrelationStore(now, 3600000) : undefined`. Dla ścieżek routowalnych: odczytaj JSON (błąd JSON to 400), `normalizeClaudeRequest`, jeśli `input.roleDefaultId` jest puste i `registry` zna `agentId`, ustaw `roleDefaultId` z `roles[`claude-code:${registry.get(agentId)}`]`; przy `scope === 'parent'` dodatkowo `enrichParentTools`; `resolveRoute`; `error` daje 422 z `{ error: { code, ignoredMarkers } }`; `route` podmienia `forwardBody.model`, binduje korelację gdy aktywna; `pass-through` używa oryginalnego body. Request upstream: URL to `source.effectiveGatewayUrl` plus ścieżka bez prefiksu `/v1` (obie strony kończą i zaczynają `/v1`, więc użyj `new URL(path.replace(/^\/v1/, ''), effectiveGatewayUrl + '/')`), nagłówki klienta bez `host` i `content-length`, plus `source.headers`; `signal: request.signal`; odpowiedź zwracana z tym samym `status`, `headers` i `body` bez odczytu strumienia. Endpoint kontrolny: weryfikacja `signRoleMarker(secret, role, agent) === token` porównaniem stałoczasowym, odpowiedź 204 albo 401.
+Struktura: `catalog = buildCatalog(config, snapshot)` raz na instancję. Jeszcze podczas `createHandler` sprawdź zgodność `transportProfile.adapterId` i `runtimeVersion` z `fetchAdapter` oraz trzy wyniki `passed`. Brak dowodu gzip bytes lub headers rzuca `unsupported-path` i uniemożliwia start `serve` albo użycie embed, zanim handler obsłuży jakikolwiek request. Nie wykonuj ukrytego requestu self-check i nie blokuj dopiero pojedynczego parent requestu.
+
+Utwórz ulotny `FreshDelegationStore` z losowym `handlerInstanceId`, krótkim TTL i rejestrem użytych nonce. `CorrelationStore` utwórz i przekazuj do normalizacji wyłącznie gdy `config.harness.claudeCode.correlation === 'auto'` oraz `assertCapability(profile, 'claude-correlation', trustedUnknown)` przechodzi dzięki M1, `correlation: true` i `correlationEntropy: 'passed'`. Przy `off`, pending M1 lub braku entropy obiektu store nie ma. Te same warunki plus M3-B2 i `adapterMarkerPosition: 'b2'` są obowiązkowe dla B2.
+
+Dla ścieżek routowalnych odczytaj JSON, gdzie zły JSON daje 400, potem wywołaj `normalizeClaudeRequest`. Parent przechodzi normalnym pass-through lub dozwoloną enrichacją bez wywołania bramki child. Dla potwierdzonego child pobierz `TrustedLifecycleContext` przez osobny `trustedContext(request)` i natychmiast przed `resolveRoute` wywołaj `assertCapability(profile, 'claude-marker', context)`. Nie odczytuj `lifecyclePhase` z body, promptu ani tool input. Pending, failed lub unknown profile daje child `unsupported-path` przed upstream, ale nie zmienia parent.
+
+Po potwierdzeniu child i przed decyzją wywołaj atomowo `consumeFreshDelegation(agentId)` najwyżej raz. Receipt może ustawić `freshDelegation: true` tylko dla tego samego handler instance i `agentId`, po M10-freshness. Kanał B dodatkowo wymaga M3, autoryzowanej pozycji markera i identycznej roli markera oraz receipt. Kanał B2 dodatkowo wymaga config `correlation === 'auto'`, M1, entropy, M3-B2 oraz roli z receipt. Rozbieżność roli markera B, receipt lub istniejącego wpisu B2 daje `conflicting-markers`; receipt pozostaje zużyty także po błędzie. Marker HMAC sam nigdy nie ustawia `freshDelegation`. Brak, expiry, replay lub restart daje `freshDelegation: false`, więc default kończy się `missing-selection` albo `unsupported-path`. Istniejąca korelacja wygrywa bez ponownego użycia defaultu; odmienna trasa daje `correlation-conflict`.
+
+Przy `scope === 'parent'` ustaw `forwardBody = enrichParentTools(normalized.forwardBody, catalog)` i wyślij ten klon. Dla `route` podmień tylko `forwardBody.model`; dla `pass-through` także wyślij `forwardBody`, aby zachować bezpieczne usunięcie markera, billing metadata i kontrolowaną enrichację. Request upstream zachowuje pathname `/v1` skonfigurowanej bramy: z incoming `/v1/messages` wyprowadza względny segment `messages` i dokleja go do base zakończonego `/v1/`. Nie używaj ścieżki absolutnej `/messages`. Usuń `host` i `content-length`, dodaj `source.headers`, przekaż `request.signal`, a odpowiedź zwróć z tym samym statusem, nagłówkami i surowym body bez odczytu, dekodowania, buforowania, dekompresji ani ponownego kodowania.
+
+`GET /subagent-router/control/instance` nie wymaga auth, bo zwraca tylko identyfikator instancji. `POST /subagent-router/control/delegations` sprawdza exact instance, bounded czas, rolę istniejącą w configu, canonical freshness HMAC i unikalny nonce. Zły proof daje 401, zły shape lub rola 422, a replay, konflikt nonce albo stara instancja 409. Żaden endpoint control nie idzie upstream.
 
 - [ ] **Step 4: GREEN**
 
@@ -2136,7 +2436,7 @@ Struktura: `catalog = buildCatalog(config, snapshot)` raz na instancję; `roles`
 bun test ./tests/transport/handler.test.ts
 ```
 
-Oczekiwane: 6 pass.
+Oczekiwane: wszystkie opisane przypadki pass, 0 fail.
 
 - [ ] **Step 5: Napisz failing test hooka i zaimplementuj**
 
@@ -2144,11 +2444,14 @@ Oczekiwane: 6 pass.
 import { describe, expect, test } from 'bun:test';
 import { parseMarker } from '../../src/adapters/markers';
 import { createClaudeStartOutput } from '../../src/transport/hooks';
+import type { CapabilityProfile } from '../../src/core/types';
 import { configFixture } from '../support/fixtures';
+
+const markerProfile: CapabilityProfile = { client: 'claude-code', version: '2.1.263', status: 'supported', correlation: false, correlationEntropy: 'pending', fork: false, adapterMarkerPosition: 'system', probes: { M3: 'passed', M10: 'passed', 'M10-freshness': 'passed' }, lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' } };
 
 describe('createClaudeStartOutput', () => {
   test('zwraca additionalContext z markerem adaptera dla roli znanej w konfiguracji', async () => {
-    const output = await createClaudeStartOutput({ agent_id: 'agent-1', agent_type: 'explorer' }, { secret: 'test-secret', roles: configFixture().roles });
+    const output = await createClaudeStartOutput({ agent_id: 'agent-1', agent_type: 'explorer' }, { secret: 'test-secret', roles: configFixture().roles, profile: markerProfile, fresh: true });
     const context = (output.hookSpecificOutput as { hookEventName: string; additionalContext: string });
     expect(context.hookEventName).toBe('SubagentStart');
     const marker = parseMarker(context.additionalContext.split('\n')[0] ?? '');
@@ -2157,19 +2460,32 @@ describe('createClaudeStartOutput', () => {
   });
 
   test('rola bez trasy nie wstrzykuje markera', async () => {
-    const output = await createClaudeStartOutput({ agent_id: 'agent-1', agent_type: 'unknown-role' }, { secret: 'test-secret', roles: configFixture().roles });
+    const output = await createClaudeStartOutput({ agent_id: 'agent-1', agent_type: 'unknown-role' }, { secret: 'test-secret', roles: configFixture().roles, profile: markerProfile, fresh: true });
+    expect(output).toEqual({});
+  });
+
+  test('profil bez M3 albo M10-freshness nie otwiera kanału B', async () => {
+    const profile = { ...markerProfile, probes: { M3: 'pending', M10: 'passed', 'M10-freshness': 'pending' } };
+    const output = await createClaudeStartOutput({ agent_id: 'agent-1', agent_type: 'explorer' }, { secret: 'test-secret', roles: configFixture().roles, profile, fresh: false });
     expect(output).toEqual({});
   });
 });
 ```
 
-Szkielet zwraca `{}`; RED na `toBe('SubagentStart')`. Implementacja buduje marker przez `signRoleMarker` i zwraca strukturę zgodną z dokumentacją hooków Claude Code. Miejsce, w którym `additionalContext` ląduje w requeście, rozstrzyga pomiar M3; do tego czasu handler akceptuje wariant adaptera w `system` i w pierwszej linii pierwszej wiadomości `user`.
+W `tests/transport/claude-hook.test.ts` dopisz pełne przypadki given/when/then:
+
+- `registers-synthetic-trusted-one-shot-before-writing-system-b-marker`: given jawny synthetic supported profile i `resolveTrustedStart` zwracający fresh, when stdin opisuje fixture dziecka, then entrypoint najpierw pobiera `handlerInstanceId`, rejestruje osobny freshness envelope, a dopiero po 204 zapisuje marker B na stdout. Spy potwierdza kolejność. Nie jest to runtime proof `SubagentStart`.
+- `writes-b2-output-only-after-m3-b2-m1-auto-and-freshness-registration`: given config auto i wszystkie wymagane synthetic gates, when pozycja profilu to `b2`, then producer rejestruje envelope, nie emituje markera w body i kończy sukcesem.
+- `producer-registration-failure-does-not-emit-default-marker-or-success`: given 401, 409, timeout albo niedostępny control endpoint, when hook próbuje rejestracji, then nie wypisuje markera/defaultu i zwraca jawny błąd hooka. B2 oraz B pozostają zamknięte.
+- `subagentstart-name-alone-never-sets-fresh`: given production profile z `M10-freshness: pending` albo resolver bez trusted witness, when stdin ma event `SubagentStart`, then brak rejestracji oraz markera defaultu.
+
+Szkielet zwraca `{}`; RED na `toBe('SubagentStart')`. Implementacja wymaga profilu capability, buduje marker przez `signRoleMarker` tylko po M3, osobno zaliczonym M10-freshness i przekazanym trusted fresh receipt dla roli, oraz zwraca strukturę zgodną z dokumentacją hooków Claude Code. Profil bez tych gates zwraca `{}` i nie sugeruje działającego kanału B. Profil zapisuje zmierzoną pozycję `additionalContext`: adapter przyjmuje `system` lub `first-user` tylko po M3 dla dokładnej pozycji. Wynik M3 wykluczający pozycje body może prowadzić wyłącznie do B2 po obowiązkowym M3-B2, M1, entropy, config auto i M10-freshness. `runClaudeSubagentStartHook` czyta pojedynczy JSON stdin, uzyskuje zaufany kontekst z `resolveTrustedStart`, pobiera instance endpoint, podpisuje osobny freshness envelope i rejestruje go przed stdout. Nazwa eventu `SubagentStart` sama nie daje fresh. Błąd producenta zamyka default i nie jest mapowany na sukces bez markera.
 
 ```bash
-bun test ./tests/transport/hooks.test.ts
+bun test ./tests/transport/hooks.test.ts ./tests/transport/claude-hook.test.ts
 ```
 
-Oczekiwane: 2 pass.
+Oczekiwane: wszystkie opisane przypadki pass, 0 fail.
 
 - [ ] **Step 6: Commit**
 
@@ -2182,13 +2498,19 @@ git commit -m "feat: add routing handler and Claude hook output"
 
 **Files:**
 - Create: `src/adapters/opencode.ts`
+- Create: `src/adapters/opencode-plugin.ts`
 - Test: `tests/adapters/opencode.test.ts`
+- Test: `tests/adapters/opencode-plugin.test.ts`
 
 **Interfaces:**
 - Consumes: `AgentInventory`, `getAgent`, `EffectiveCatalog`, `resolveRoute`, `CapabilityProfile`, `assertCapability`.
-- Produces: `opencodeVariants(inventory: AgentInventory, config: OperatorConfig, catalog: EffectiveCatalog): ExportFile[]`; `validateOpenCodeTask(args: unknown, inventory: AgentInventory, config: OperatorConfig, catalog: EffectiveCatalog, profile: CapabilityProfile): RouteDecision`.
+- Produces: `opencodeVariants(inventory: AgentInventory, config: OperatorConfig, catalog: EffectiveCatalog, snapshotGeneration: string): ExportFile[]`; `validateOpenCodeTask(args: unknown, inventory: AgentInventory, config: OperatorConfig, catalog: EffectiveCatalog, profile: CapabilityProfile, context: NativeRuntimeContext): RouteDecision`; `createOpenCodePlugin(deps: { inventory: AgentInventory; config: OperatorConfig; catalog: EffectiveCatalog; profile: CapabilityProfile; snapshotGeneration: string; resolveNativeRuntimeContext(input: unknown): Promise<NativeRuntimeContext | undefined> }): { 'tool.execute.before': (input: unknown) => Promise<unknown> }`.
 
-Nazwa wariantu to `ROLE@ALIAS`. Wariant kopiuje `native` definicji bazowej i nadpisuje wyłącznie `name`, `description`, `hidden: true` i `model: <providerId>/<upstreamModel>`. Eksport generuje jeden plik Markdown na wariant dla ról z plikami oraz jeden fragment `opencode.agents.json` dla ról zdefiniowanych w `opencode.json`. Modele bez opisu nie dostają wariantu. `validateOpenCodeTask` przyjmuje argumenty natywnego `task` (`subagent_type`, `description`, `prompt`) i zwraca decyzję core dla wybranego wariantu; sam nie zmienia argumentów. Guard runtime jest pluginem `tool.execute.before`, którego rejestrację potwierdza pomiar M6; do tego czasu `profile.status !== 'supported'` daje `unsupported-path`.
+Nazwa wariantu to `ROLE@ALIAS`. Wariant kopiuje `native` definicji bazowej i nadpisuje wyłącznie `name`, `description`, `hidden: true` i model w konfiguracji natywnej. Eksport generuje jeden plik Markdown na wariant dla ról z plikami oraz jeden fragment `opencode.agents.json` dla ról zdefiniowanych w `opencode.json`. Modele bez opisu nie dostają wariantu. Artefakt zapisuje oddzielnie `providerId`, exact `upstreamModel` i `snapshotGeneration`; zserializowane natywne pole może mieć postać `<providerId>/<upstreamModel>`, na przykład `gateway/gateway/fast-worker`. Porównanie rozdziela tylko znany pierwszy `providerId`, następnie porównuje pozostały literalny upstream ID z `decision.upstreamModel`, bez stripu, normalizacji albo splitu po kolejnym `/`.
+
+`validateOpenCodeTask` przyjmuje argumenty natywnego `task` (`subagent_type`, `description`, `prompt`), rozróżnia brak wyboru od wartości obecnej, lecz niepoprawnej, i zwraca decyzję core bez zmiany argumentów. Faza lifecycle oraz freshness nie pochodzą z tych args. Walidator dostaje je wyłącznie w `NativeRuntimeContext` od dependency `resolveNativeRuntimeContext`. Dla decyzji `route` wymaga `context.nativeConfig.source === 'authoritative-native-resolver'`, `providerId === config.harness.opencode.providerId`, `effectiveModel === decision.upstreamModel`, `expectedGeneration === actualGeneration` oraz zgodnego hasha artefaktu. Dla role albo global defaultu wymaga ponadto `context.freshDelegation === true` i zaliczonego `M10-freshness`; bez wiarygodnego sygnału odmawia `unsupported-path`. Brak skutecznego natywnego zastosowania defaultu daje `unsupported-path`, nie sukces pustego hooka. Files-only inventory, sidecar, deklaracja fixture ani sam caller nie są runtime proof. Czysty preview może zwrócić decyzję bez context, ale plugin runtime nigdy nie twierdzi, że ją zastosował bez dowodu.
+
+Guard runtime jest wykonywalnym pluginem `tool.execute.before`, który rejestruje się w aktywnej konfiguracji klienta przez kontrolowany artefakt Task 13. Plugin pobiera context z native resolvera, wywołuje walidator i zwraca natywny wynik hooka. Nie uruchamia Task ani dziecka; dalsze wykonanie należy wyłącznie do harnessu. M6-runtime musi najpierw potwierdzić, że ten resolver hook jest authoritative dla aktywnej wersji. Do czasu tego pomiaru produkcyjny profil pozostaje pending. Hermetyczny test może wstrzyknąć wyłącznie jawny `FIXTURE_NATIVE_CONTEXT` i spy continuation, co testuje kształt hooka, nie uruchomienie prawdziwego klienta.
 
 - [ ] **Step 1: Napisz failing testy**
 
@@ -2196,7 +2518,7 @@ Nazwa wariantu to `ROLE@ALIAS`. Wariant kopiuje `native` definicji bazowej i nad
 import { describe, expect, test } from 'bun:test';
 import { opencodeVariants, validateOpenCodeTask } from '../../src/adapters/opencode';
 import { buildCatalog } from '../../src/core/catalog';
-import type { AgentInventory, CapabilityProfile } from '../../src/core/types';
+import type { AgentInventory, CapabilityProfile, NativeRuntimeContext } from '../../src/core/types';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
 
 const inventory: AgentInventory = {
@@ -2207,12 +2529,20 @@ const inventory: AgentInventory = {
   completeness: 'files-only',
   diagnostics: [],
 };
-const supported: CapabilityProfile = { client: 'opencode', version: '1.18.29', status: 'supported', correlation: false, fork: false, probes: { M6: 'passed', M10: 'passed' } };
+const supported: CapabilityProfile = { client: 'opencode', version: '1.18.29', status: 'supported', correlation: false, correlationEntropy: 'pending', fork: false, adapterMarkerPosition: 'unknown', probes: { M6: 'passed', 'M6-runtime': 'passed', M10: 'passed', 'M10-freshness': 'passed' }, lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' } };
 const pending: CapabilityProfile = { ...supported, status: 'pending', probes: {} };
+const snapshotGeneration = 'fixture-generation';
+const FIXTURE_NATIVE_CONTEXT: NativeRuntimeContext = {
+  lifecyclePhase: 'next-turn', freshDelegation: true,
+  nativeConfig: {
+    source: 'authoritative-native-resolver', providerId: 'gateway', effectiveModel: FIXTURE_MODEL_ID,
+    expectedGeneration: snapshotGeneration, actualGeneration: snapshotGeneration, artifactHash: 'fixture-artifact-hash',
+  },
+};
 
 describe('opencodeVariants', () => {
   test('wariant zachowuje narzędzia, uprawnienia i treść, zmienia tylko nazwę, opis, hidden i model', async () => {
-    const files = opencodeVariants(inventory, configFixture(), buildCatalog(configFixture(), await snapshotFixture([FIXTURE_MODEL_ID, 'gateway/undescribed'])));
+    const files = opencodeVariants(inventory, configFixture(), buildCatalog(configFixture(), await snapshotFixture([FIXTURE_MODEL_ID, 'gateway/undescribed'])), snapshotGeneration);
     expect(files.map((f) => f.relativePath)).toEqual(['opencode/agents/reviewer@fast.md']);
     const content = files[0]?.content ?? '';
     expect(content).toContain('name: reviewer@fast');
@@ -2228,31 +2558,42 @@ describe('opencodeVariants', () => {
 describe('validateOpenCodeTask', () => {
   test('wariant znany w katalogu daje route z dokładnym upstreamModel', async () => {
     const catalog = buildCatalog(configFixture(), await snapshotFixture());
-    const decision = validateOpenCodeTask({ subagent_type: 'reviewer@fast', prompt: 'x', description: 'y' }, inventory, configFixture(), catalog, supported);
+    const decision = validateOpenCodeTask({ subagent_type: 'reviewer@fast', prompt: 'x', description: 'y' }, inventory, configFixture(), catalog, supported, FIXTURE_NATIVE_CONTEXT);
     expect(decision).toEqual({ kind: 'route', upstreamModel: FIXTURE_MODEL_ID, clientModel: 'haiku', source: 'explicit', ignoredMarkers: 0 });
   });
 
   test('wariant z aliasem spoza katalogu i nieznana rola dają błąd, bez zmiany args', async () => {
     const catalog = buildCatalog(configFixture(), await snapshotFixture());
     const args = { subagent_type: 'reviewer@ghost', prompt: 'x', description: 'y' };
-    expect(validateOpenCodeTask(args, inventory, configFixture(), catalog, supported)).toMatchObject({ kind: 'error', code: 'unknown-model' });
-    expect(validateOpenCodeTask({ subagent_type: 'nobody@fast', prompt: 'x', description: 'y' }, inventory, configFixture(), catalog, supported)).toMatchObject({ kind: 'error', code: 'unsupported-path' });
+    expect(validateOpenCodeTask(args, inventory, configFixture(), catalog, supported, FIXTURE_NATIVE_CONTEXT)).toMatchObject({ kind: 'error', code: 'unknown-model' });
+    expect(validateOpenCodeTask({ subagent_type: 'nobody@fast', prompt: 'x', description: 'y' }, inventory, configFixture(), catalog, supported, FIXTURE_NATIVE_CONTEXT)).toMatchObject({ kind: 'error', code: 'unsupported-path' });
     expect(args.subagent_type).toBe('reviewer@ghost');
   });
 
   test('bazowa rola bez wariantu przechodzi jako pass-through dziedziczenia natywnego tylko przy jawnym inherit', async () => {
     const catalog = buildCatalog(configFixture(), await snapshotFixture());
-    expect(validateOpenCodeTask({ subagent_type: 'reviewer' }, inventory, configFixture(), catalog, supported)).toMatchObject({ kind: 'error', code: 'missing-selection' });
+    expect(validateOpenCodeTask({ subagent_type: 'reviewer' }, inventory, configFixture(), catalog, supported, FIXTURE_NATIVE_CONTEXT)).toMatchObject({ kind: 'error', code: 'missing-selection' });
     const config = configFixture({ defaults: { child: null, unmarkedSubagent: 'inherit', unmarkedSubagentAcknowledged: true } });
-    expect(validateOpenCodeTask({ subagent_type: 'reviewer' }, inventory, config, catalog, supported)).toMatchObject({ kind: 'pass-through', reason: 'inherit-allowed' });
+    expect(validateOpenCodeTask({ subagent_type: 'reviewer' }, inventory, config, catalog, supported, FIXTURE_NATIVE_CONTEXT)).toMatchObject({ kind: 'pass-through', reason: 'inherit-allowed' });
   });
 
   test('profil pending odmawia z unsupported-path', async () => {
     const catalog = buildCatalog(configFixture(), await snapshotFixture());
-    expect(validateOpenCodeTask({ subagent_type: 'reviewer@fast' }, inventory, configFixture(), catalog, pending)).toMatchObject({ kind: 'error', code: 'unsupported-path' });
+    expect(validateOpenCodeTask({ subagent_type: 'reviewer@fast' }, inventory, configFixture(), catalog, pending, FIXTURE_NATIVE_CONTEXT)).toMatchObject({ kind: 'error', code: 'unsupported-path' });
+  });
+
+  test('odrzuca present-but-invalid variant przed role defaultem i nie myli aliasu z raw ID', async () => {
+    const config = configFixture({ roles: { 'opencode:reviewer': { routeOverride: FIXTURE_MODEL_ID } } });
+    const catalog = buildCatalog(config, await snapshotFixture([FIXTURE_MODEL_ID, 'ghost']));
+    for (const subagent_type of [null, '', 42, 'reviewer@ghost'] as const) {
+      expect(validateOpenCodeTask({ subagent_type }, inventory, config, catalog, supported, FIXTURE_NATIVE_CONTEXT)).toMatchObject({ kind: 'error', code: 'unknown-model' });
+    }
   });
 });
+
 ```
+
+Dopisz `tests/adapters/opencode-plugin.test.ts` z pełnymi testami given/when/then `denies-before-stubbed-opencode-continuation`, `allows-stubbed-continuation-with-synthetic-authoritative-context`, `requires-effective-native-model-and-artifact-generation` i `compares-provider-separately-from-opaque-upstream-id`. Zewnętrzny sterownik testowy interpretuje wynik callbacka i tylko po sukcesie wywołuje spy continuation. Pierwszy test wywołuje faktycznie zarejestrowany callback `tool.execute.before` z `reviewer@ghost` i sprawdza kształt natywnej odmowy, wywołanie walidatora oraz zero wywołań spy `continueNativeTask`. Drugi jest kontrolą dodatnią: jawny `FIXTURE_NATIVE_CONTEXT` i synthetic supported profile powodują dokładnie jedno wywołanie continuation z niezmienionym input. Te dwa testy nie uruchamiają OpenCode i nie mogą twierdzić, że nie powstał native request. Rzeczywista odmowa plus brak requestu dziecka są wyłącznie opt-in scenariuszem `M6-runtime` z uruchomionym klientem i capture gateway w Task 15. Trzeci test odrzuca brak context, witness niepochodzący z authoritative resolvera, inny effective model, generation lub artifact hash, mimo że czysty `route preview` zwraca decyzję. Czwarty podaje `providerId: 'gateway'` i `effectiveModel: 'gateway/fast-worker'` i sprawdza oba pola bez dzielenia opaque ID po drugim ukośniku. Osobny przypadek potwierdza, że `lifecyclePhase` w args jest ignorowane i nie może zastąpić trusted context.
 
 - [ ] **Step 2: Szkielet i RED**
 
@@ -2260,20 +2601,24 @@ Szkielet: `opencodeVariants` zwraca `[]`, `validateOpenCodeTask` zwraca `unsuppo
 
 - [ ] **Step 3: Zaimplementuj**
 
-`opencodeVariants`: dla każdej roli `available` z `path` i każdego modelu `enabled` z opisem zbuduj frontmatter przez `Bun.YAML.stringify({ ...native, name, description, hidden: true, model })` i doklej `body`. `validateOpenCodeTask`: `assertCapability(profile, 'native')` z mapowaniem wyjątku na `unsupported-path`; rozbij `subagent_type` na `role` i opcjonalny `alias` po ostatnim `@`; rola musi istnieć w inventory (`unsupported-path` gdy brak); alias mapowany na `explicitIds` przez `catalog.byAlias` albo przekazany dosłownie; `roleDefaultId` z `config.roles[`opencode:${role}`]`; wywołaj `resolveRoute` z `scope: 'child'`.
+`opencodeVariants`: dla każdej roli `available` z `path` i każdego modelu `enabled` z opisem zbuduj frontmatter przez `Bun.YAML.stringify({ ...native, name, description, hidden: true, model })` i doklej `body`. Zachowaj `providerId` oddzielnie od exact `upstreamModel`, a manifest artefaktu wiąż z `snapshotGeneration`.
+
+`validateOpenCodeTask` wywołuje `assertCapability(profile, 'opencode-native-runtime', context)`. `context.lifecyclePhase` pochodzi wyłącznie z `resolveNativeRuntimeContext`; pole o tej nazwie w `args` jest niezaufane i ignorowane. Znana faza wymaga własnego `passed`, nieznana wymaga wszystkich pięciu. Sprawdź obecność `subagent_type` przez `Object.hasOwn`, aby `null`, pusty string, wartość niebędąca stringiem lub niepoprawny `ROLE@ALIAS` nie mogły spaść do defaultu. Rozbij prawidłowy `subagent_type` po ostatnim `@`; rola musi istnieć w inventory. Alias mapuj wyłącznie przez `catalog.byAlias`; nierozwiązany alias ustawia `explicitError: 'unknown-model'`, nawet gdy ten sam tekst jest raw ID w `catalog.byId`. `roleDefaultId` z `config.roles[`opencode:${role}`]` dostaje `freshDelegation` wyłącznie z context. Dla wyniku `route` sprawdź authoritative native witness: provider osobno, literalny effective model osobno, expected oraz actual generation i hash artefaktu. Brak, files-only inventory lub różnica daje `unsupported-path`, bez modyfikacji `args`. Dla defaultu dodatkowo wymagaj M10-freshness i `context.freshDelegation === true`.
+
+`createOpenCodePlugin` jest wykonywalnym entrypointem pluginu: rejestruje `tool.execute.before`, filtruje wyłącznie natywne `task`, pobiera `NativeRuntimeContext` przez dependency, wywołuje `validateOpenCodeTask`, a dla decyzji `error` emituje mechanizm odmowy potwierdzony przez M6-runtime. Dla `route` nie dokonuje `updatedInput`, nie podmienia `subagent_type` i tylko kończy hook. `continueNativeTask` jest spy wyłącznie w zewnętrznym sterowniku testowym: sterownik uruchamia je po zaakceptowanym wyniku hooka, nigdy adapter produkcyjny. Dopiero M6-runtime z realnym klientem dowodzi, że callback jest w ścieżce przed spawn, że odmowa działa i że do bramy nie dotarł request dziecka.
 
 - [ ] **Step 4: GREEN**
 
 ```bash
-bun test ./tests/adapters/opencode.test.ts
+bun test ./tests/adapters/opencode.test.ts ./tests/adapters/opencode-plugin.test.ts
 ```
 
-Oczekiwane: 5 pass.
+Oczekiwane: wszystkie opisane przypadki pass, 0 fail.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/adapters/opencode.ts tests/adapters/opencode.test.ts
+git add src/adapters/opencode.ts src/adapters/opencode-plugin.ts tests/adapters/opencode.test.ts tests/adapters/opencode-plugin.test.ts
 git commit -m "feat: add OpenCode variants and task validation"
 ```
 
@@ -2281,13 +2626,17 @@ git commit -m "feat: add OpenCode variants and task validation"
 
 **Files:**
 - Create: `src/adapters/codex.ts`
+- Create: `src/adapters/codex-hook.ts`
 - Test: `tests/adapters/codex.test.ts`
+- Test: `tests/adapters/codex-hook.test.ts`
 
 **Interfaces:**
 - Consumes: `AgentInventory`, `EffectiveCatalog`, `resolveRoute`, `CapabilityProfile`, `assertCapability`.
-- Produces: `validateCodexSpawn(args: unknown, inventory: AgentInventory, config: OperatorConfig, catalog: EffectiveCatalog, profile: CapabilityProfile): RouteDecision`; `codexHookOutput(decision: RouteDecision): Record<string, unknown>`.
+- Produces: `validateCodexSpawn(args: unknown, inventory: AgentInventory, config: OperatorConfig, catalog: EffectiveCatalog, profile: CapabilityProfile, context: NativeRuntimeContext): RouteDecision`; `codexHookOutput(decision: RouteDecision): Record<string, unknown>`; `type CodexHookDeps = { inventory: AgentInventory; config: OperatorConfig; catalog: EffectiveCatalog; profile: CapabilityProfile; resolveNativeRuntimeContext(input: unknown): Promise<NativeRuntimeContext | undefined> }`; `runCodexPreToolUseHook(stdin: ReadableStream<Uint8Array>, stdout: WritableStream<Uint8Array>, deps: CodexHookDeps): Promise<void>`.
 
-Hook `PreToolUse` z matcherem `Agent` dostaje `tool_input` narzędzia `spawn_agent` (`model?`, `role?` lub `agent?`, `prompt`). Decyzja `error` daje `permissionDecision: "deny"` z powodem zawierającym kod. Decyzja `route` i `pass-through` zwraca pusty obiekt: hook nie wystawia `allow`, żeby nie omijać innych polityk, i nie używa `updatedInput`. Model podany jawnie jest przekazywany do core jako `explicitIds` po dokładnym ID; alias nie jest w Codex akceptowany, bo natywne pole musi być identyfikatorem bramy.
+Hook `PreToolUse` z matcherem `Agent` dostaje `tool_input` narzędzia `spawn_agent` (`model?`, `role?` lub `agent?`, `prompt`). `src/adapters/codex-hook.ts` jest wykonywalnym entrypointem stdin/stdout, który parsuje tylko event `PreToolUse` dla `Agent` i przekazuje wynik `codexHookOutput` na stdout w kontrakcie hooka. Decyzja `error` daje `permissionDecision: "deny"` z powodem zawierającym kod. Decyzja `route` i `pass-through` zapisuje pusty obiekt hooka, nie wystawia jawnego `allow` ani `updatedInput`. Hook nie uruchamia dziecka; wykonanie pozostaje w Codex. `continueNativeSpawn` jest wyłącznie spy zewnętrznego sterownika testowego, nie dependency ani funkcją routera. Model podany jawnie jest akceptowany wyłącznie jako exact ID istniejące w `catalog.byId`; alias nie jest akceptowany.
+
+`tool_input` zawiera tylko dane modelu i nigdy nie dostarcza lifecycle ani freshness. Przed walidacją hook pobiera `NativeRuntimeContext` przez `resolveNativeRuntimeContext`. Witness musi zawierać effective model, expected i actual generation, hash artefaktu oraz source `authoritative-native-resolver`. Dla `route` exact `effectiveModel` musi odpowiadać decyzji core, a generation i artefakt muszą się zgadzać. Rola albo global default wymagają dodatkowo `freshDelegation` z zaufanego context adaptera oraz M10-freshness. Files-only inventory, sidecar lub fixture callera nie są runtime proof. Możliwość native resolver hooka oraz jego miejsce przed spawn muszą zostać zmierzone w M7 przed profilem `supported`; do tego czasu produkcyjny adapter jest `unsupported-path`. Czysty preview nadal może zwrócić samą decyzję.
 
 - [ ] **Step 1: Napisz failing testy**
 
@@ -2295,7 +2644,7 @@ Hook `PreToolUse` z matcherem `Agent` dostaje `tool_input` narzędzia `spawn_age
 import { describe, expect, test } from 'bun:test';
 import { codexHookOutput, validateCodexSpawn } from '../../src/adapters/codex';
 import { buildCatalog } from '../../src/core/catalog';
-import type { AgentInventory, CapabilityProfile } from '../../src/core/types';
+import type { AgentInventory, CapabilityProfile, NativeRuntimeContext } from '../../src/core/types';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
 
 const inventory: AgentInventory = {
@@ -2303,32 +2652,58 @@ const inventory: AgentInventory = {
   completeness: 'files-only',
   diagnostics: [],
 };
-const supported: CapabilityProfile = { client: 'codex', version: '0.153.4', status: 'supported', correlation: false, fork: false, probes: { M5: 'passed', M7: 'passed', M9: 'passed', M10: 'passed' } };
+const supported: CapabilityProfile = { client: 'codex', version: 'synthetic-hermetic', status: 'supported', correlation: false, correlationEntropy: 'pending', fork: false, adapterMarkerPosition: 'unknown', probes: { M5: 'passed', M7: 'passed', M9: 'passed', M10: 'passed', 'M10-freshness': 'passed' }, lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' } };
+
+function nativeContext(effectiveModel = FIXTURE_MODEL_ID, patch: Partial<NativeRuntimeContext> = {}): NativeRuntimeContext {
+  return {
+    lifecyclePhase: 'next-turn', freshDelegation: true,
+    nativeConfig: {
+      source: 'authoritative-native-resolver', effectiveModel,
+      expectedGeneration: 'fixture-generation', actualGeneration: 'fixture-generation', artifactHash: 'fixture-artifact-hash',
+    },
+    ...patch,
+  };
+}
 
 describe('validateCodexSpawn', () => {
   test('jawny model z katalogu daje route, model spoza katalogu daje unknown-model', async () => {
     const catalog = buildCatalog(configFixture(), await snapshotFixture());
-    expect(validateCodexSpawn({ model: FIXTURE_MODEL_ID, prompt: 'x' }, inventory, configFixture(), catalog, supported)).toMatchObject({ kind: 'route', upstreamModel: FIXTURE_MODEL_ID, source: 'explicit' });
-    expect(validateCodexSpawn({ model: 'gateway/ghost', prompt: 'x' }, inventory, configFixture(), catalog, supported)).toMatchObject({ kind: 'error', code: 'unknown-model' });
-    expect(validateCodexSpawn({ model: 'fast', prompt: 'x' }, inventory, configFixture(), catalog, supported)).toMatchObject({ kind: 'error', code: 'unknown-model' });
+    expect(validateCodexSpawn({ model: FIXTURE_MODEL_ID, prompt: 'x' }, inventory, configFixture(), catalog, supported, nativeContext())).toMatchObject({ kind: 'route', upstreamModel: FIXTURE_MODEL_ID, source: 'explicit' });
+    expect(validateCodexSpawn({ model: 'gateway/ghost', prompt: 'x' }, inventory, configFixture(), catalog, supported, nativeContext())).toMatchObject({ kind: 'error', code: 'unknown-model' });
+    expect(validateCodexSpawn({ model: 'fast', prompt: 'x' }, inventory, configFixture(), catalog, supported, nativeContext())).toMatchObject({ kind: 'error', code: 'unknown-model' });
   });
 
   test('rola bez modelu używa routeOverride, a jawny model wygrywa z rolą', async () => {
     const config = configFixture({ roles: { 'codex:reviewer': { routeOverride: FIXTURE_MODEL_ID } } });
     const catalog = buildCatalog(config, await snapshotFixture([FIXTURE_MODEL_ID, 'gateway/other']));
-    expect(validateCodexSpawn({ role: 'reviewer', prompt: 'x' }, inventory, config, catalog, supported)).toMatchObject({ kind: 'route', upstreamModel: FIXTURE_MODEL_ID, source: 'role-default' });
-    expect(validateCodexSpawn({ role: 'reviewer', model: 'gateway/other', prompt: 'x' }, inventory, config, catalog, supported)).toMatchObject({ kind: 'route', upstreamModel: 'gateway/other', source: 'explicit' });
+    expect(validateCodexSpawn({ role: 'reviewer', prompt: 'x' }, inventory, config, catalog, supported, nativeContext())).toMatchObject({ kind: 'route', upstreamModel: FIXTURE_MODEL_ID, source: 'role-default' });
+    expect(validateCodexSpawn({ role: 'reviewer', model: 'gateway/other', prompt: 'x' }, inventory, config, catalog, supported, nativeContext('gateway/other'))).toMatchObject({ kind: 'route', upstreamModel: 'gateway/other', source: 'explicit' });
   });
 
   test('spawn bez modelu i bez roli z trasą to missing-selection', async () => {
     const catalog = buildCatalog(configFixture(), await snapshotFixture());
-    expect(validateCodexSpawn({ prompt: 'x' }, inventory, configFixture(), catalog, supported)).toMatchObject({ kind: 'error', code: 'missing-selection' });
+    expect(validateCodexSpawn({ prompt: 'x' }, inventory, configFixture(), catalog, supported, nativeContext())).toMatchObject({ kind: 'error', code: 'missing-selection' });
   });
 
   test('profil bez zaliczonego M7 odmawia całego adaptera', async () => {
     const catalog = buildCatalog(configFixture(), await snapshotFixture());
     const profile: CapabilityProfile = { ...supported, status: 'pending', probes: { M7: 'failed' } };
-    expect(validateCodexSpawn({ model: FIXTURE_MODEL_ID, prompt: 'x' }, inventory, configFixture(), catalog, profile)).toMatchObject({ kind: 'error', code: 'unsupported-path' });
+    expect(validateCodexSpawn({ model: FIXTURE_MODEL_ID, prompt: 'x' }, inventory, configFixture(), catalog, profile, nativeContext())).toMatchObject({ kind: 'error', code: 'unsupported-path' });
+  });
+
+  test('present-but-invalid model nie spada do defaultu roli', async () => {
+    const config = configFixture({ roles: { 'codex:reviewer': { routeOverride: FIXTURE_MODEL_ID } } });
+    const catalog = buildCatalog(config, await snapshotFixture([FIXTURE_MODEL_ID, 'gateway/raw-fast-id']));
+    for (const model of [null, '', 42, 'fast', 'gateway/ghost'] as const) {
+      expect(validateCodexSpawn({ role: 'reviewer', model }, inventory, config, catalog, supported, nativeContext())).toMatchObject({ kind: 'error', code: 'unknown-model' });
+    }
+  });
+
+  test('rola z jawnym modelem wymaga M9 przed natywną precedencją', async () => {
+    const config = configFixture({ roles: { 'codex:reviewer': { routeOverride: FIXTURE_MODEL_ID } } });
+    const profile = { ...supported, probes: { ...supported.probes, M9: 'pending' } };
+    const catalog = buildCatalog(config, await snapshotFixture());
+    expect(validateCodexSpawn({ role: 'reviewer', model: FIXTURE_MODEL_ID }, inventory, config, catalog, profile, nativeContext())).toMatchObject({ kind: 'error', code: 'unsupported-path' });
   });
 });
 
@@ -2347,20 +2722,22 @@ Szkielet zwraca `unsupported-path` oraz `{}`. Uruchom `bun test ./tests/adapters
 
 - [ ] **Step 3: Zaimplementuj**
 
-`validateCodexSpawn`: `assertCapability(profile, 'native')` z mapowaniem na `unsupported-path`; odczytaj `role` z `args.role` albo `args.agent`; jeśli podano `role`, musi istnieć w inventory, inaczej `unsupported-path`; `explicitIds` to `[args.model]` gdy jest ciągiem (bez mapowania aliasu); `roleDefaultId` z `config.roles[`codex:${role}`]`; `resolveRoute` z `scope: 'child'`. `codexHookOutput` zwraca `deny` tylko dla `error`.
+`validateCodexSpawn` wywołuje `assertCapability(profile, 'codex-native-runtime', context)`. Faza pochodzi wyłącznie z `NativeRuntimeContext`; `tool_input.lifecyclePhase` lub pole promptu jest ignorowane. Znana faza sprawdza własny dowód, a nieznana wymaga wszystkich pięciu. Odczytaj rolę z `args.role` albo `args.agent`; jeśli podano rolę, musi istnieć w inventory. Wykryj obecność `model` przez `Object.hasOwn`: `null`, pusty ciąg, wartość niebędąca stringiem, alias lub exact ID nieobecne w `catalog.byId` ustawiają `explicitError: 'unknown-model'`, więc nie mogą spaść do defaultu. Brak pola modelu pozostaje brakiem wyboru i dopiero wtedy może użyć roli albo globalnego defaultu. Dla roli plus jawny model wywołaj też `assertCapability(profile, 'codex-explicit-over-role', context)`. Tylko poprawny exact ID trafia do `explicitIds`. Dla `route` wymagaj authoritative native witness, zgodnych expected i actual generation, hasha artefaktu oraz `effectiveModel === decision.upstreamModel`. Default wymaga dodatkowo M10-freshness i `context.freshDelegation === true`. Każdy brak daje `unsupported-path`.
+
+`runCodexPreToolUseHook` czyta pojedynczy JSON stdin, waliduje event, matcher i `tool_input`, pobiera context przez `resolveNativeRuntimeContext`, zapisuje wyłącznie JSON stdout i kończy bez outputu dla innych eventów. Testy jednostkowe `reads-stdin-writes-pretooluse-deny`, `deny-skips-stubbed-native-continuation`, `synthetic-positive-calls-stubbed-native-continuation`, `rejects-present-but-invalid-model-before-role-default`, `requires-native-witness-generation-and-artifact` i `requires-m9-for-explicit-model-with-role` sprawdzają output hooka oraz spy continuation uruchamiane wyłącznie przez zewnętrzny sterownik testowy po odczycie tego outputu. Hook produkcyjny nie wywołuje continuation. Nie uruchamiają Codex i nie dowodzą braku native requestu. Realny denial oraz liczba requestów dziecka równa zero należą wyłącznie do opt-in M7 z uruchomionym klientem i capture gateway. Entry point nie używa AI SDK ani nie tworzy runtime.
 
 - [ ] **Step 4: GREEN i pełny zestaw**
 
 ```bash
-bun test ./tests/adapters/codex.test.ts && bun run typecheck && bun test
+bun test ./tests/adapters/codex.test.ts ./tests/adapters/codex-hook.test.ts && bun run typecheck && bun test
 ```
 
-Oczekiwane: 6 pass w pliku, 0 fail globalnie.
+Oczekiwane: wszystkie opisane przypadki pass, 0 fail globalnie.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/adapters/codex.ts tests/adapters/codex.test.ts
+git add src/adapters/codex.ts src/adapters/codex-hook.ts tests/adapters/codex.test.ts tests/adapters/codex-hook.test.ts
 git commit -m "feat: add Codex spawn validation hook logic"
 ```
 
@@ -2375,9 +2752,9 @@ git commit -m "feat: add Codex spawn validation hook logic"
 
 **Interfaces:**
 - Consumes: `loadState`, `buildCatalog`, `resolveModel`, `resolveRoute`, `readAgentInventory`, `getAgent`, `loadCapabilityProfile`, `resolveSource`, `validateSource`, typ `CliDeps`.
-- Produces: `parseArgs(argv: readonly string[]): ParsedArgs` z `ParsedArgs = { command: string[]; options: Record<string, string | boolean>; positionals: string[] }`; `render(deps: CliDeps, payload: unknown, human: () => string): void`; `previewRoute(options: { client: ClientId; agent: string; model?: string; parentModel?: string }, state: LoadedState, inventory: AgentInventory, profile: CapabilityProfile): { mode: 'simulation'; generation: string; decision: RouteDecision; agent: { name: string; declaredModel: string | 'unknown'; scope: string } }`; `runCli(argv: readonly string[], deps: CliDeps): Promise<0 | 1 | 2>`.
+- Produces: `parseArgs(argv: readonly string[]): ParsedArgs` z `ParsedArgs = { command: string[]; options: Record<string, string | boolean>; positionals: string[] }`; `render(deps: CliDeps, payload: unknown, human: () => string): void`; `previewRoute(options: { client: ClientId; agent: string; model?: string; parentModel?: string }, state: LoadedState, inventory: AgentInventory, profile: CapabilityProfile): { mode: 'simulation'; generation: string; assumptions: { authenticatedChild: true; freshDelegation: true; runtimeCapabilityNotProven: true }; decision: RouteDecision; agent: { name: string; declaredModel: string | 'unknown'; scope: string } }`; `runCli(argv: readonly string[], deps: CliDeps): Promise<0 | 1 | 2>`.
 
-Komendy tego zadania: `models list`, `models show <id-or-alias>`, `agents list --client <c>`, `agents show <name> --client <c>`, `route preview --client <c> --agent <name> [--model <ref>] [--parent-model <m>]`, `config show`, `config check`, `doctor` (offline). Parser argumentów używa `parseArgs` z `node:util` dostępnego w Bun i Node. Globalne opcje: `--config`, `--json`, `--no-color`, `--agents-dir` (wielokrotna), `--help`, `--version`. Domyślny config to `<cwd>/subagent-router.json`. Wyjście JSON idzie w całości na stdout; diagnostyka na stderr. Kody wyjścia: 0 sukces, 1 błąd operacyjny (`RouterError` z I/O lub sieci), 2 błąd użycia, konfiguracji albo wyboru. Każdy ciąg z katalogu, opisu lub nazwy agenta przechodzi przez `escapeControl` (znaki sterujące i sekwencje ANSI zamieniane na `\uXXXX`) przed wypisaniem w trybie tekstowym.
+Komendy tego zadania: `models list`, `models show <id-or-alias>`, `agents list --client <c>`, `agents show <name> --client <c>`, `route preview --client <c> --agent <name> [--model <ref>] [--parent-model <m>]`, `config show`, `config check`, `doctor` (offline). `config check`, sidecar eksportu i offline preview sprawdzają pliki oraz referencje, ale nigdy nie są dowodem załadowania effective konfiguracji przez native runtime ani zastosowania defaultu. Parser argumentów używa `parseArgs` z `node:util` dostępnego w Bun i Node. Globalne opcje: `--config`, `--json`, `--no-color`, `--agents-dir` (wielokrotna), `--help`, `--version`. Domyślny config to `<cwd>/subagent-router.json`. Wyjście JSON idzie w całości na stdout; diagnostyka na stderr. Kody wyjścia: 0 sukces, 1 błąd operacyjny (`RouterError` z I/O lub sieci), 2 błąd użycia, konfiguracji albo wyboru. Każdy ciąg z katalogu, opisu lub nazwy agenta przechodzi przez `escapeControl` (znaki sterujące i sekwencje ANSI zamieniane na `\uXXXX`) przed wypisaniem w trybie tekstowym.
 
 - [ ] **Step 1: Napisz failing testy odczytu z fałszywymi zależnościami**
 
@@ -2403,6 +2780,9 @@ function deps(patch: Partial<CliDeps> = {}): CliDeps {
     stderr: (text) => err.push(text),
     isTTY: false,
     fetch: async () => { throw new Error('sieć zabroniona w testach odczytu'); },
+    fetchAdapter: { id: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic' },
+    loadProfile: async (client, version) => ({ client, version, status: 'pending', correlation: false, correlationEntropy: 'pending', fork: false, adapterMarkerPosition: 'unknown', probes: {}, lifecycle: { 'next-turn': 'pending', resume: 'pending', compaction: 'pending', nested: 'pending', parallel: 'pending' } }),
+    loadTransportProfile: async (adapterId, runtimeVersion) => ({ adapterId, runtimeVersion, status: 'pending', gzipBytes: 'pending', responseHeaders: 'pending' }),
     now: () => new Date('2026-09-06T12:00:00.000Z'),
     ...patch,
   };
@@ -2454,6 +2834,7 @@ describe('read-only CLI', () => {
     expect(await runCli(['route', 'preview', '--client', 'claude-code', '--agent', 'explorer', '--json'], deps())).toBe(0);
     const preview = lastJson();
     expect(preview.mode).toBe('simulation');
+    expect(preview.assumptions).toEqual({ authenticatedChild: true, freshDelegation: true, runtimeCapabilityNotProven: true });
     expect(typeof preview.generation).toBe('string');
     expect(preview.decision).toMatchObject({ kind: 'route', upstreamModel: FIXTURE_MODEL_ID, source: 'role-default' });
     out = [];
@@ -2515,7 +2896,7 @@ Szkielet `runCli` zwraca `1` i nic nie pisze. Uruchom `bun test ./tests/cli/read
 
 - [ ] **Step 3: Zaimplementuj parser, wyjście i komendy**
 
-`args.ts`: `parseArgs` z `node:util` z opcjami `config`, `json`, `no-color`, `agents-dir` (multiple), `client`, `agent`, `model`, `parent-model`, `help`, `version`, `allowUnknown: false`; pierwsze dwa positionals to komenda. `output.ts`: `escapeControl`, `render` wybierający JSON albo tekst, brak ANSI gdy `!deps.isTTY` lub `--no-color`. `read.ts`: jedna funkcja na komendę, każda zwraca `{ code, payload, human }`; `previewRoute` buduje `RouteInput` z `scope: 'child'`, `role` z `client:agent`, `explicitIds` z `--model` (alias mapowany przez katalog), `roleDefaultId` z ról, `clientModel` z `--parent-model` gdy podano, i wywołuje `resolveRoute`; wynik zawsze ma `mode: 'simulation'` i `generation` ze `LoadedState`. `main.ts`: mapowanie błędów: `RouterError` z kodem zaczynającym się od `config-`, `snapshot-`, `unknown-model`, `agent-unknown`, `usage-` daje 2; pozostałe `RouterError` dają 1; nieznany wyjątek daje 1 z komunikatem bez stosu.
+`args.ts`: `parseArgs` z `node:util` z opcjami `config`, `json`, `no-color`, `agents-dir` (multiple), `client`, `agent`, `model`, `parent-model`, `help`, `version`, `allowUnknown: false`; pierwsze dwa positionals to komenda. `output.ts`: `escapeControl`, `render` wybierający JSON albo tekst, brak ANSI gdy `!deps.isTTY` lub `--no-color`. `read.ts`: jedna funkcja na komendę, każda zwraca `{ code, payload, human }`; `previewRoute` buduje `RouteInput` z `scope: 'child'`, `role` z `client:agent`, `explicitIds` z `--model` (alias mapowany przez katalog), `roleDefaultId` z ról, `clientModel` z `--parent-model` i jawnie `freshDelegation: true` jako założenie symulacji, po czym wywołuje `resolveRoute`. Wynik zawsze ma `mode: 'simulation'`, `generation` ze `LoadedState` oraz `assumptions: { authenticatedChild: true, freshDelegation: true, runtimeCapabilityNotProven: true }`. Nie jest profilem runtime ani dowodem M10-freshness. `main.ts`: mapowanie błędów: `RouterError` z kodem zaczynającym się od `config-`, `snapshot-`, `unknown-model`, `agent-unknown`, `usage-` daje 2; pozostałe `RouterError` dają 1; nieznany wyjątek daje 1 z komunikatem bez stosu.
 
 - [ ] **Step 4: GREEN**
 
@@ -2544,8 +2925,10 @@ git commit -m "feat: add read-only CLI with route preview and doctor"
 - Test: `tests/cli/serve.test.ts`
 
 **Interfaces:**
-- Consumes: `synchronize`, `loadState`, `commitState`, `opencodeVariants`, `readAgentInventory`, `createHandler`, `createClaudeStartOutput`, `discoverModels`, `resolveSource`.
+- Consumes: `synchronize`, `loadState`, `commitState`, `opencodeVariants`, `readAgentInventory`, `createHandler`, `createClaudeStartOutput`, `runClaudeSubagentStartHook`, `createOpenCodePlugin`, `runCodexPreToolUseHook`, `discoverModels`, `resolveSource`.
 - Produces: `describeModel(configPath: string, reference: string, description: string | null): Promise<void>`; `exportConfig(configPath: string, client: ClientId, outputDir: string, options: { dryRun: boolean; force: boolean; inventory: AgentInventory; catalogRequired: boolean }): Promise<ExportFile[]>`; `startServer(configPath: string, deps: CliDeps, options: { port: number; host: string }): Promise<{ url: string; generation: string; stop: () => Promise<void> }>`; `dumpToml(value: Record<string, unknown>): string` w `src/agents/export.ts`.
+
+`exportConfig` sam wywołuje `loadState` i wyprowadza `snapshotGeneration`, `configHash` oraz `snapshotHash` z tej jednej zwalidowanej wersji stanu. Nie przyjmuje generation od callera. Najpierw buduje kompletny plan plików wraz z docelowymi absolute paths lub nazwanymi operator env references, oblicza hashe nad dokładnymi bytes planowanych artefaktów, dopiero potem atomowo publikuje cały zestaw w katalogu wyjściowym. Sidecar jest poza native schema.
 
 Serializacja TOML: `Bun.TOML.stringify` nie istnieje w Bun 1.3.11 (zmierzone). Eksport Codex używa własnego `dumpToml` obsługującego wyłącznie ciągi, liczby, wartości logiczne, tablice ciągów i jedną warstwę tabel; każda inna wartość rzuca `RouterError('export-unsupported-value')`. Test roundtrip parsuje wynik przez `Bun.TOML.parse` i porównuje z wejściem. Nie dodawaj zależności runtime dla TOML.
 
@@ -2558,7 +2941,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runCli } from '../../src/cli/main';
 import { sha256 } from '../../src/core/hash';
-import type { CliDeps, FetchLike } from '../../src/core/types';
+import type { CapabilityProfile, CliDeps, FetchLike } from '../../src/core/types';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
 
 let dir = '';
@@ -2573,7 +2956,11 @@ function deps(fetch: FetchLike): CliDeps {
   return {
     cwd: dir, home: join(dir, 'home'),
     env: { GATEWAY_URL: 'http://127.0.0.1:8000/v1', GATEWAY_HEADERS: '{}', MODELS_AUTH: 'secret-token', ROUTER_SECRET: 'hook-secret' },
-    stdout: (t) => out.push(t), stderr: (t) => err.push(t), isTTY: false, fetch, now: () => new Date('2026-09-06T12:00:00.000Z'),
+    stdout: (t) => out.push(t), stderr: (t) => err.push(t), isTTY: false, fetch,
+    fetchAdapter: { id: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic' },
+    loadProfile: async (client, version) => ({ client, version, status: 'pending', correlation: false, correlationEntropy: 'pending', fork: false, adapterMarkerPosition: 'unknown', probes: {}, lifecycle: { 'next-turn': 'pending', resume: 'pending', compaction: 'pending', nested: 'pending', parallel: 'pending' } }),
+    loadTransportProfile: async (adapterId, runtimeVersion) => ({ adapterId, runtimeVersion, status: 'pending', gzipBytes: 'pending', responseHeaders: 'pending' }),
+    now: () => new Date('2026-09-06T12:00:00.000Z'),
   };
 }
 
@@ -2675,7 +3062,16 @@ let out: string[] = [];
 let err: string[] = [];
 
 function deps(): CliDeps {
-  return { cwd: join(dir, 'project'), home: join(dir, 'home'), env: { GATEWAY_URL: 'http://127.0.0.1:8000/v1', GATEWAY_HEADERS: '{}', MODELS_AUTH: 't', ROUTER_SECRET: 's' }, stdout: (t) => out.push(t), stderr: (t) => err.push(t), isTTY: false, fetch: async () => { throw new Error('sieć zabroniona'); }, now: () => new Date() };
+  return {
+    cwd: join(dir, 'project'), home: join(dir, 'home'),
+    env: { GATEWAY_URL: 'http://127.0.0.1:8000/v1', GATEWAY_HEADERS: '{}', MODELS_AUTH: 't', ROUTER_SECRET: 's' },
+    stdout: (t) => out.push(t), stderr: (t) => err.push(t), isTTY: false,
+    fetch: async () => { throw new Error('sieć zabroniona'); },
+    fetchAdapter: { id: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic' },
+    loadProfile: async (client, version) => ({ client, version, status: 'pending', correlation: false, correlationEntropy: 'pending', fork: false, adapterMarkerPosition: 'unknown', probes: {}, lifecycle: { 'next-turn': 'pending', resume: 'pending', compaction: 'pending', nested: 'pending', parallel: 'pending' } }),
+    loadTransportProfile: async (adapterId, runtimeVersion) => ({ adapterId, runtimeVersion, status: 'pending', gzipBytes: 'pending', responseHeaders: 'pending' }),
+    now: () => new Date(),
+  };
 }
 
 async function treeHash(root: string): Promise<string> {
@@ -2746,6 +3142,10 @@ describe('dumpToml', () => {
 });
 ```
 
+Dopisz testy eksportu `exports-claude-settings-fragment-with-read-only-subagentstart-hook-wiring`, `exports-opencode-plugin-entrypoint-and-tool-execute-before-wiring`, `exports-codex-pretooluse-stdin-stdout-hook-wiring` oraz `sidecars-hash-the-actual-atomic-export-plan`. Claude fragment wskazuje absolute path do zbudowanego `claude-hook` entrypointu, absolute control URL przekazany przez operatora albo nazwane env reference, absolute config, sidecar i profile path oraz tylko nazwy env dla sekretu. Nie modyfikuje aktywnego settings. OpenCode fragment wskazuje absolute plugin entrypoint i read-only metadata sidecar z `providerId`, exact `upstreamModel`, generation i hashami artefaktów. Codex fragment wskazuje executable stdin/stdout hook z matcherem `Agent`, absolute paths do programu, configu, sidecara i profilu. Żaden fragment nie zawiera sekretu.
+
+Gdy offline eksport lub `config check` nie może odczytać active effective konfiguracji, pokazuje `unknown`, a nie runtime proof. Dopiero M6-runtime lub M7 z realnym klientem może potwierdzić native resolver. Test atomic plan oblicza oczekiwane hashe z bytes każdego finalnego `ExportFile`, porównuje sidecar i sprawdza, że błąd przed rename nie publikuje częściowego zestawu. Wszystkie testy porównują hash plików native przed i po eksporcie.
+
 - [ ] **Step 3: Napisz failing test serve**
 
 ```ts
@@ -2754,7 +3154,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '../../src/cli/serve';
-import type { CliDeps, FetchLike } from '../../src/core/types';
+import type { CapabilityProfile, CliDeps, FetchLike } from '../../src/core/types';
 import { startCaptureGateway } from '../support/capture-gateway';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
 
@@ -2774,7 +3174,15 @@ describe('serve', () => {
   test('używa generacji z chwili startu i nie widzi późniejszej zmiany opisu', async () => {
     const gateway = await startCaptureGateway();
     const fetchLike: FetchLike = (request) => fetch(request);
-    const deps: CliDeps = { cwd: dir, home: dir, env: { GATEWAY_URL: `${gateway.url}/v1`, GATEWAY_HEADERS: '{}', MODELS_AUTH: 't', ROUTER_SECRET: 's' }, stdout: () => {}, stderr: () => {}, isTTY: false, fetch: fetchLike, now: () => new Date() };
+    const deps: CliDeps = {
+      cwd: dir, home: dir,
+      env: { GATEWAY_URL: `${gateway.url}/v1`, GATEWAY_HEADERS: '{}', MODELS_AUTH: 't', ROUTER_SECRET: 's' },
+      stdout: () => {}, stderr: () => {}, isTTY: false, fetch: fetchLike,
+      fetchAdapter: { id: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic' },
+      loadProfile: async () => ({ client: 'claude-code', version: 'synthetic-hermetic', status: 'supported', correlation: false, correlationEntropy: 'pending', fork: false, adapterMarkerPosition: 'unknown', probes: { M10: 'passed' }, lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' } }),
+      loadTransportProfile: async () => ({ adapterId: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic', status: 'passed', gzipBytes: 'passed', responseHeaders: 'passed' }),
+      now: () => new Date(),
+    };
     const server = await startServer(join(dir, 'subagent-router.json'), deps, { port: 0, host: '127.0.0.1' });
     try {
       const changed = configFixture();
@@ -2802,7 +3210,13 @@ Szkielety: `describeModel` i `exportConfig` nic nie robią, `startServer` startu
 
 - [ ] **Step 5: Zaimplementuj**
 
-`describeModel`: `loadState`, rozwiąż referencję przez katalog albo, gdy snapshot zawiera ID ze statusem `missing`, przez `snapshot.models`; zapisz `modelOverrides[id].description` albo usuń klucz przy `null`, pozostawiając inne pola; `commitState` z `config`. `exportConfig`: rozwiąż `outputDir` przez `realpath` katalogu nadrzędnego i porównaj z realpath wszystkich roots natywnych (`cwd/.claude`, `home/.claude`, `cwd/.opencode`, `home/.config/opencode`, `cwd/.codex`, `home/.codex`, `CLAUDE_CONFIG_DIR`, `additionalRoots`); zbieżność lub zawieranie daje `RouterError('export-native-root')` niezależnie od `force`; istniejący plik artefaktu bez `force` daje `export-collision`; `dryRun` zwraca listę bez zapisu; zapis atomowy przez plik tymczasowy i `rename` w katalogu wyjściowym. Dla `opencode` użyj `opencodeVariants`; dla `codex` wygeneruj `codex/agents/<role>.toml` z `native` roli i `model` równym `routeOverride` oraz, przy `catalogRequired`, `codex/model_catalog.json` z aktywnych modeli. `startServer`: `loadState`, `resolveSource`, `validateSource`, `loadCapabilityProfile` dla wykrytej wersji z `env.SUBAGENT_ROUTER_CLAUDE_VERSION` albo profilu `pending`, `createHandler`, `Bun.serve({ hostname: host, port, fetch: handler })`; zwróć `url`, `generation` i `stop`. `doctor --connect`: `discoverModels` do pierwszej strony, raport `reachable` i `schemaValid`, bez zapisu snapshotu. `main.ts` dodaje tylko dispatch.
+`describeModel`: `loadState`, rozwiąż referencję przez katalog albo, gdy snapshot zawiera ID ze statusem `missing`, przez `snapshot.models`; zapisz `modelOverrides[id].description` albo usuń klucz przy `null`, pozostawiając inne pola; `commitState` z `config`.
+
+`exportConfig` najpierw ładuje i waliduje stan, a generation bierze z `LoadedState`. Rozwiązuje `outputDir` przez `realpath` katalogu nadrzędnego i porównuje z realpath wszystkich native roots; zbieżność lub zawieranie daje `export-native-root` niezależnie od `force`. Buduje cały plan w pamięci, zapisuje absolute paths programu, configu, profilu i sidecara lub jawne operator env references bez wartości sekretów, haszuje finalne bytes artefaktów, a potem publikuje zestaw przez staging directory i atomowy rename. `dryRun` zwraca plan bez zapisu.
+
+Dla Claude wygeneruj read-only settings fragment z `SubagentStart` wskazującym zbudowany `dist/claude-hook.js`, control URL reference, config path, profile path i `secretEnv`. Nie zmieniaj settings. Dla OpenCode użyj wariantów, sidecara i fragmentu rejestrującego `dist/opencode-plugin.js` jako `tool.execute.before`. Dla Codex wygeneruj role, opcjonalny katalog, sidecar i fragment `PreToolUse` matcher `Agent` wskazujący `dist/codex-hook.js`. Sidecary zawierają loaded configHash, snapshotHash, snapshotGeneration oraz hashe finalnych artefaktów, ale nie dowodzą native load.
+
+`startServer` wywołuje `loadState`, `resolveSource`, `validateSource`, następnie jawne dependencies `deps.loadProfile` oraz `deps.loadTransportProfile` dla `deps.fetchAdapter`. Nie ma produkcyjnej flagi env typu trust-me wymuszającej `supported`. Profile built-in pozostają pending, dopóki Task 15 nie zapisze realnego evidence. Hermetyczne testy wstrzykują profile `synthetic-hermetic`. `startServer` przekazuje do `createHandler` oba profile oraz tożsamość `deps.fetchAdapter`, zegar i generatory nonce/instanceId oparte na `crypto.randomUUID`. Domyślny trusted context ma nieznaną fazę i `freshDelegation: false`; nigdy nie pochodzi z body. Freshness dostarcza wyłącznie zmierzony kanał kontrolny. `createHandler` sprawdza transport profile przy starcie; potem ten sam handler trafia do `Bun.serve`. Aplikacja embed importuje dokładnie ten sam `createHandler`, bez dodatkowej implementacji. `doctor --connect` wykonuje tylko discovery pierwszej strony bez zapisu. `main.ts` dodaje tylko dispatch.
 
 - [ ] **Step 6: GREEN i pełny zestaw**
 
@@ -2826,11 +3240,12 @@ git commit -m "feat: add sync, describe, export and serve commands"
 - Create: `src/bun.ts`
 - Create: `scripts/build.ts`
 - Modify: `package.json` (pola `exports`, `bin`, `files`)
+- Create: `tests/support/run-built-entrypoints.ts`
 - Test: `tests/package.test.ts`
 
 **Interfaces:**
 - Consumes: wszystkie moduły wcześniejszych zadań.
-- Produces: eksport `./core` (`src/index.ts`: typy, `resolveRoute`, `buildCatalog`, `resolveModel`, `parseOperatorConfig`, `parseSnapshot`, `sha256`, `modelAlias`, `sourceFingerprint`, `RouterError`), eksport `./handler` (`createHandler`, `createClaudeStartOutput`), eksport `./bun` (`runCli`, `startServer`, adaptery, inventory); `bin.subagent-router` wskazuje `dist/cli.js`.
+- Produces: eksport `./core` (`src/index.ts`: typy, `resolveRoute`, `buildCatalog`, `resolveModel`, `parseOperatorConfig`, `parseSnapshot`, `sha256`, `modelAlias`, `sourceFingerprint`, `RouterError`), eksport `./handler` (`createHandler`, `createClaudeStartOutput`), eksporty wykonywalne `./claude-hook`, `./opencode-plugin`, `./codex-hook`, eksport `./bun` (`runCli`, `startServer`, adaptery, inventory); `bin.subagent-router` wskazuje `dist/cli.js`. Pakiet zawiera też profile capability i szablony eksportu z jawnymi ścieżkami config/sidecar/profile.
 
 - [ ] **Step 1: Napisz failing test paczki**
 
@@ -2879,6 +3294,15 @@ describe('package', () => {
     expect((await run('bun', ['dist/cli.js', '--help'])).stdout).toContain('models sync');
     expect((await run('bun', ['dist/cli.js', 'nope'])).code).toBe(2);
   });
+
+  test('build zawiera trzy wykonywalne entrypointy adapterów i uruchamia je na fixtures', async () => {
+    for (const file of ['claude-hook.js', 'opencode-plugin.js', 'codex-hook.js']) {
+      expect((await readFile(join(ROOT, 'dist', file), 'utf8')).length).toBeGreaterThan(0);
+    }
+    const smoke = await run('bun', ['tests/support/run-built-entrypoints.ts']);
+    expect(smoke).toMatchObject({ code: 0, stderr: '' });
+    expect(JSON.parse(smoke.stdout)).toEqual({ claude: 'synthetic-deny', opencode: 'synthetic-deny', codex: 'synthetic-deny' });
+  });
 });
 ```
 
@@ -2888,7 +3312,7 @@ Bez `scripts/build.ts` polecenie `bun run build` kończy się błędem; test pad
 
 - [ ] **Step 3: Zaimplementuj build i eksporty**
 
-`scripts/build.ts` uruchamia `Bun.build` z trzema wejściami (`src/index.ts` do `dist/core.js`, `src/transport/handler.ts` do `dist/handler.js`, `src/bun.ts` do `dist/cli.js` z `target: 'bun'` i shebangiem `#!/usr/bin/env bun`), `target: 'node'` dla rdzenia i handlera, `format: 'esm'`, bez `splitting`; następnie `Bun.spawn(['bunx', 'tsc', '-p', 'tsconfig.json'])` dla deklaracji. `package.json` dodaje `exports` z `./core`, `./handler`, `./bun`, pole `bin`, `files: ['dist']`, `sideEffects: false`. `src/bun.ts` wywołuje `runCli(process.argv.slice(2), realDeps())` tylko gdy `import.meta.main`.
+`scripts/build.ts` uruchamia `Bun.build` z podstawowymi wejściami (`src/index.ts` do `dist/core.js`, `src/transport/handler.ts` do `dist/handler.js`, `src/bun.ts` do `dist/cli.js` z `target: 'bun'` i shebangiem `#!/usr/bin/env bun`), `target: 'node'` dla rdzenia i handlera, `format: 'esm'`, bez `splitting`; następnie `Bun.spawn(['bunx', 'tsc', '-p', 'tsconfig.json'])` dla deklaracji. `package.json` dodaje `exports` z `./core`, `./handler`, `./bun`, pole `bin`, `files: ['dist']`, `sideEffects: false`. `src/bun.ts` wywołuje `runCli(process.argv.slice(2), realDeps())` tylko gdy `import.meta.main`. Build dodatkowo mapuje `src/transport/claude-hook.ts` na `dist/claude-hook.js`, `src/adapters/opencode-plugin.ts` na `dist/opencode-plugin.js` oraz `src/adapters/codex-hook.ts` na `dist/codex-hook.js`, wraz z deklaracjami i subpath exports `./claude-hook`, `./opencode-plugin`, `./codex-hook`. Hooki mają entrypoint stdin/stdout, a plugin eksport modułu zgodny ze zmierzonym API OpenCode. Smoke driver `tests/support/run-built-entrypoints.ts` uruchamia zbudowane hooki z syntetycznym stdin i importuje plugin z testowym hostem. Sprawdza rzeczywisty JSON odmowy lub brak wydania dowodu świeżości i dodatnią kontrolę dozwolonego wejścia; etykiety `synthetic-deny` wynikają z tych asercji, nie ze stałego wydruku. Nie uruchamia natywnych agentów.
 
 - [ ] **Step 4: GREEN**
 
@@ -2896,12 +3320,12 @@ Bez `scripts/build.ts` polecenie `bun run build` kończy się błędem; test pad
 bun test ./tests/package.test.ts && bun run typecheck && bun test
 ```
 
-Oczekiwane: 4 pass w pliku, 0 fail globalnie. Katalog `dist` jest w `.gitignore`.
+Oczekiwane: wszystkie opisane przypadki pass, 0 fail globalnie. Katalog `dist` jest w `.gitignore`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/index.ts src/bun.ts scripts/build.ts package.json .gitignore tests/package.test.ts
+git add src/index.ts src/bun.ts scripts/build.ts package.json .gitignore tests/package.test.ts tests/support/run-built-entrypoints.ts
 git commit -m "build: package core, handler and CLI entrypoints"
 ```
 
@@ -2914,6 +3338,8 @@ git commit -m "build: package core, handler and CLI entrypoints"
 - Create: analogiczne pięć plików w `docs/catalog`, `docs/agents`, `docs/transport`, `docs/cli`
 - Modify: `docs/README.md`, `README.md`
 - Modify: `tests/fixtures/capabilities/*.json` (wyłącznie wyniki rzeczywistych prób)
+- Modify: `tests/probes/evidence.test.ts` (walidacja artefaktu M8)
+- Create: `tests/e2e/native-routing.test.ts` (wyłącznie opt-in harnessy)
 
 **Interfaces:**
 - Consumes: całość paczki, `startCaptureGateway`, `tests/probes/run.ts`.
@@ -2951,10 +3377,28 @@ async function post(url: string, body: unknown, headers: Record<string, string> 
   return fetch(`${url}/v1/messages`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 }
 
+function syntheticE2eDeps(gatewayUrl: string): CliDeps {
+  return {
+    cwd: dir, home: dir,
+    env: { GATEWAY_URL: `${gatewayUrl}/v1`, GATEWAY_HEADERS: '{}', MODELS_AUTH: 't', ROUTER_SECRET: 's' },
+    stdout: () => {}, stderr: () => {}, isTTY: false,
+    fetch: (request) => fetch(request),
+    fetchAdapter: { id: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic' },
+    loadProfile: async () => ({
+      client: 'claude-code', version: 'synthetic-hermetic', status: 'supported',
+      correlation: false, correlationEntropy: 'pending', fork: false,
+      adapterMarkerPosition: 'unknown', probes: { M10: 'passed' },
+      lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' },
+    }),
+    loadTransportProfile: async (adapterId, runtimeVersion) => ({ adapterId, runtimeVersion, status: 'passed', gzipBytes: 'passed', responseHeaders: 'passed' }),
+    now: () => new Date(),
+  };
+}
+
 describe('e2e routing przez fake gateway', () => {
   test('rodzic A oraz równoczesne dzieci B i C trafiają do właściwych modeli, marker nie wycieka', async () => {
     const gateway = await startCaptureGateway();
-    const deps: CliDeps = { cwd: dir, home: dir, env: { GATEWAY_URL: `${gateway.url}/v1`, GATEWAY_HEADERS: '{}', MODELS_AUTH: 't', ROUTER_SECRET: 's' }, stdout: () => {}, stderr: () => {}, isTTY: false, fetch: (r) => fetch(r), now: () => new Date() };
+    const deps = syntheticE2eDeps(gateway.url);
     const server = await startServer(join(dir, 'subagent-router.json'), deps, { port: 0, host: '127.0.0.1' });
     try {
       await Promise.all([
@@ -2971,21 +3415,26 @@ describe('e2e routing przez fake gateway', () => {
     }
   });
 
-  test('dziecko wykonuje roundtrip narzędzia i zwraca zdekodowany wynik z tego samego modelu', async () => {
+  test('syntetyczny roundtrip zachowuje tool_use, tool_result i model transportu', async () => {
     const gateway = await startCaptureGateway();
-    const deps: CliDeps = { cwd: dir, home: dir, env: { GATEWAY_URL: `${gateway.url}/v1`, GATEWAY_HEADERS: '{}', MODELS_AUTH: 't', ROUTER_SECRET: 's' }, stdout: () => {}, stderr: () => {}, isTTY: false, fetch: (r) => fetch(r), now: () => new Date() };
+    const deps = syntheticE2eDeps(gateway.url);
     const server = await startServer(join(dir, 'subagent-router.json'), deps, { port: 0, host: '127.0.0.1' });
     try {
-      const first = await post(server.url, { model: 'claude-haiku', system: CHILD_SYSTEM, messages: [{ role: 'user', content: '<subagent-router v="1" model="b"/>\nUżyj narzędzia' }], tools: [{ name: 'echo', input_schema: { type: 'object' } }] }, { 'x-claude-code-agent-id': 'agent-b' });
-      const firstBody = (await first.json()) as { content: Array<{ type: string }> };
+      const first = await post(server.url, { model: 'claude-haiku', system: CHILD_SYSTEM, messages: [{ role: 'user', content: '<subagent-router v="1" model="b"/>\nUżyj narzędzia' }], tools: [{ name: 'read_fixture', input_schema: { type: 'object' } }] }, { 'x-claude-code-agent-id': 'agent-b' });
+      const firstBody = await first.json() as { content: Array<{ type: string; id?: string; name?: string }> };
+      const toolUse = firstBody.content.find((part) => part.type === 'tool_use');
+      expect(toolUse?.name).toBe('read_fixture');
+      expect(typeof toolUse?.id).toBe('string');
+      const nonce = 'fixture-file-nonce-7c10';
       const second = await post(server.url, { model: 'claude-haiku', system: CHILD_SYSTEM, messages: [
-        { role: 'user', content: '<subagent-router v="1" model="b"/>\nUżyj narzędzia' },
-        { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }] },
-        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'wynik' }] },
+        { role: 'user', content: '<subagent-router v="1" model="b"/>\nOdczytaj plik fixture przez narzędzie' },
+        { role: 'assistant', content: firstBody.content },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUse!.id, content: nonce }] },
       ] }, { 'x-claude-code-agent-id': 'agent-b' });
+      const finalBody = await second.json() as { content: Array<{ type: string; text?: string }> };
       expect(second.status).toBe(200);
       expect(gateway.requests.map((r) => r.model)).toEqual(['gateway/model B', 'gateway/model B']);
-      expect(firstBody.content.length).toBeGreaterThan(0);
+      expect(finalBody.content.some((part) => part.type === 'text' && part.text?.includes(nonce))).toBe(true);
     } finally {
       await server.stop();
       await gateway.close();
@@ -2994,7 +3443,9 @@ describe('e2e routing przez fake gateway', () => {
 });
 ```
 
-Test pokazuje ID ze spacją i z wielką literą; brama musi odebrać je bez zmian. Roundtrip narzędzia w tej wersji jest syntetyczny: sprawdza, że oba requesty dziecka idą do tego samego modelu i że odpowiedź jest dekodowalna. Prawdziwy roundtrip wykonuje test opt-in.
+Test pokazuje ID ze spacją i z wielką literą; brama musi odebrać je bez zmian. Hermetyczny roundtrip używa stałego syntetycznego nonce: scripted `tool_use` z bramy, pasujący `tool_result`, odpowiedź zdekodowana przez test do tekstu nonce oraz dwa capture `upstreamModel` są łącznie wymagane. Dowodzi transportu i korelacji identyfikatorów wiadomości, nie odczytu pliku, wykonania narzędzia ani dekodowania przez natywny klient. Profile tego testu są jawnie syntetyczne i nie certyfikują runtime. `content.length`, deklaracja `model` w body klienta ani odpowiedź self-report nie są dowodem. Prawdziwy roundtrip wykonuje test opt-in.
+
+W `tests/e2e/routing.test.ts` dopisz także `opaque-identifiers-survive-gateway-endpoint-swap`, `unrecognized-fork-pass-through-and-recognized-fork-follows-w19`, `core-and-handler-have-no-required-ai-sdk-or-kb-imports` i `no-vendor-branch-or-llm-selector`. Pierwszy sprawdza zmianę endpointu bez interpretacji ID, drugi rozróżnia nierozpoznany fork od rozpoznanego bez wyboru, trzeci sprawdza graf importów i brak wywołań MCP KB, a czwarty przeszukuje artefakt pod kątem `providers/`, kodu vendorowego i automatycznego selectora. W `tests/e2e/cli-workflow.test.ts` dopisz `offline-preview-never-connects-to-kb-or-mcp`. W `tests/probes/evidence.test.ts` dodaj `m8-client-model-upstream-model-table-exists`: fixture kompletnego raportu z parami modeli i obserwacjami przechodzi, brak tabeli albo samo puste miejsce nie przechodzą. Sprawdzenie rzeczywistego raportu po opt-in M8 należy do Task 15 Step 6, a bez wykonanego M8 raport pozostaje pending, nie zalicza obserwacji.
 
 - [ ] **Step 2: Napisz test przepływu CLI**
 
@@ -3010,15 +3461,17 @@ Oczekiwane: pass. Każda porażka jest usterką w zadaniu 1 do 14 i wraca do teg
 
 - [ ] **Step 4: Test opt-in na prawdziwych harnessach**
 
-Test uruchamiany tylko przy `SUBAGENT_ROUTER_E2E=1` i obecności binariów. Dla każdego klienta: izolowany katalog konfiguracji, brama capture, `serve`, uruchomienie harnessu w trybie nieinteraktywnym z promptem, który deleguje do syntetycznego subagenta i każe mu wywołać narzędzie odczytu pliku z fixture. Kryteria: brama odebrała request dziecka z `upstreamModel` z katalogu, dziecko wykonało narzędzie (widoczny `tool_result` w kolejnym requeście dziecka) i wynik końcowy rodzica zawiera treść pliku. Test raportuje wersje `claude --version`, `opencode --version`, `codex --version` i bramy w stdout. Test nie zapisuje sekretów i nie modyfikuje `HOME` operatora. Brak binarium daje `test.skip` z komunikatem, nie pass.
+Test uruchamiany tylko przy `SUBAGENT_ROUTER_E2E=1` i obecności binariów. Claude Code używa izolowanego katalogu konfiguracji, bramy capture oraz `serve`, bo jest `marker-routed`. OpenCode i Codex używają swoich natywnych artefaktów guardów i łączą się bezpośrednio z bramą capture, bez handlera `serve`. Dla każdego klienta prompt deleguje do syntetycznego subagenta i każe mu przez natywne narzędzie odczytać fixture plik o jednorazowym nonce. Kryteria: brama odebrała request dziecka z exact `upstreamModel` z katalogu, capture pokazuje rzeczywisty tool roundtrip z `tool_result`, a zdekodowany wynik końcowy natywnego klienta zawiera ten nonce. Deklaracja `model`, `content.length` ani self-report modelu nie wystarczają. Test raportuje wersje `claude --version`, `opencode --version`, `codex --version` i bramy w stdout. Test nie zapisuje sekretów i nie modyfikuje `HOME` operatora. Brak binarium daje `test.skip` z komunikatem, nie pass.
+
+W `tests/e2e/native-routing.test.ts` zaplanuj nazwane przypadki `fork-client-model-upstream-model-separate`, `denies-before-opencode-task-spawn` i `deny-prevents-codex-child-request`. Fork test jest osobny i opt-in po M4: brama musi odebrać inny upstreamModel niż odziedziczony clientModel, a natywny klient zakończyć roundtrip. Pozostałe przypadki uruchamiają rzeczywisty harness z kontrolą dodatnią dozwolonego dziecka, a następnie kontrolą ujemną modelu niedozwolonego: odmowa przed spawn i brak requestu dziecka. Brak klienta albo niewykonany pomiar to skip/pending, nie pass.
 
 - [ ] **Step 5: Wykonaj pomiary i zapisz profile**
 
-Uruchom `tests/probes/run.ts` dla M1, M2, M3, M4 (Claude Code), M6 (OpenCode), M5, M7, M9 (Codex) oraz M10 (każdy klient). Codex wymaga wcześniejszej aktualizacji do wydania co najmniej rust-v0.153.4; bez niej wyniki Codex pozostają `pending`, a adapter odmawia działania. Wyniki zapisz do `tests/fixtures/capabilities/<client>-<version>.json` z datą i wersją. Zmiana `status` na `supported` wymaga zaliczonego `M10` i, dla Claude Code, `M3` albo działającego kanału B2. `correlation: true` wymaga zaliczonego M1. `fork: true` wymaga zaliczonego M4 i osobnego testu E2E forka; do tego czasu fork pozostaje pass-through zgodnie z D3.
+Uruchom `tests/probes/run.ts` dla M1, M2, M3 oraz podprzypadku `M3-B2`, M4 (Claude Code), M6 i `M6-runtime` (OpenCode), M5, M7, M9 (Codex) oraz M10 z osobnym wynikiem `next-turn`, `resume`, `compaction`, `nested`, `parallel` i `M10-freshness` dla każdego klienta. Codex wymaga wcześniejszej aktualizacji do wydania co najmniej rust-v0.153.4; bez niej wyniki Codex pozostają `pending`, a adapter odmawia działania. Wyniki zapisz do `tests/fixtures/capabilities/<client>-<version>.json` z datą, wersją, dowodem source entropy M1, pozycją M3 i stanem każdej fazy. Zmiana `status` na `supported` nie zastępuje bramki konkretnej ścieżki: OpenCode wymaga M6 i `M6-runtime`, Codex M7, a rola z jawnym modelem M9. Claude Code wymaga M10 dla handlera, M3 dla markera adaptera lub M1 plus `M3-B2` dla B2. `correlation: true` wymaga zaliczonego M1. `fork: true` wymaga zaliczonego M4 i osobnego testu E2E forka; do tego czasu nierozpoznany fork pozostaje pass-through, a rozpoznany bez wyboru zachowuje D3 i wymaganie 19. Zaliczenie pojedynczej fazy lifecycle nie podnosi pozostałych.
 
 - [ ] **Step 6: Napisz dokumentację bloków**
 
-Każdy z pięciu bloków (`core`, `catalog`, `agents`, `transport`, `cli`) dostaje `README.md` z YAML `block`, `doc`, `verified_against` (SHA commitu po Task 15), `verified_on`, `owns` i `depends_on`; `CONTRACTS.md` z polem `enforcement:` wskazującym plik testu; `INVARIANTS.md`; `GAPS.md` z listą pomiarów `pending` i `failed`; `OPERATIONS.md` z komendami. Fakty oznaczaj `[verified]`, `[inferred]`, `[assumption]`. Macierz wsparcia w `docs/README.md`: klient, wersja, status, wynik każdego pomiaru, korelacja, fork. `README.md` dostaje instrukcję instalacji dopiero teraz, z zastrzeżeniem statusów `pending`.
+Każdy z pięciu bloków (`core`, `catalog`, `agents`, `transport`, `cli`) dostaje `README.md` z YAML `block`, `doc`, `verified_against` (SHA commitu po Task 15), `verified_on`, `owns` i `depends_on`; `CONTRACTS.md` z polem `enforcement:` wskazującym plik testu; `INVARIANTS.md`; `GAPS.md` z listą pomiarów `pending` i `failed`; `OPERATIONS.md` z komendami. Fakty oznaczaj `[verified]`, `[inferred]`, `[assumption]`. Macierz wsparcia w `docs/README.md`: klient, wersja, status, wynik każdego pomiaru, korelacja, fork i osobne fazy lifecycle. M8 pozostaje informacyjny, lecz tabela par `clientModel` i `upstreamModel` z obserwacją długiego kontekstu jest wymaganym artefaktem, także gdy nie blokuje statusu. `README.md` dostaje instrukcję instalacji dopiero teraz, z zastrzeżeniem statusów `pending`.
 
 - [ ] **Step 7: Pełna weryfikacja i commit**
 
@@ -3040,6 +3493,37 @@ Po ostatnim commicie koordynator uruchamia niezależny przegląd zakresu od bazy
 ## Mapa pokrycia specyfikacji
 
 Ta mapa pokazuje miejsce implementacji, nie zaliczenie testów. Wykonawca uzupełnia dowody w ledgerze dopiero po uruchomieniu wskazanych przypadków.
+
+### Macierz rewizji 4: wymaganie do sekcji, kroku i testu
+
+| Wymaganie | Sekcja spec rewizji 4 | Task / Step | Planowany test nazwany |
+|---|---|---|---|
+| 1-4 | Produkt i granice; Macierz granic odpowiedzialności; Rozdzielenie AI SDK, runtime i forwardingu | 1 / 1-2, 14 / 1-4, 15 / 6 | `package::rdzeń-importuje-się-w-Node-bez-Bun-i-podejmuje-decyzję`, `package::dist-core-js-nie-zawiera-odwołań-do-Bun-ani-do-node-fs`, `boundary::core-and-handler-have-no-required-ai-sdk-or-kb-imports` |
+| 5-8 | Produkt i granice; Macierz granic odpowiedzialności | 12 / 1-4, 13 / 1-6, 15 / 2 | `read-only CLI::doctor-offline-raportuje-stan-configured-measured-i-pending-bez-sieci`, `config export::katalog-źródłowy-agentów-i-symlink-do-niego-są-odrzucane-także-z-force`, `cli-workflow::offline-preview-never-connects-to-kb-or-mcp` |
+| 9-11 | Wybór modelu; Kontrakt decyzji routingu | 2 / 5-6, 3 / 1-4 | `resolveRoute::jawny-wybór-wygrywa-z-rolą`, `resolveRoute::globalny-default-działa-tylko-bez-roli-i-bez-jawnego-wyboru` |
+| 12-17 | Wybór modelu; Macierz granic odpowiedzialności | 3 / 1-4, 6 / 2-5, 15 / 1, 6 | `resolveRoute::nieznany-jawny-model-nie-spada-do-roli`, `inventory::odczyt-nie-zmienia-żadnego-pliku-fixture`, `boundary::no-vendor-branch-or-llm-selector` |
+| 18-23 | Deterministyczne reguły decyzji; Kontrakt decyzji routingu | 3 / 1-4, 8 / 6-7, 9 / 1-4 | `resolveRoute::adapter-oznacza-nierozwiązany-jawny-token-jako-błąd-przed-defaultem`, `createHandler::dziecko-bez-wskazania-dostaje-422-z-kodem-missing-selection-i-brama-nie-jest-wołana`, `correlation::conflicting-binding-never-reroutes` |
+| 24-30 | Model klienta i model upstream; D1; D3 | 3 / 1-4, 7 / 7, 15 / 1, 4-5 | `e2e routing przez fake gateway::rodzic-A-oraz-równoczesne-dzieci-B-i-C-trafiają-do-właściwych-modeli-marker-nie-wycieka`, `e2e::fork-client-model-upstream-model-separate` |
+| 31-33 | Tryby integracji; Macierz adapterów, punktów kontroli runtime i odmowy | 7 / 5-7, 10 / 1-4, 11 / 1-4, 13 / 2, 5, 15 / 4-5 | `native-e2e::denies-before-opencode-task-spawn`, `createOpenCodePlugin::requires-effective-native-model-and-artifact-generation`, `native-e2e::deny-prevents-codex-child-request` |
+| 34-43 | Routing przed bramą; Routing handler; Asercje strategii testów | 8 / 6-7, 9 / 1-5, 13 / 3-6, 15 / 1, 4 | `createHandler::forwards-parent-enrichment-to-upstream-without-changing-parent-model`, `createHandler::passes-through-sse-unknown-events-errors-content-and-usage`, `createHandler::measures-selected-fetch-compression-contract`, `createHandler::preserves-backpressure-with-a-slow-consumer` |
+| 44-47 | Niezależność od bramy; Macierz granic odpowiedzialności | 2 / 7-8, 5 / 1-8, 15 / 1, 6 | `resolveSource::usuwa-końcowy-ukośnik-nie-dokleja-v1-dwa-razy-i-dodaje-nagłówek-auth`, `e2e::opaque-identifiers-survive-gateway-endpoint-swap` |
+| 48-51 | Katalog i inspekcja; D4 | 2 / 5-8, 3 / 1-4, 5 / 5-8, 12 / 1-4 | `buildCatalog::nakładka-dla-ID-spoza-snapshotu-nie-tworzy-modelu`, `resolveModel::rozwiązuje-po-dokładnym-ID-i-po-aliasie-ale-nie-po-innej-wielkości-liter`, `synchronize::zniknięty-model-zostaje-jako-missing-powrót-przywraca-available` |
+| 52-53 | Katalog i inspekcja; D9; D11 | 6 / 2-5, 12 / 1-4, 13 / 1-5 | `readAgentInventory::odczyt-nie-zmienia-żadnego-pliku-fixture`, `config export::eksport-OpenCode-zapisuje-wariant-do-katalogu-artefaktów-i-nie-zmienia-natywnych-plików`, `read-only CLI::route-preview-symuluje-decyzję-z-generacją-plików-bez-uruchamiania-agenta-i-sieci` |
+| D1-D4 | D1, D2, D3, D4 | 1 / 2, 3 / 1-4, 4 / 1-4, 8 / 1-7, 9 / 1-5 | `normalizeClaudeRequest::nieznany-alias-markera-nie-może-zostać-odczytany-jako-przypadkowe-raw-upstream-ID`, `createHandler::B2-wymaga-osobnego-one-shot-freshness-proof-i-nie-przekazuje-control-upstream` |
+| D5-D6 | D5; D6; Macierz adapterów, punktów kontroli runtime i odmowy | 10 / 1-4, 11 / 1-4, 13 / 2, 5 | `createOpenCodePlugin::compares-provider-separately-from-opaque-upstream-id`, `runCodexPreToolUseHook::reads-stdin-writes-pretooluse-deny`, `config export::exports-codex-pretooluse-stdin-stdout-hook-wiring` |
+| D7-D8 | D7; D8 | 7 / 5-7, 12 / 1-4, 15 / 5-6 | `capabilities::znana-z-zaufanego-adaptera-faza-sprawdza-swój-dowód-a-nieznana-wymaga-wszystkich-pięciu`, `probes::keeps-lifecycle-phases-separate`, `probes::m8-client-model-upstream-model-table-exists` |
+| D9-D11 | D9; D10; D11 | 5 / 1-8, 6 / 1-5, 12 / 1-4, 13 / 1-6 | `discoverModels::pozytywna-kontrola-dwie-strony-z-kursorem-dają-pełną-listę-w-kolejności`, `config export::katalog-źródłowy-agentów-i-symlink-do-niego-są-odrzucane-także-z-force`, `read-only CLI::config-show-ukrywa-wartości-nagłówków-i-sekretów-także-w-JSON` |
+| M1-M4 | Pomiary wymagane przed statusem implemented; D2; D3 | 7 / 5-7, 8 / 5-7, 9 / 1-5, 15 / 4-5 | `probes::rejects-m1-identifier-variety-without-entropy-evidence`, `markers::marker-adaptera-w-user-wymaga-zmierzonego-profilu-first-user-a-unknown-go-nie-autoryzuje`, `e2e::unrecognized-fork-pass-through-and-recognized-fork-follows-w19` |
+| M5-M10 | Pomiary wymagane przed statusem implemented; Asercje strategii testów | 7 / 5-7, 10 / 1-4, 11 / 1-4, 15 / 4-6 | `probes::requires-opencode-hook-invocation-and-effective-model`, `probes::requires-codex-deny-without-child-request`, `validateCodexSpawn::requires-m9-for-explicit-model-with-role`, `probes::keeps-lifecycle-phases-separate` |
+
+Nazwy z `::` identyfikują grupę i przypadek; polskie nazwy wierszy tabeli są zapisane w postaci slug, odpowiadającej tekstowi przypadku w danym zadaniu. Scenariusze `native-e2e` należą wyłącznie do opt-in `tests/e2e/native-routing.test.ts`.
+
+| Doprecyzowany kontrakt | Sekcja spec | Task / Step | Test i warunek |
+|---|---|---|---|
+| W19, D2, M10-freshness | D2; Pomiary M10 | 7 / 7, 9 / 1-5, 15 / 4-5 | `tests/transport/handler.test.ts`: świeży receipt inicjuje default, replay/TTL/restart nie inicjuje go ponownie; `tests/probes/run.ts`: realny sygnał nowej delegacji odróżniony od resume i compaction. |
+| D2, M3-B2 | D2; Pomiary M3 | 9 / 1-5, 13 / 2, 5, 15 / 4-5 | `tests/transport/claude-hook.test.ts`: producer rejestruje osobny proof przed stdout; realne M3-B2 potwierdza receipt i request dziecka. |
+| W33, M6-runtime, M7 | Macierz adapterów, punktów kontroli runtime i odmowy | 10 / 1-4, 11 / 1-4, 15 / 4-5 | Unit test używa kontrolowanej continuation w sterowniku, native E2E oddzielnie dowodzi skutecznej odmowy i authoritative effective config. |
+| W42-W43 | Routing handler; Asercje strategii testów | 7 / 5-7, 9 / 1-4, 13 / 3-6 | `measures-selected-fetch-compression-contract`, `rejects-unmeasured-or-mismatched-transport-profile-before-handler-start`: zgodność bajtów i headers albo odmowa utworzenia handlera. |
 
 | Wymagania normatywne | Zadania | Obserwowalny wynik |
 |---|---|---|
