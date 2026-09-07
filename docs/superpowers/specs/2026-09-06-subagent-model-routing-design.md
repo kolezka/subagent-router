@@ -25,7 +25,7 @@ Dokument opisuje proponowany projekt. Status `draft` nie oznacza akceptacji wszy
 
 - Data dokumentu: 2026-09-08.
 - Rozmowę z dostawcą prowadzi zewnętrzna brama, docelowo `9router` lub OmniRoute. LiteLLM lub inna brama o tym samym kontrakcie HTTP pozostaje dopuszczalna.
-- Pakiet nie może zależeć od `@the-next-ai/ai-gateway`, pakietu bramy używanego przez CCR, ani osadzać innej biblioteki bramy. Brama działa jako osobny proces i endpoint HTTP.
+- Pakiet nie może zależeć od `@the-next-ai/ai-gateway`, pakietu bramy używanego przez CCR, ani osadzać innej biblioteki bramy. Brama działa jako osobny proces i endpoint HTTP. Powodem jest obserwowana przez operatora niska wydajność tego pakietu z dostawcą OpenAI oraz utrzymanie wymiany bramy jako zmiany konfiguracji.
 - Dodano decyzję odrzucającą osadzenie bramy oraz asercję strategii testów dla tej granicy. Nie zmieniono wymagań 1-43 i 48-53, decyzji D1-D11 ani pomiarów M1-M10.
 
 ## Stan i zakres dowodów
@@ -621,7 +621,11 @@ Nie jest wymagana. CCR jest inspiracją dla wzorca marker plus routing, nie publ
 
 ### Osadzenie bramy `@the-next-ai/ai-gateway` w routerze
 
-Odrzucone. CCR używa tego pakietu jako własnej bramy. Router pozostaje cienką warstwą przed zewnętrzną bramą, docelowo `9router` lub OmniRoute. Zależność od pakietu bramy związałaby router z jej protokołami, auth i cyklem wydań oraz naruszyłaby wymagania 45, 46 i 47.
+Odrzucone. Główny powód jest wydajnościowy: operator obserwuje wyraźnie wolniejszą obsługę dostawcy OpenAI przez ten pakiet w CCR. [assumption] Nie ma pomiaru w tym projekcie; nie ustalono, czy przyczyną jest sam pakiet, jego konfiguracja czy warstwa sieciowa. Wybór bramy jest więc decyzją operacyjną, a nie wnioskiem z benchmarku.
+
+Powód drugi jest architektoniczny. CCR używa tego pakietu jako własnej bramy. Router pozostaje cienką warstwą przed zewnętrzną bramą, docelowo `9router` lub OmniRoute. Zależność od pakietu bramy związałaby router z jej protokołami, auth, wydajnością i cyklem wydań oraz naruszyłaby wymagania 45, 46 i 47.
+
+Konsekwencja projektowa: skoro router nie decyduje o wydajności rozmowy z dostawcą, wymiana bramy na szybszą MUSI być zmianą konfiguracji endpointu, bez gałęzi kodu routera. To jest już wymaganie 47 i jego test `e2e::opaque-identifiers-survive-gateway-endpoint-swap`.
 
 ### Obowiązkowe discovery lub pobranie w czasie requestu
 

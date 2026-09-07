@@ -32,7 +32,7 @@ Użytkownik zlecił przygotowanie planu na bazie specyfikacji. Nie jest to polec
 
 ## Rewizja 3 planu, 2026-09-08
 
-Źródłem jest specyfikacja rewizji 5. Jedna zmiana merytoryczna: rozmowę z dostawcą prowadzi zewnętrzna brama, docelowo `9router` lub OmniRoute, a pakiet nie może zależeć od `@the-next-ai/ai-gateway` używanego przez CCR. Dodano ograniczenie globalne i nazwany test granic w Task 15. Zadania 1-4 wykonane przed tą rewizją nie wymagają zmian, bo nie dodają zależności runtime.
+Źródłem jest specyfikacja rewizji 5. Jedna zmiana merytoryczna: rozmowę z dostawcą prowadzi zewnętrzna brama, docelowo `9router` lub OmniRoute, a pakiet nie może zależeć od `@the-next-ai/ai-gateway` używanego przez CCR. Powodem jest obserwowana przez operatora niska wydajność tego pakietu z dostawcą OpenAI; nie wykonano pomiaru w tym projekcie. Dodano ograniczenie globalne i nazwany test granic w Task 15. Zadania 1-4 wykonane przed tą rewizją nie wymagają zmian, bo nie dodają zależności runtime.
 
 ## Global Constraints
 
