@@ -9,7 +9,7 @@ const env = {
   MODELS_AUTH: 'secret-token',
 };
 
-function expectCode(fn: () => unknown, code: string): void {
+function expectCode(fn: () => unknown, code: string): RouterError {
   let caught: unknown;
   try {
     fn();
@@ -17,7 +17,9 @@ function expectCode(fn: () => unknown, code: string): void {
     caught = error;
   }
   expect(caught).toBeInstanceOf(RouterError);
-  expect((caught as RouterError).code).toBe(code);
+  const routerError = caught as RouterError;
+  expect(routerError.code).toBe(code);
+  return routerError;
 }
 
 describe('resolveSource', () => {
@@ -41,15 +43,19 @@ describe('resolveSource', () => {
     expectCode(() => resolveSource(configFixture(), { ...env, GATEWAY_HEADERS: headers }), 'source-header-conflict');
   });
 
-  test('names a missing URL variable without exposing values', () => {
-    let message = '';
-    try {
-      resolveSource(configFixture(), {});
-    } catch (error) {
-      message = (error as Error).message;
-    }
-    expect(message).toContain('GATEWAY_URL');
-    expect(message).not.toContain('secret-token');
+  test('uses source-env-missing for a missing base URL variable without exposing values', () => {
+    const error = expectCode(() => resolveSource(configFixture(), {}), 'source-env-missing');
+    expect(error.message).toContain('GATEWAY_URL');
+    expect(error.message).not.toContain('secret-token');
+  });
+
+  test.each([
+    ['headers', { ...env, GATEWAY_HEADERS: undefined }, 'GATEWAY_HEADERS'],
+    ['auth', { ...env, MODELS_AUTH: undefined }, 'MODELS_AUTH'],
+  ])('uses source-env-missing for a missing %s variable without exposing values', (_kind, incompleteEnv, envName) => {
+    const error = expectCode(() => resolveSource(configFixture(), incompleteEnv), 'source-env-missing');
+    expect(error.message).toContain(envName);
+    expect(error.message).not.toContain('secret-token');
   });
 });
 

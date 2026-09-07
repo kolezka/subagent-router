@@ -5,7 +5,7 @@ import type { CatalogSnapshot, Env, HeaderMap, OperatorConfig, SourceContext } f
 function requiredEnvironmentValue(env: Env, name: string): string {
   const value = env[name];
   if (value === undefined || value.length === 0) {
-    throw new RouterError('source-url', `environment variable ${name} is required`);
+    throw new RouterError('source-env-missing', `environment variable ${name} is required`);
   }
   return value;
 }
