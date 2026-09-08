@@ -1,7 +1,7 @@
 ---
 block: cli
 doc: GAPS
-verified_against: 688d1736a12a96dc35cb444cd93405b38b0aa77f
+verified_against: 0480ec2e5403d400cd3e1252fa5886923a01b062
 verified_on: 2026-09-08
 ---
 
@@ -31,12 +31,17 @@ zero captured requests, is refused as proof and reported `'pending'`; their `'fa
 are unchanged). That closes the specific over-certification gap this document used to flag here.
 
 It does not mean measurement is complete. No harness-specific proof extractor is wired for any
-client or probe; `main()`'s own comment says so directly, and every shipped
-`dist/capabilities/*.json` profile still ships `'pending'`. Real proof producers (an actual
+client or probe; `main()`'s own comment says so directly. Every shipped client capability profile
+(`claude-code-2.1.263.json`, `opencode-1.18.29.json`, `codex-pending.json`) and every shipped
+non-raw `bun-fetch` transport profile still ships `'pending'`; the one exception is
+`transport-bun-fetch-raw-1.4.2.json`, which has a real passing measurement
+(`tests/adapters/capabilities.test.ts`) for the raw transport layer only, never for a native
+client's own runtime behavior. Real proof producers (an actual
 `EntropyProof`/`OpencodeHookEvidence`/`CodexHookEvidence` from a real client run) remain missing.
-Do not use `tests/probes/run.ts` output, on its own, to mark a profile `supported` in a shipped
-`dist/capabilities/*.json` file. Building those real proof producers is scoped out of this task; it
-belongs to the probe/measurement work item that owns that file, not to this CLI integration pass.
+Do not use `tests/probes/run.ts` output, on its own, to mark a client profile `supported` in a
+shipped `dist/capabilities/*.json` file. Building those real proof producers is scoped out of this
+task; it belongs to the probe/measurement work item that owns that file, not to this CLI
+integration pass.
 
 ## `config export`'s sidecar does not prove native load
 

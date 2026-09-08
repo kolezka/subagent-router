@@ -1,7 +1,7 @@
 ---
 block: cli
 doc: OPERATIONS
-verified_against: 688d1736a12a96dc35cb444cd93405b38b0aa77f
+verified_against: 0480ec2e5403d400cd3e1252fa5886923a01b062
 verified_on: 2026-09-08
 ---
 
