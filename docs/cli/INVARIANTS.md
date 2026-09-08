@@ -87,8 +87,12 @@ byte identity, dry-run over an existing artifact) and the collision/dry-run test
 `configExport` (`src/cli/write.ts`) loads state once, reads the agent inventory from that state's
 roots and passes the same `LoadedState` into `exportConfig` (`ExportOptions.state`), so the
 inventory and the sidecar's generation cannot come from two different reads of a config file that
-was edited in between. Enforced by `tests/cli/export.test.ts` (a supplied state is used even when
-the config file is gone from disk).
+was edited in between. `exportConfig` itself checks that a supplied state's `configPath` matches
+the `configPath` argument it was called with (`resolve(configPath)`), and throws
+`export-plan-invariant` otherwise: a caller cannot pass state loaded for one config path while
+exporting a different one and have the two silently mixed. Enforced by `tests/cli/export.test.ts`
+(a supplied state is used even when the config file is gone from disk; a state loaded from a
+different config path is rejected before any write).
 
 ## Sidecar hashes describe the actual plan, never a claim about native load
 

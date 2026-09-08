@@ -13,8 +13,12 @@ gaps are about the gateway contract and staleness reporting, not native support.
   contract test before `synchronize` against it is trusted.
 - `checkDiscoveryConnectivity` (the `doctor --connect` producer) has no dedicated test in this
   block; it is only exercised through `discoverModels`'s shared `fetchPage` path.
-- No code path in this block, or in [core](../core/GAPS.md), enforces `staleAfterSeconds`; a
-  snapshot can be arbitrarily old with no warning from `synchronize` or from discovery.
+- `staleAfterSeconds` is now read back by `isSnapshotStale` (`src/core/config.ts`, see
+  [core](../core/GAPS.md)) and surfaced as an advisory `snapshot-stale` warning by `doctor` and
+  `config check` ([cli](../cli/CONTRACTS.md#config-show--config-check)). `synchronize` and
+  discovery themselves still carry no staleness check of their own: a sync can write an old,
+  in-range snapshot without complaint, and nothing in this block refuses an old snapshot at sync
+  time.
 
 None of the above blocks catalog's offline usability; they are gaps in gateway-contract coverage
 and staleness reporting, not in the pure sync/discovery logic itself.

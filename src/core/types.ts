@@ -144,6 +144,8 @@ export interface LoadedState {
   snapshot?: CatalogSnapshot;
   expected: { configHash: string; snapshotHash: string | null };
   generation: string;
+  /** The resolved, absolute path this state was loaded from (`loadState`'s `configPath`, resolved). */
+  configPath: string;
 }
 
 export interface SyncResult {

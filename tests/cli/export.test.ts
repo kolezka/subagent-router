@@ -4,10 +4,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { readAgentInventory } from '../../src/agents/inventory';
 import { CLAUDE_VERSION_ENV_REF, CONTROL_URL_ENV_REF, dumpToml, exportConfig, findPackageRoot, type ExportOptions } from '../../src/agents/export';
 import { sha256 } from '../../src/core/hash';
+import { suppressedErrors } from '../../src/io/cleanup';
 import { loadState } from '../../src/io/store';
 import type { AgentInventory, ClientId, ResolverOptions } from '../../src/core/types';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
@@ -127,6 +128,30 @@ describe('config export', () => {
     const plan = await exportConfig(configPath, 'opencode', outDir, { dryRun: true, force: false, inventory, catalogRequired: false, resolverContext: resolverContext() });
     expect(plan.some((f) => f.relativePath === 'opencode/agents/reviewer@fast.md')).toBe(true);
     expect(await treeHash(outDir)).toBe(before);
+  });
+
+  test('a supplied state loaded from a different config path is rejected, not silently mixed in', async () => {
+    // Guards against a caller passing state loaded for config A while exporting config B: without
+    // this check the export would silently proceed using A's config/snapshot under B's path.
+    const configPathA = join(dir, 'project', 'subagent-router.json');
+    const otherProjectDir = join(dir, 'other-project');
+    await mkdir(otherProjectDir, { recursive: true });
+    const configPathB = join(otherProjectDir, 'subagent-router.json');
+    await writeFile(configPathB, JSON.stringify(configFixture()));
+
+    const stateFromA = await loadState(configPathA);
+    const inventory = await inventoryFor('opencode', join(dir, 'project'), join(dir, 'home'));
+
+    await expect(
+      exportConfig(configPathB, 'opencode', join(dir, 'out'), {
+        dryRun: true,
+        force: false,
+        inventory,
+        catalogRequired: false,
+        resolverContext: resolverContext(),
+        state: stateFromA,
+      }),
+    ).rejects.toThrow('export-plan-invariant');
   });
 
   test('a caller-supplied LoadedState is used as-is: exportConfig does not re-read the config from disk', async () => {
@@ -350,6 +375,56 @@ describe('sidecar hashing', () => {
     }
     expect(Object.keys(parsed.artifacts)).not.toContain(sidecar?.relativePath);
   });
+});
+
+describe('cleanup error precedence on a staging failure', () => {
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+
+  // Root bypasses the permission bits this test relies on to make the cleanup rm fail for real
+  // (same reasoning as the "native root protection" permission test above).
+  (isRoot ? test.skip : test)(
+    'a staging write failure whose cleanup rm also fails keeps the write error primary, with the cleanup failure attached',
+    async () => {
+      const configPath = join(dir, 'project', 'subagent-router.json');
+      const inventory = await inventoryFor('opencode', join(dir, 'project'), join(dir, 'home'));
+      const writeFailure = new Error('simulated staging write failure');
+      let capturedStagingDir: string | undefined;
+
+      // sidecar.json is always staged directly at the staging root (no subdirectory: its
+      // relativeToClient is just 'sidecar.json'), so its directory IS the staging directory
+      // itself. Removing write permission on it once we reach that file makes the later
+      // `rm -rf` cleanup fail for real, so both the write and the cleanup genuinely fail.
+      const injectedWriteFile: NonNullable<ExportOptions['writeFile']> = async (path, content) => {
+        if (!path.endsWith('sidecar.json')) {
+          await writeFile(path, content, { flag: 'wx' });
+          return;
+        }
+        capturedStagingDir = dirname(path);
+        await chmod(capturedStagingDir, 0o500);
+        throw writeFailure;
+      };
+
+      try {
+        let caught: unknown;
+        try {
+          await exportConfig(configPath, 'opencode', join(dir, 'out'), {
+            dryRun: false,
+            force: false,
+            inventory,
+            catalogRequired: false,
+            resolverContext: resolverContext(),
+            writeFile: injectedWriteFile,
+          });
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBe(writeFailure);
+        expect(suppressedErrors(caught)).toHaveLength(1);
+      } finally {
+        if (capturedStagingDir !== undefined) await chmod(capturedStagingDir, 0o755);
+      }
+    },
+  );
 });
 
 describe('dumpToml', () => {

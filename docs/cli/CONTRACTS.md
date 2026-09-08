@@ -89,10 +89,13 @@ enforcement: [../../tests/cli/read.test.ts](../../tests/cli/read.test.ts),
 resolved secret values, so it can never leak a value even verbatim.
 
 `config check`: validates every role's agent reference and (when a snapshot exists) its
-`routeOverride` against the catalog. `{ problems: string[], generation }`. Exit 2 iff
-`problems.length > 0`.
+`routeOverride` against the catalog. `{ problems: string[], warnings: string[], generation }`.
+`warnings` carries `snapshot-stale` when `now - snapshot.fetchedAt > modelSource.staleAfterSeconds`
+(`isSnapshotStale`, `src/core/config.ts`, compared against `deps.now()`); it is advisory only and
+never affects the exit code. Exit 2 iff `problems.length > 0`.
 
 enforcement: [../../tests/cli/read.test.ts](../../tests/cli/read.test.ts),
+[../../tests/cli/staleness.test.ts](../../tests/cli/staleness.test.ts),
 [../../tests/e2e/cli-workflow.test.ts](../../tests/e2e/cli-workflow.test.ts)
 
 ## `config export --client <c> --output <dir> [--dry-run] [--force]`
@@ -145,13 +148,16 @@ artifacts)
 
 ## `doctor [--connect]`
 
-Plain `doctor` never calls `deps.fetch`; `network: false` in the payload. `--connect` adds one
-extra discovery-connectivity check (`checkDiscoveryConnectivity`) on top of the same offline
-report; a connectivity failure is caught, classified by `isUsageOrConfigCode`, and reported in the
-payload rather than discarding the rest of the report.
+Plain `doctor` never calls `deps.fetch`; `network: false` in the payload. The payload also carries
+`snapshotStale: boolean` (`isSnapshotStale`, `src/core/config.ts`, compared against `deps.now()`):
+advisory only, it never changes the exit code and stays `false` when state cannot even be loaded.
+`--connect` adds one extra discovery-connectivity check (`checkDiscoveryConnectivity`) on top of
+the same offline report; a connectivity failure is caught, classified by `isUsageOrConfigCode`, and
+reported in the payload rather than discarding the rest of the report.
 
 enforcement: [../../tests/cli/diagnostics.test.ts](../../tests/cli/diagnostics.test.ts),
-[../../tests/cli/read.test.ts](../../tests/cli/read.test.ts)
+[../../tests/cli/read.test.ts](../../tests/cli/read.test.ts),
+[../../tests/cli/staleness.test.ts](../../tests/cli/staleness.test.ts)
 
 ## `serve [--port <n>] [--host <h>] [--claude-version <v>]`
 

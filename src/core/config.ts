@@ -169,6 +169,15 @@ export function parseOperatorConfig(value: unknown): OperatorConfig {
   return structuredClone(root) as unknown as OperatorConfig;
 }
 
+// Advisory staleness check for config.modelSource.staleAfterSeconds: pure, no side effects, never
+// throws. Callers decide what to do with the result (a warning, never a failure on its own). No
+// snapshot at all is not stale; there is nothing to have gone stale yet.
+export function isSnapshotStale(snapshot: CatalogSnapshot | undefined, staleAfterSeconds: number, now: Date): boolean {
+  if (snapshot === undefined) return false;
+  const ageMs = now.getTime() - new Date(snapshot.fetchedAt).getTime();
+  return ageMs > staleAfterSeconds * 1000;
+}
+
 export function parseSnapshot(value: unknown): CatalogSnapshot {
   const root = record(value, 'snapshot', 'snapshot-schema');
   if (root.version !== 1) {

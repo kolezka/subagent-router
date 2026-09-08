@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { getAgent, readAgentInventory } from '../agents/inventory';
 import { buildCatalog, resolveModel } from '../core/catalog';
+import { isSnapshotStale } from '../core/config';
 import { RouterError } from '../core/errors';
 import { resolveRoute } from '../core/route';
 import type {
@@ -281,6 +282,12 @@ export async function configShow(deps: CliDeps, parsed: ParsedArgs): Promise<Com
 export async function configCheck(deps: CliDeps, parsed: ParsedArgs): Promise<CommandResult> {
   const state = await loadState(resolveConfigPath(deps, parsed));
   const problems: string[] = [];
+  // Advisory only: staleness is reported in `warnings`, a field the exit code never looks at, so
+  // an old snapshot can never fail this command on its own.
+  const warnings: string[] = [];
+  if (isSnapshotStale(state.snapshot, state.config.modelSource.staleAfterSeconds, deps.now())) {
+    warnings.push('snapshot-stale');
+  }
 
   let catalog: EffectiveCatalog | undefined;
   if (state.snapshot !== undefined) {
@@ -330,8 +337,14 @@ export async function configCheck(deps: CliDeps, parsed: ParsedArgs): Promise<Co
     }
   }
 
-  const payload = { problems, generation: state.generation };
-  const human = () => (problems.length === 0 ? 'config check: no problems found\n' : `${problems.map((p) => `- ${escapeControl(p)}`).join('\n')}\n`);
+  const payload = { problems, warnings, generation: state.generation };
+  const human = () => {
+    const lines = [
+      ...warnings.map((w) => `warning: ${escapeControl(w)}`),
+      problems.length === 0 ? 'config check: no problems found' : problems.map((p) => `- ${escapeControl(p)}`).join('\n'),
+    ];
+    return `${lines.join('\n')}\n`;
+  };
   return { code: problems.length === 0 ? 0 : 2, payload, human };
 }
 
@@ -350,9 +363,13 @@ export async function doctor(deps: CliDeps, parsed: ParsedArgs): Promise<Command
   const configPath = resolveConfigPath(deps, parsed);
 
   let configStatus: { ok: true; generation: string } | { ok: false; error: string };
+  // Advisory only, same as config check: stays false when state can't even be loaded, since
+  // there is nothing to have gone stale yet.
+  let snapshotStale = false;
   try {
     const state = await loadState(configPath);
     configStatus = { ok: true, generation: state.generation };
+    snapshotStale = isSnapshotStale(state.snapshot, state.config.modelSource.staleAfterSeconds, deps.now());
   } catch (error) {
     if (error instanceof RouterError) configStatus = { ok: false, error: error.code };
     else throw error;
@@ -392,11 +409,12 @@ export async function doctor(deps: CliDeps, parsed: ParsedArgs): Promise<Command
   }
 
   // doctor never dials out: no deps.fetch call anywhere in this command.
-  const payload = { network: false, config: configStatus, clients, transport };
+  const payload = { network: false, config: configStatus, snapshotStale, clients, transport };
   const human = () =>
     `${[
       'network: false (offline diagnostics only)',
       `config: ${configStatus.ok ? `ok (generation ${configStatus.generation})` : `problem (${configStatus.error})`}`,
+      ...(snapshotStale ? ['warning: snapshot-stale'] : []),
       ...clients.map((c) => `${c.client}: ${c.status}`),
       `transport: ${transport.status}`,
     ].join('\n')}\n`;

@@ -10,6 +10,7 @@ import { buildCatalog } from '../core/catalog';
 import { RouterError } from '../core/errors';
 import { sha256 } from '../core/hash';
 import { assertSafePathSegment } from '../core/path-segment';
+import { runWithCleanup } from '../io/cleanup';
 import { loadState } from '../io/store';
 import type { AgentInventory, ClientId, EffectiveCatalog, Env, ExportFile, LoadedState, OperatorConfig, ResolverOptions } from '../core/types';
 
@@ -443,10 +444,23 @@ export interface ExportOptions {
   // on one generation even if the config file is edited between the two steps. Without it,
   // exportConfig loads the state itself.
   state?: LoadedState;
+  // Test seam only: replaces the staged-file write to simulate a failure after staging exists.
+  // Mirrors CommitStateOptions.writePayload in src/io/store.ts.
+  writeFile?: (path: string, content: string) => Promise<void>;
 }
 
 export async function exportConfig(configPath: string, client: ClientId, outputDir: string, options: ExportOptions): Promise<ExportFile[]> {
   const state = options.state ?? (await loadState(configPath));
+
+  // A supplied state must actually describe the config being exported here: without this check
+  // a caller could pass state loaded for one config path while exporting a different one, and
+  // the export would silently mix the two (wrong config/snapshot under the wrong path).
+  if (options.state !== undefined && options.state.configPath !== resolve(configPath)) {
+    throw new RouterError(
+      'export-plan-invariant',
+      `export-plan-invariant: options.state was loaded from ${options.state.configPath}, not ${resolve(configPath)}`,
+    );
+  }
 
   // OpenCode's variant generator structurally needs a catalog; every other client only needs one
   // when the caller explicitly requires it (`catalogRequired`).
@@ -539,41 +553,52 @@ export async function exportConfig(configPath: string, client: ClientId, outputD
     throw new RouterError('export-collision', `export-collision: ${target} already exists; pass --force to replace it`);
   }
 
+  const writeStagedFile = options.writeFile ?? ((path: string, content: string) => writeFile(path, content, { flag: 'wx' }));
+
   await mkdir(resolvedOutputDir, { recursive: true });
   const stagingDir = await mkdtemp(join(resolvedOutputDir, '.subagent-router-export-'));
-  try {
-    for (const file of plan) {
-      const relativeToClient = stagedRelativePaths.get(file.relativePath);
-      if (relativeToClient === undefined) {
-        throw new RouterError('export-plan-invariant', `export-plan-invariant: ${file.relativePath} was never containment-checked`);
+  // The staging dir cleanup below is a no-op once staging was itself renamed into place; it is
+  // still needed on any error thrown while writing into staging or during the rename swap.
+  // runWithCleanup keeps a write/rename failure primary even if this rm also fails.
+  await runWithCleanup(
+    async () => {
+      for (const file of plan) {
+        const relativeToClient = stagedRelativePaths.get(file.relativePath);
+        if (relativeToClient === undefined) {
+          throw new RouterError('export-plan-invariant', `export-plan-invariant: ${file.relativePath} was never containment-checked`);
+        }
+        const stagedPath = join(stagingDir, relativeToClient);
+        await mkdir(dirname(stagedPath), { recursive: true });
+        await writeStagedFile(stagedPath, file.content);
       }
-      const stagedPath = join(stagingDir, relativeToClient);
-      await mkdir(dirname(stagedPath), { recursive: true });
-      await writeFile(stagedPath, file.content, { flag: 'wx' });
-    }
 
-    if (alreadyExists) {
-      // Three-step swap: back the old set up, move the new set in, then drop the backup. The
-      // only failure window is between the two renames; if the second one throws, the backup is
-      // restored so the operator never ends up with neither the old nor the new artifacts.
-      const backupDir = `${target}.subagent-router-old-${process.pid}-${Date.now()}`;
-      await rename(target, backupDir);
-      try {
+      if (alreadyExists) {
+        // Three-step swap: back the old set up, move the new set in, then drop the backup. The
+        // only failure window is between the two renames; if the second one throws, the backup
+        // is restored so the operator never ends up with neither the old nor the new artifacts.
+        // `renamed` mirrors store.ts's `tempCreated`: the rollback rename only runs when the
+        // swap rename itself never completed, so a successful swap never triggers a restore.
+        const backupDir = `${target}.subagent-router-old-${process.pid}-${Date.now()}`;
+        await rename(target, backupDir);
+        let renamed = false;
+        await runWithCleanup(
+          async () => {
+            await rename(stagingDir, target);
+            renamed = true;
+          },
+          async () => {
+            if (!renamed) await rename(backupDir, target);
+          },
+        );
+        await rm(backupDir, { recursive: true, force: true });
+      } else {
         await rename(stagingDir, target);
-      } catch (error) {
-        await rename(backupDir, target);
-        throw error;
       }
-      await rm(backupDir, { recursive: true, force: true });
-    } else {
-      await rename(stagingDir, target);
-    }
-  } finally {
-    // No-op once the staging dir was itself renamed into place; still needed on the collision
-    // and native-root failure paths above, where staging was never created, and on any error
-    // thrown while writing into staging.
-    await rm(stagingDir, { recursive: true, force: true });
-  }
+    },
+    async () => {
+      await rm(stagingDir, { recursive: true, force: true });
+    },
+  );
 
   return plan;
 }

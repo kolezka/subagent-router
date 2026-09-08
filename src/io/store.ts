@@ -1,5 +1,5 @@
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { parseOperatorConfig, parseSnapshot } from '../core/config';
 import { RouterError } from '../core/errors';
 import { sha256 } from '../core/hash';
@@ -56,6 +56,7 @@ export async function loadState(configPath: string): Promise<LoadedState> {
     ...(snapshot === undefined ? {} : { snapshot }),
     expected: { configHash: current.configHash, snapshotHash: current.snapshotHash },
     generation,
+    configPath: resolve(configPath),
   };
 }
 

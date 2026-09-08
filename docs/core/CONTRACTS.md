@@ -35,6 +35,11 @@ enforcement: [../../tests/io/environment.test.ts](../../tests/io/environment.tes
 
 ## loadState / commitState (immutable generations)
 
+`LoadedState.configPath` is the resolved, absolute path `loadState` actually read from. A caller
+that later passes a `LoadedState` back into another function taking a `configPath` (for example
+`exportConfig`'s `ExportOptions.state`) can compare the two, so state loaded for one config path
+can never be silently reused as if it described a different one.
+
 `generation` is a hash of `(configHash, snapshotHash)`. `commitState` refuses a write if either
 file changed since `loadState`, and writes exactly one file per call via a temp-file rename.
 Cleanup after a failed write (temp file, lock file) never replaces the original error: the write
