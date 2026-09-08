@@ -4,3 +4,12 @@ node_modules/
 dist/
 coverage/
 .DS_Store
+/.claude/
+/.superpowers/
+/tests/tmp/
+/tests/probes/.runs/
+/tests/probes/.last-run
+/tests/probes/.native-probe-tmp/
+/graphify-out/cache/
+/graphify-out/.graphify_*
+/graphify-out/cost.json
