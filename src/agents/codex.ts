@@ -51,15 +51,20 @@ async function listTomlAgents(dir: string, scope: string): Promise<AgentDefiniti
 // Per the task brief, Codex has only these two role directories (no configRoot/env
 // override distinct from `.codex` itself). This order is Task 6's declaration for
 // Task 7's M-probe to confirm, not a verified fact about Codex's own resolver.
-export async function readCodexAgents(options: ResolverOptions): Promise<AgentDefinition[]> {
-  const roots: Array<{ dir: string; scope: string }> = [
+//
+// Exported so export.ts's native-root protection can compute the same candidate
+// directories without duplicating this recipe -- see inventory.ts's candidateAgentRoots.
+export function codexAgentRoots(options: ResolverOptions): Array<{ dir: string; scope: string }> {
+  return [
     { dir: join(options.cwd, '.codex', 'agents'), scope: 'project' },
     { dir: join(options.home, '.codex', 'agents'), scope: 'user' },
     ...options.additionalRoots.map((dir) => ({ dir, scope: 'additional' })),
   ];
+}
 
+export async function readCodexAgents(options: ResolverOptions): Promise<AgentDefinition[]> {
   const definitions: AgentDefinition[] = [];
-  for (const root of roots) {
+  for (const root of codexAgentRoots(options)) {
     definitions.push(...(await listTomlAgents(root.dir, root.scope)));
   }
   return definitions;

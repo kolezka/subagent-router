@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { exportConfig, findPackageRoot } from '../src/agents/export';
 
 const ROOT = join(import.meta.dir, '..');
 
@@ -20,31 +21,23 @@ function run(command: string, args: string[]): Promise<{ code: number; stdout: s
   });
 }
 
-// `scripts/build.ts` is the real, advertised build and correctly refuses to run while
-// `src/adapters/codex-hook.ts` (Task 11) does not exist yet: emitting a placeholder for a missing
-// adapter hook would look installed while failing open at runtime. `scripts/build-partial.ts` is a
-// TEMPORARY test-only stand-in that builds every entrypoint that DOES exist, so the rest of this
-// file can verify real, running artifacts instead of skipping wholesale until Task 11 lands.
+// `scripts/build.ts` is the real, advertised build. It still refuses to run (and names the
+// missing file) if any advertised entrypoint source is absent -- see `scripts/build.ts`'s own
+// `assertSourcesPresent`, which this task does not touch -- but every entrypoint the package
+// advertises, `src/adapters/codex-hook.ts` (Task 11) included, now exists, so the real build is
+// exercised directly here instead of a temporary partial-build stand-in.
 //
 // The build runs exactly once per test file, no matter which test executes first and no matter
 // how bun orders or filters them. Every test awaits this same promise, so each one is
 // independently runnable (`bun test -t '...'`) without ever building twice.
 let buildOnce: Promise<{ code: number; stdout: string; stderr: string }> | undefined;
 function build(): Promise<{ code: number; stdout: string; stderr: string }> {
-  buildOnce ??= run('bun', ['run', 'scripts/build-partial.ts']);
+  buildOnce ??= run('bun', ['run', 'build']);
   return buildOnce;
 }
 
 describe('package', () => {
-  test('build prawdziwy odmawia emisji dopóki brakuje src/adapters/codex-hook.ts', async () => {
-    const built = await run('bun', ['run', 'build']);
-    expect(built.code).toBe(1);
-    const output = built.stdout + built.stderr;
-    expect(output).toContain('src/adapters/codex-hook.ts');
-    expect(output).toContain('refusing to emit a partial package');
-  });
-
-  test('build (partial) tworzy dist z ESM i deklaracjami dla istniejących entrypointów', async () => {
+  test('build tworzy dist z ESM i deklaracjami', async () => {
     const built = await build();
     expect(built.code).toBe(0);
     expect(await readFile(join(ROOT, 'dist', 'core.js'), 'utf8')).toContain('resolveRoute');
@@ -139,14 +132,14 @@ describe('package', () => {
     expect(JSON.parse(result.stdout)).toEqual({ runCli: 'function', startServer: 'function' });
   });
 
-  test('build zawiera dwa wykonywalne entrypointy adapterów natywnych (bez codex, Task 11 nieukończone) i uruchamia je na fixtures', async () => {
+  test('build zawiera trzy wykonywalne entrypointy adapterów natywnych i uruchamia je na fixtures', async () => {
     await build();
-    for (const file of ['claude-hook.js', 'opencode-plugin.js']) {
+    for (const file of ['claude-hook.js', 'opencode-plugin.js', 'codex-hook.js']) {
       expect((await readFile(join(ROOT, 'dist', file), 'utf8')).length).toBeGreaterThan(0);
     }
     const smoke = await run('bun', ['tests/support/run-built-entrypoints.ts']);
     expect(smoke).toMatchObject({ code: 0, stderr: '' });
-    expect(JSON.parse(smoke.stdout)).toEqual({ claude: 'synthetic-deny', opencode: 'synthetic-deny' });
+    expect(JSON.parse(smoke.stdout)).toEqual({ claude: 'synthetic-deny', opencode: 'synthetic-deny', codex: 'synthetic-deny' });
   });
 
   test('wszystkie reklamowane ścieżki exports i bin istnieją w dist', async () => {
@@ -172,8 +165,40 @@ describe('package', () => {
     await build();
     const profile = JSON.parse(await readFile(join(ROOT, 'dist', 'capabilities', 'claude-code-2.1.263.json'), 'utf8')) as { client: string };
     expect(profile.client).toBe('claude-code');
-    for (const file of ['core.js', 'handler.js', 'cli.js', 'claude-hook.js', 'opencode-plugin.js']) {
+    for (const file of ['core.js', 'handler.js', 'cli.js', 'claude-hook.js', 'opencode-plugin.js', 'codex-hook.js']) {
       expect(await readFile(join(ROOT, 'dist', file), 'utf8')).not.toContain('tests/support');
+    }
+  });
+
+  // The one place that checks exportConfig's program/profile-dir paths actually exist on disk.
+  // Source-level export tests only check them structurally, so they still pass with no dist/.
+  test('exportConfig references program and profile-dir paths that exist in the built package', async () => {
+    await build();
+    const scratchDir = join(ROOT, 'tests', 'tmp', 'package-export-check');
+    await mkdir(scratchDir, { recursive: true });
+    try {
+      const configPath = join(scratchDir, 'subagent-router.json');
+      await writeFile(configPath, JSON.stringify(configForNode()));
+      const files = await exportConfig(configPath, 'claude-code', join(scratchDir, 'out'), {
+        dryRun: true,
+        force: false,
+        inventory: { entries: [], completeness: 'files-only', diagnostics: [] },
+        catalogRequired: false,
+        resolverContext: { cwd: ROOT, home: join(scratchDir, 'home'), env: {}, additionalRoots: [] },
+      });
+      const fragment = files.find((f) => f.relativePath === 'claude/settings-fragment.json');
+      const command = (JSON.parse(fragment?.content ?? '{}') as { hooks: { SubagentStart: Array<{ hooks: Array<{ command: string }> }> } })
+        .hooks.SubagentStart[0]?.hooks[0]?.command ?? '';
+
+      const packageRoot = findPackageRoot(import.meta.dir);
+      const programPath = join(packageRoot, 'dist', 'claude-hook.js');
+      const profileDir = join(packageRoot, 'dist', 'capabilities');
+      expect(command).toContain(programPath);
+      expect(command).toContain(profileDir);
+      expect((await readFile(programPath, 'utf8')).length).toBeGreaterThan(0);
+      expect((await readFile(join(profileDir, 'claude-code-2.1.263.json'), 'utf8')).length).toBeGreaterThan(0);
+    } finally {
+      await rm(scratchDir, { recursive: true, force: true });
     }
   });
 });

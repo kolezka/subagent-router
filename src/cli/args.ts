@@ -23,6 +23,19 @@ const OPTIONS = {
   'parent-model': { type: 'string' as const },
   help: { type: 'boolean' as const },
   version: { type: 'boolean' as const },
+  // models sync
+  'dry-run': { type: 'boolean' as const },
+  'allow-empty': { type: 'boolean' as const },
+  // models describe
+  text: { type: 'string' as const },
+  file: { type: 'string' as const },
+  clear: { type: 'boolean' as const },
+  // doctor --connect
+  connect: { type: 'boolean' as const },
+  // serve
+  port: { type: 'string' as const },
+  host: { type: 'string' as const },
+  'claude-version': { type: 'string' as const },
 };
 
 /**

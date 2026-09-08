@@ -1,8 +1,25 @@
 import type { AgentDefinition, AgentInventory, ClientId, ResolverOptions } from '../core/types';
 import { RouterError } from '../core/errors';
-import { readClaudeAgents } from './claude-code';
-import { readOpencodeAgents } from './opencode';
-import { readCodexAgents } from './codex';
+import { claudeCodeAgentRoots, readClaudeAgents } from './claude-code';
+import { opencodeAgentRoots, readOpencodeAgents } from './opencode';
+import { codexAgentRoots, readCodexAgents } from './codex';
+
+// Every directory a given client's file scanner would consult for agent definitions, in the
+// same root order each reader uses -- computed without touching the filesystem, so a caller can
+// protect a root that holds no files (or does not exist) yet. Scope is dropped since callers
+// (export.ts's native-root protection) only need the directory itself, and this must stay in
+// lockstep with claude-code.ts/opencode.ts/codex.ts's own root recipes, never a separate copy of
+// them, so the two can never drift apart.
+export function candidateAgentRoots(client: ClientId, options: ResolverOptions): string[] {
+  switch (client) {
+    case 'claude-code':
+      return claudeCodeAgentRoots(options).map((root) => root.dir);
+    case 'opencode':
+      return opencodeAgentRoots(options).map((root) => root.dir);
+    case 'codex':
+      return codexAgentRoots(options).map((root) => root.dir);
+  }
+}
 
 // Scan is `files-only` unless the caller passes `nativeInventory`; the file scan never
 // invents completeness it cannot back with either files or a caller-supplied native

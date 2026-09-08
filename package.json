@@ -27,6 +27,10 @@
     "./opencode-plugin": {
       "types": "./dist/types/adapters/opencode-plugin.d.ts",
       "import": "./dist/opencode-plugin.js"
+    },
+    "./codex-hook": {
+      "types": "./dist/types/adapters/codex-hook.d.ts",
+      "import": "./dist/codex-hook.js"
     }
   },
   "bin": {

@@ -9,10 +9,8 @@
  * every input could not earn the same label. Nothing here prints a fixed 'synthetic-deny'.
  *
  * It never launches a native agent, and it never fabricates a native runtime witness: with no
- * trusted `authoritative-native-resolver` available, the correct behaviour for both native
- * adapters is to refuse, and that refusal is what this driver measures.
- *
- * Codex (Task 11) has no source and no built entrypoint yet, so it is not exercised here.
+ * trusted `authoritative-native-resolver` available, the correct behaviour for all three native
+ * adapters (Claude, OpenCode, Codex) is to refuse, and that refusal is what this driver measures.
  */
 import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile } from 'node:fs/promises';
@@ -217,6 +215,54 @@ async function opencode(): Promise<string> {
   return 'synthetic-deny';
 }
 
+/**
+ * The Codex hook's shipped `main()` takes no flags and reads no config: with no measured native
+ * resolver for Codex (M7 unmeasured on every shipped profile), `resolveNativeRuntimeContext`
+ * always returns `undefined`, so a matching `PreToolUse`/`Agent` call always denies with
+ * `unsupported-path`. The positive controls prove that is a real decision, not a dead process or a
+ * hook that denies unconditionally: a non-matching tool name must no-op to the neutral empty
+ * object, and malformed stdin must be a loud non-zero exit rather than the same silent deny.
+ */
+async function codex(): Promise<string> {
+  const matching = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { model: 'smoke-model', prompt: 'smoke' } });
+  const run = await runHook('codex-hook.js', [], matching, {});
+  if (run.code !== 0) fail('codex-hook exited non-zero', run);
+  let output: unknown;
+  try {
+    output = JSON.parse(run.stdout);
+  } catch {
+    fail('codex-hook did not write parseable JSON', run.stdout);
+  }
+  if (typeof output !== 'object' || output === null) fail('codex-hook output is not an object', run.stdout);
+  const hookSpecificOutput = (output as Record<string, unknown>).hookSpecificOutput;
+  const deniedProperly =
+    typeof hookSpecificOutput === 'object' &&
+    hookSpecificOutput !== null &&
+    (hookSpecificOutput as Record<string, unknown>).permissionDecision === 'deny';
+  if (!deniedProperly) fail('codex-hook did not deny without a native witness', output);
+
+  // Positive control: a non-matching tool name must no-op to the neutral empty object -- proving
+  // the deny above came from real event validation, not a hook that denies unconditionally.
+  const nonMatching = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'true' } });
+  const passthrough = await runHook('codex-hook.js', [], nonMatching, {});
+  if (passthrough.code !== 0) fail('codex-hook exited non-zero on a non-matching tool', passthrough);
+  let passthroughOutput: unknown;
+  try {
+    passthroughOutput = JSON.parse(passthrough.stdout);
+  } catch {
+    fail('codex-hook did not write parseable JSON for a non-matching tool', passthrough.stdout);
+  }
+  const isEmptyObject =
+    typeof passthroughOutput === 'object' && passthroughOutput !== null && Object.keys(passthroughOutput).length === 0;
+  if (!isEmptyObject) fail('codex-hook did not no-op on a non-matching tool', passthroughOutput);
+
+  // Second positive control: malformed stdin is a loud non-zero exit, not the same silent no-op.
+  const malformed = await runHook('codex-hook.js', [], 'not json', {});
+  if (malformed.code === 0) fail('codex-hook accepted malformed stdin', malformed);
+
+  return 'synthetic-deny';
+}
+
 const dir = await mkdtemp(join(tmpdir(), 'subagent-router-smoke-'));
 const configPath = join(dir, 'subagent-router.json');
 await writeFile(configPath, JSON.stringify(configFixture()), 'utf8');
@@ -225,5 +271,6 @@ process.stdout.write(
   `${JSON.stringify({
     claude: await claude(dir, configPath),
     opencode: await opencode(),
+    codex: await codex(),
   })}\n`,
 );

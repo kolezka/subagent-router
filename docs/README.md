@@ -12,6 +12,7 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
 ## Mapa dokumentacji
 
 - [CONVENTIONS.md](CONVENTIONS.md): zasady statusów, dowodów i linkowania.
+- [gateways/cliproxyapi.md](gateways/cliproxyapi.md): kontrakt HTTP CLIProxyAPI i testy loopback; natywne wsparcie klienta nadal pending.
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 

@@ -67,15 +67,26 @@ function userConfigDir(options: ResolverOptions): string {
 // `agent` entry of the same name, per the task brief. As with claude-code.ts, this
 // order is Task 6's declaration for Task 7's M-probe to confirm, not a verified fact
 // about OpenCode's own resolver (D9).
+//
+// Only the Markdown directory roots (1-3) are exposed here, not the two `opencode.json` file
+// paths (4-5): export.ts's native-root protection (inventory.ts's candidateAgentRoots) protects
+// agent DIRECTORIES a client scans, matching claude-code.ts/codex.ts's own root shape.
+export function opencodeAgentRoots(options: ResolverOptions): Array<{ dir: string; scope: string }> {
+  const configDir = userConfigDir(options);
+  return [
+    { dir: join(options.cwd, '.opencode', 'agents'), scope: 'project' },
+    { dir: join(configDir, 'agents'), scope: 'user' },
+    ...options.additionalRoots.map((dir) => ({ dir, scope: 'additional' })),
+  ];
+}
+
 export async function readOpencodeAgents(options: ResolverOptions): Promise<AgentDefinition[]> {
   const client: ClientId = 'opencode';
   const configDir = userConfigDir(options);
 
   const definitions: AgentDefinition[] = [];
-  definitions.push(...(await listMarkdownAgents(client, join(options.cwd, '.opencode', 'agents'), 'project')));
-  definitions.push(...(await listMarkdownAgents(client, join(configDir, 'agents'), 'user')));
-  for (const dir of options.additionalRoots) {
-    definitions.push(...(await listMarkdownAgents(client, dir, 'additional')));
+  for (const root of opencodeAgentRoots(options)) {
+    definitions.push(...(await listMarkdownAgents(client, root.dir, root.scope)));
   }
 
   const projectConfigPath = join(options.cwd, 'opencode.json');

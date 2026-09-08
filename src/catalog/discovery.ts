@@ -63,6 +63,23 @@ function parsePage(text: string): ParsedPage {
   };
 }
 
+async function fetchPage(url: URL, headers: Headers, signal: AbortSignal, fetcher: FetchLike): Promise<ParsedPage> {
+  const request = new Request(url, { headers, redirect: 'manual', signal });
+  const response = await fetcher(request);
+
+  if (response.status >= 300 && response.status < 400) {
+    throw new RouterError('discovery-redirect', `discovery response returned a redirect (status ${response.status}); redirects are not followed`);
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new RouterError('discovery-auth', `discovery request was rejected (status ${response.status})`);
+  }
+  if (!response.ok) {
+    throw new RouterError('discovery-http', `discovery request failed with status ${response.status}`);
+  }
+
+  return parsePage(await response.text());
+}
+
 export async function discoverModels(
   config: OperatorConfig,
   source: SourceContext,
@@ -89,20 +106,7 @@ export async function discoverModels(
     const url = new URL(source.effectiveModelsUrl);
     if (cursor !== undefined) url.searchParams.set('cursor', cursor);
 
-    const request = new Request(url, { headers, redirect: 'manual', signal: combinedSignal });
-    const response = await fetcher(request);
-
-    if (response.status >= 300 && response.status < 400) {
-      throw new RouterError('discovery-redirect', `discovery response returned a redirect (status ${response.status}); redirects are not followed`);
-    }
-    if (response.status === 401 || response.status === 403) {
-      throw new RouterError('discovery-auth', `discovery request was rejected (status ${response.status})`);
-    }
-    if (!response.ok) {
-      throw new RouterError('discovery-http', `discovery request failed with status ${response.status}`);
-    }
-
-    const page = parsePage(await response.text());
+    const page = await fetchPage(url, headers, combinedSignal, fetcher);
 
     // Pagination metadata is validated before this page's models are merged into the result so a
     // page that repeats an already-visited cursor is reported as a pagination cycle, not folded
@@ -131,4 +135,32 @@ export async function discoverModels(
     if (!page.hasMore) return results;
     cursor = page.nextCursor;
   }
+}
+
+export interface DiscoveryConnectivityCheck {
+  modelCount: number;
+  hasMore: boolean;
+}
+
+/**
+ * Real connectivity check for `doctor --connect`: fetches and validates exactly one discovery
+ * page, the same way discoverModels validates each of its pages, but never follows pagination and
+ * never accumulates a full result set. Schema, auth and HTTP errors are real errors and propagate
+ * (never swallowed); this is not `discoverModels` with `fetchLimit` set to 1, which would
+ * misreport a first page bigger than the limit as a limit error instead of a working connection.
+ * Writes nothing; the caller decides what, if anything, to persist.
+ */
+export async function checkDiscoveryConnectivity(
+  config: OperatorConfig,
+  source: SourceContext,
+  fetcher: FetchLike,
+  signal?: AbortSignal,
+): Promise<DiscoveryConnectivityCheck> {
+  const combinedSignal = AbortSignal.any([
+    AbortSignal.timeout(config.modelSource.timeoutMs),
+    ...(signal === undefined ? [] : [signal]),
+  ]);
+  const headers = new Headers(source.headers);
+  const page = await fetchPage(new URL(source.effectiveModelsUrl), headers, combinedSignal, fetcher);
+  return { modelCount: page.data.length, hasMore: page.hasMore };
 }

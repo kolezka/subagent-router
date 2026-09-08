@@ -18,8 +18,7 @@ export { startServer } from './cli/serve';
 export type { ServeHandle } from './cli/serve';
 export { readAgentInventory, getAgent } from './agents/inventory';
 export { createOpenCodePlugin } from './adapters/opencode-plugin';
-// `runCodexPreToolUseHook` (Task 11, Codex) is not implemented yet. Do not add a re-export here
-// until src/adapters/codex-hook.ts exists — advertising it would be a lie in the package surface.
+export { runCodexPreToolUseHook } from './adapters/codex-hook';
 export { runClaudeSubagentStartHook } from './transport/claude-hook';
 export { BUN_RAW_FETCH_ADAPTER, bunRawFetch } from './transport/bun-fetch';
 

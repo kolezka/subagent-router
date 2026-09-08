@@ -84,8 +84,11 @@ export async function listMarkdownAgents(client: ClientId, dir: string, scope: s
 //   3. additionalRoots, in the order given                           (scope 'additional')
 // This order is the spec's stated intent for Task 7's M-probe to confirm against a real
 // harness, not a verified fact about how Claude Code itself resolves agent directories.
-export async function readClaudeAgents(options: ResolverOptions): Promise<AgentDefinition[]> {
-  const client: ClientId = 'claude-code';
+//
+// Exported (not just inlined into readClaudeAgents) so export.ts's native-root protection can
+// compute the same candidate directories without duplicating this recipe -- see
+// inventory.ts's candidateAgentRoots.
+export function claudeCodeAgentRoots(options: ResolverOptions): Array<{ dir: string; scope: string }> {
   const configDirEnv = options.env.CLAUDE_CONFIG_DIR;
   const userDir =
     configDirEnv !== undefined && configDirEnv.length > 0
@@ -94,14 +97,17 @@ export async function readClaudeAgents(options: ResolverOptions): Promise<AgentD
         ? join(options.configRoot, 'agents')
         : join(options.home, '.claude', 'agents');
 
-  const roots: Array<{ dir: string; scope: string }> = [
+  return [
     { dir: join(options.cwd, '.claude', 'agents'), scope: 'project' },
     { dir: userDir, scope: 'user' },
     ...options.additionalRoots.map((dir) => ({ dir, scope: 'additional' })),
   ];
+}
 
+export async function readClaudeAgents(options: ResolverOptions): Promise<AgentDefinition[]> {
+  const client: ClientId = 'claude-code';
   const definitions: AgentDefinition[] = [];
-  for (const root of roots) {
+  for (const root of claudeCodeAgentRoots(options)) {
     definitions.push(...(await listMarkdownAgents(client, root.dir, root.scope)));
   }
   return definitions;
