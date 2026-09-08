@@ -21,8 +21,10 @@ async function listTomlAgents(dir: string, scope: string): Promise<AgentDefiniti
     let parsed: unknown;
     try {
       parsed = Bun.TOML.parse(text);
-    } catch (error) {
-      throw new RouterError('agent-file-malformed', `${path}: invalid TOML (${(error as Error).message})`);
+    } catch {
+      // Never interpolate the parser's own exception message: it can echo raw source
+      // content back into the router's error output.
+      throw new RouterError('agent-file-malformed', `${path}: invalid TOML`);
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new RouterError('agent-file-malformed', `${path}: must be a TOML table`);

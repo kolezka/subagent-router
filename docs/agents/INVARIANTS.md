@@ -22,5 +22,11 @@
   unsupported shape throws rather than silently dropping or mangling a field.
 - Both native validators treat a present-but-invalid explicit-model value as an error, never as
   "no selection" that falls through to a role or global default.
+- An agent file's body is never rewritten: line terminators, blank lines and trailing whitespace
+  survive exactly as written, and a parser's own exception message is never forwarded into a
+  `RouterError`, only the file path.
+- A Codex role's `routeOverride` is validated against the catalog only when a catalog exists; with
+  no snapshot it is emitted unverified (naming-only), and this exception is never silently widened
+  to also skip validation when a catalog *is* available.
 
 Enforcement for each of these lives in [CONTRACTS.md](CONTRACTS.md).

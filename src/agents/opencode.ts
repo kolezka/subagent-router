@@ -15,8 +15,10 @@ async function readJsonObject(path: string): Promise<Record<string, unknown> | u
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
-  } catch (error) {
-    throw new RouterError('agent-file-malformed', `${path}: invalid JSON (${(error as Error).message})`);
+  } catch {
+    // Never interpolate the parser's own exception message: it can echo raw source
+    // content back into the router's error output.
+    throw new RouterError('agent-file-malformed', `${path}: invalid JSON`);
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new RouterError('agent-file-malformed', `${path}: must contain a JSON object`);

@@ -29,4 +29,8 @@
   Neither is a native Claude Code run or a live CLIProxyAPI deployment; both use synthetic profiles
   or a local fixture server, not a real client or a real remote gateway.
 
+See [../measurements/claude-code-2.1.263-partial.md](../measurements/claude-code-2.1.263-partial.md)
+for a review of historical parent/child model artifacts. It is not a new native run and closes
+none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
+
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

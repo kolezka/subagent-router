@@ -25,9 +25,10 @@ that wires these to the real process.
 
 - `0`: success, including a `--dry-run` that reports a diff/plan without writing.
 - `2`: usage, configuration or selection problem. `RouterError` codes starting with `config-`,
-  `snapshot-`, `usage-`, the exact codes `unknown-model` and `agent-unknown`, and the export-specific
-  codes `export-native-root`, `export-collision`, `export-unsafe-name`, `export-unsupported-value`,
-  `export-snapshot-missing` (`isUsageOrConfigCode`/`EXPORT_USAGE_CODES`, `src/cli/main.ts`).
+  `snapshot-`, `usage-`, the exact codes `unknown-model`, `model-not-allowed` and `agent-unknown`,
+  and the export-specific codes `export-native-root`, `export-collision`, `export-unsafe-name`,
+  `export-unsupported-value`, `export-snapshot-missing`
+  (`isUsageOrConfigCode`/`EXPORT_USAGE_CODES`, `src/cli/main.ts`).
 - `1`: everything else (I/O, network, an unclassified `RouterError`, an internal invariant such as
   `export-plan-invariant` or `export-package-root-missing`).
 
