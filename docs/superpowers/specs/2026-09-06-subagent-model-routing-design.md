@@ -2,7 +2,7 @@
 
 Date: 2026-09-07
 
-Status: draft (rewizja 4, do przeglądu)
+Status: draft (rewizja 5, do przeglądu)
 
 ## Cel
 
@@ -10,7 +10,7 @@ Status: draft (rewizja 4, do przeglądu)
 
 Projekt ma być małym pakietem Bun + TypeScript. Ma działać jako biblioteka importowana przez inne narzędzia oraz samodzielnie przez CLI. Jest to jeden pakiet, nie monorepo.
 
-Dokument opisuje proponowany projekt. Status `draft` nie oznacza akceptacji wszystkich szczegółów ani zgody na rozpoczęcie implementacji. Rewizja 2 zamknęła otwarte decyzje projektowe z rewizji 1 i zamieniła pozostałe luki na konkretne pomiary z kryteriami. Rewizja 3 dodaje projektowany, niezweryfikowany kontrakt katalogu modeli, odkrywania, podglądu tras i małego CLI. Rewizja 4 doprecyzowuje granice małego pakietu, skuteczny enforcement adapterów natywnych, ciągłość decyzji oraz transparentny transport. Nie oznacza to, że CLI, discovery ani routing runtime istnieją.
+Dokument opisuje proponowany projekt. Status `draft` nie oznacza akceptacji wszystkich szczegółów ani zgody na rozpoczęcie implementacji. Rewizja 2 zamknęła otwarte decyzje projektowe z rewizji 1 i zamieniła pozostałe luki na konkretne pomiary z kryteriami. Rewizja 3 dodaje projektowany, niezweryfikowany kontrakt katalogu modeli, odkrywania, podglądu tras i małego CLI. Rewizja 4 doprecyzowuje granice małego pakietu, skuteczny enforcement adapterów natywnych, ciągłość decyzji oraz transparentny transport. Rewizja 5 wskazuje zewnętrzną bramę, przede wszystkim `9router` lub OmniRoute, jako właściciela rozmowy z dostawcą i zakazuje zależności od pakietu `@the-next-ai/ai-gateway` używanego przez CCR. Nie oznacza to, że CLI, discovery ani routing runtime istnieją.
 
 ### Changelog rewizji 4
 
@@ -20,6 +20,13 @@ Dokument opisuje proponowany projekt. Status `draft` nie oznacza akceptacji wszy
 - Uszczegółowiono kanały D2, zachowanie po utracie markera lub stanu tożsamości oraz kontrakt transparentnego HTTP.
 - Dodano podprzypadek M10-freshness dla inicjalizacji defaultu i projektowany metadata sidecar eksportu native, który nie zastępuje dowodu runtime.
 - Dodano macierze granic i adapterów oraz asercje strategii testów. Nie dodano implementacji. Nie wykonano pomiarów.
+
+### Changelog rewizji 5
+
+- Data dokumentu: 2026-09-08.
+- Rozmowę z dostawcą prowadzi zewnętrzna brama, docelowo `9router` lub OmniRoute. LiteLLM lub inna brama o tym samym kontrakcie HTTP pozostaje dopuszczalna.
+- Pakiet nie może zależeć od `@the-next-ai/ai-gateway`, pakietu bramy używanego przez CCR, ani osadzać innej biblioteki bramy. Brama działa jako osobny proces i endpoint HTTP. Powodem jest obserwowana przez operatora niska wydajność tego pakietu z dostawcą OpenAI oraz utrzymanie wymiany bramy jako zmiany konfiguracji.
+- Dodano decyzję odrzucającą osadzenie bramy oraz asercję strategii testów dla tej granicy. Nie zmieniono wymagań 1-43 i 48-53, decyzji D1-D11 ani pomiarów M1-M10.
 
 ## Stan i zakres dowodów
 
@@ -137,9 +144,9 @@ Odczyt `--version` na maszynie autora, 2026-09-06. [verified]
 
 ### Niezależność od bramy
 
-44. `9router` i `omnirouter` pozostają historycznymi przykładami zewnętrznej bramy. LiteLLM, OmniRoute lub inna brama są właścicielem protokołów, auth dostawców, OAuth, translacji i wyboru upstream.
+44. Rozmowę z dostawcą prowadzi zewnętrzna brama. Docelowe bramy to `9router` lub OmniRoute; LiteLLM lub inna brama o tym samym kontrakcie HTTP forwardingu i listy modeli jest dopuszczalna. Brama jest właścicielem protokołów, auth dostawców, OAuth, translacji i wyboru upstream.
 45. `subagent-router` MUSI być niezależny od kodu i wewnętrznych baz każdej takiej bramy; korzysta wyłącznie ze skonfigurowanego kontraktu HTTP forwardingu i discovery, nie z jej modułów ani storage. Core oraz offline CLI nie zależą od dostępności bramy, lecz transparentny forwarding i jawne discovery wymagają dostępnej, skonfigurowanej bramy. Router pozostaje niezależny od kodu, danych i dostępności niezależnego KB opartego na Markdown/Git, PostgreSQL, Weaviate oraz CLI/MCP.
-46. Pakiet NIE MOŻE zawierać adapterów bram, implementacji auth dostawców, routingu po vendorze, kodu KB, pobierania kontekstu ani uruchamiania MCP. Natywny agent może korzystać z KB poza routerem.
+46. Pakiet NIE MOŻE zawierać adapterów bram, implementacji auth dostawców, routingu po vendorze, kodu KB, pobierania kontekstu ani uruchamiania MCP. Pakiet NIE MOŻE też zależeć od `@the-next-ai/ai-gateway`, pakietu bramy używanego przez CCR, ani od innego pakietu implementującego bramę, także jako zależność opcjonalna albo deweloperska używana przez kod produkcyjny. Natywny agent może korzystać z KB poza routerem.
 47. Wymiana endpointu bramy przy tych samych opaque, case-sensitive model identifiers NIE MOŻE wymagać gałęzi kodu routera. Core przekazuje `upstreamModel` bez interpretacji vendora.
 
 ### Katalog i inspekcja
@@ -161,7 +168,7 @@ Odczyt `--version` na maszynie autora, 2026-09-06. [verified]
 | Adaptery Claude Code, OpenCode i Codex | Wiarygodne rozpoznanie dziecka, runtime guard przed dzieckiem w trybie `native` oraz przeniesienie decyzji core. | Zmiana native UI, uprawnień, narzędzi, lifecycle lub definicji źródłowych agentów. |
 | Marker i cienki HTTP handler | Rozpoznanie autoryzowanego markera, korelacja ulotna, zmiana modelu dozwolonego requestu i transparentny forwarding. | Dekodowanie lub regenerowanie odpowiedzi, retry, fallback, generatywne call, protocol translation i provider routing. |
 | CLI | Diagnostyka, offline preview, jawny sync snapshotu i kontrolowany eksport do osobnego katalogu. | TUI, scheduler, daemon manager, baza danych, automatyczna instalacja i zmiana aktywnych konfiguracji native. |
-| Brama | Nie jest implementowana przez pakiet. | LiteLLM, OmniRoute, `9router`, `omnirouter` lub inna brama obsługują auth, OAuth, protokół, upstream i vendor routing. |
+| Brama | Nie jest implementowana przez pakiet. | Zewnętrzny proces: docelowo `9router` lub OmniRoute, dopuszczalnie LiteLLM lub inna brama o tym samym kontrakcie HTTP. Obsługuje auth, OAuth, protokół, upstream i vendor routing. Pakiet `@the-next-ai/ai-gateway` z CCR nie jest zależnością routera. |
 | KB | Router nie zależy od kodu, danych ani dostępności KB. | Niezależny KB Markdown/Git + PostgreSQL + Weaviate przez CLI/MCP, embeddings, retrieval, code graph i przechowywanie wiedzy. Natywny agent może go używać poza routerem. |
 
 ### Rozdzielenie AI SDK, runtime i forwardingu
@@ -612,6 +619,14 @@ Odrzucone. Ukrywa błąd i łamie intencję jawnego routingu dziecka.
 
 Nie jest wymagana. CCR jest inspiracją dla wzorca marker plus routing, nie publicznym kontraktem składni markeru.
 
+### Osadzenie bramy `@the-next-ai/ai-gateway` w routerze
+
+Odrzucone. Główny powód jest wydajnościowy: operator obserwuje wyraźnie wolniejszą obsługę dostawcy OpenAI przez ten pakiet w CCR. [assumption] Nie ma pomiaru w tym projekcie; nie ustalono, czy przyczyną jest sam pakiet, jego konfiguracja czy warstwa sieciowa. Wybór bramy jest więc decyzją operacyjną, a nie wnioskiem z benchmarku.
+
+Powód drugi jest architektoniczny. CCR używa tego pakietu jako własnej bramy. Router pozostaje cienką warstwą przed zewnętrzną bramą, docelowo `9router` lub OmniRoute. Zależność od pakietu bramy związałaby router z jej protokołami, auth, wydajnością i cyklem wydań oraz naruszyłaby wymagania 45, 46 i 47.
+
+Konsekwencja projektowa: skoro router nie decyduje o wydajności rozmowy z dostawcą, wymiana bramy na szybszą MUSI być zmianą konfiguracji endpointu, bez gałęzi kodu routera. To jest już wymaganie 47 i jego test `e2e::opaque-identifiers-survive-gateway-endpoint-swap`.
+
 ### Obowiązkowe discovery lub pobranie w czasie requestu
 
 Odrzucone. Discovery jest jawną komendą operatora i nie jest provider integration. Core oraz preview używają tylko istniejącego snapshotu offline.
@@ -678,7 +693,7 @@ Następujące kryteria są wymaganiami przyszłego wdrożenia. Nie są obecnie s
 - Testy OpenCode obejmują każdą drogę zadeklarowaną jako wspierana, Task, direct, manual, nested i resume, bez modyfikacji `args` lub `subagent_type`. Testy Codex potwierdzają rejestrację `PreToolUse`, rzeczywiste stdin/stdout, `deny`, native precedence i M9 przed certyfikacją ścieżki z rolą.
 - Offline testy eksportu sprawdzają metadata sidecar, `snapshotGeneration` i hash artefaktu, lecz nie twierdzą, że harness coś załadował. E2E adaptera sprawdza authoritative effective definition lub konfigurację przed spawn. Sam artefakt eksportu, niezastosowany default lub nieweryfikowalna konfiguracja nie są sukcesem.
 - Testy handlera porównują bajtowo odpowiedź i ramki streamu oraz sprawdzają status, nagłówki end-to-end, nieznane SSE, błędy, tool, usage, abort, disconnect i backpressure. Sprawdzają także brak pełnego buforowania, dekodowania, regenerowania, retry, fallbacku i dodatkowego generatywnego call.
-- Testy granic sprawdzają, że core i handler nie importują obowiązkowego AI SDK, nie uruchamiają MCP lub KB i nie zawierają vendor branch. Mock bramy, LiteLLM, OmniRoute, `9router` lub `omnirouter` pozostają wymiennymi endpointami poza routerem.
+- Testy granic sprawdzają, że core i handler nie importują obowiązkowego AI SDK, nie uruchamiają MCP lub KB i nie zawierają vendor branch. Test granic sprawdza też, że `package.json` nie zawiera zależności `@the-next-ai/ai-gateway` w żadnej sekcji, a `src` nie importuje modułu o tej nazwie. Mock bramy, `9router`, OmniRoute lub LiteLLM pozostają wymiennymi endpointami poza routerem.
 
 Sukces E2E wymaga zarówno capture z kontrolowanej bramy, jak i znaczącego, zdekodowanego przez natywnego klienta roundtripu narzędzia dziecka oraz wyniku końcowego. Sam tekst odpowiedzi modelu nie wystarcza.
 

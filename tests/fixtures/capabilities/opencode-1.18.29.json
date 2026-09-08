@@ -1,0 +1,11 @@
+{
+  "client": "opencode",
+  "version": "1.18.29",
+  "status": "pending",
+  "correlation": false,
+  "correlationEntropy": "pending",
+  "fork": false,
+  "adapterMarkerPosition": "unknown",
+  "probes": { "M6": "pending", "M6-runtime": "pending", "M10": "pending", "M10-freshness": "pending" },
+  "lifecycle": { "next-turn": "pending", "resume": "pending", "compaction": "pending", "nested": "pending", "parallel": "pending" }
+}

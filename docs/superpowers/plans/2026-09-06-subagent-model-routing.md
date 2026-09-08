@@ -8,11 +8,17 @@
 
 **Tech Stack:** TypeScript strict, Bun 1.3.11, `bun:test`, Web Crypto oraz standardowe Request/Response/ReadableStream. Wbudowane parsery Bun dla YAML i TOML są ograniczone do warstwy adapterów. Rdzeń nie ma zależności runtime ani importów Bun. Deklaracje typów generuje TypeScript.
 
-**Spec:** [Routing modeli subagentów, rewizja 4](../specs/2026-09-06-subagent-model-routing-design.md). Historyczna baza rewizji 3: Git `721ca0065c94ee5b1e5fa7b765b464f3f5e6201c`.
+**Spec:** [Routing modeli subagentów, rewizja 5](../specs/2026-09-06-subagent-model-routing-design.md). Historyczna baza rewizji 3: Git `721ca0065c94ee5b1e5fa7b765b464f3f5e6201c`.
 
 Date: 2026-09-06
 
-Status: draft planu, do przeglądu; wykonanie nie rozpoczęte.
+Status: wykonanie w toku; pierwszy kamień milowy to lokalny PoC. Pełna macierz wsparcia klientów pozostaje niezweryfikowana.
+
+## Checkpoint PoC, 2026-09-08
+
+Na prośbę użytkownika pierwszeństwo ma uruchamialny pion Claude Code, marker, handler HTTP, zewnętrzna brama. Zadania 1-4 dostarczyły rdzeń i store. Dla PoC realizowane są lokalne elementy Task 7, Task 8, Task 9 oraz minimalny `serve` z Task 13. Task 5-6, 10-12, pełny Task 13, pakowanie i pełne Task 15 pozostają do wykonania, nie zostały anulowane.
+
+Profile rzeczywistych klientów pozostają `pending`. Lokalny scenariusz syntetyczny nie zalicza M1-M10 i nie zastępuje natywnego roundtripu. Sterownik probe bez ekstraktorów dowodów nie może oznaczyć pomiaru jako zaliczonego. Wpisy poniżej opisujące brak implementacji należą do historycznych rewizji dokumentu.
 
 ## Rewizja 2 planu, 2026-09-07
 
@@ -30,6 +36,10 @@ Changelog rewizji 2:
 
 Użytkownik zlecił przygotowanie planu na bazie specyfikacji. Nie jest to polecenie uruchomienia implementacji, płatnych testów ani publikacji paczki. Spec pozostaje nadrzędnym kontraktem; plan nie zmienia jej statusu ani zakresu.
 
+## Rewizja 3 planu, 2026-09-08
+
+Źródłem jest specyfikacja rewizji 5. Jedna zmiana merytoryczna: rozmowę z dostawcą prowadzi zewnętrzna brama, docelowo `9router` lub OmniRoute, a pakiet nie może zależeć od `@the-next-ai/ai-gateway` używanego przez CCR. Powodem jest obserwowana przez operatora niska wydajność tego pakietu z dostawcą OpenAI; nie wykonano pomiaru w tym projekcie. Dodano ograniczenie globalne i nazwany test granic w Task 15. Zadania 1-4 wykonane przed tą rewizją nie wymagają zmian, bo nie dodają zależności runtime.
+
 ## Global Constraints
 
 - Pakiet MUSI być pojedynczym pakietem Bun + TypeScript, bez monorepo.
@@ -38,6 +48,7 @@ Użytkownik zlecił przygotowanie planu na bazie specyfikacji. Nie jest to polec
 - Bun jest dozwolony w CLI i trybie standalone, ale core NIE MOŻE wymagać API specyficznego dla Bun.
 - Projekt NIE MOŻE tworzyć własnego agent loop, MCP runnera, schedulera, UI ani bazy danych.
 - Projekt NIE OBEJMUJE auth kont dostawców, translacji protokołów, provider-specific discovery ani automatycznego fallbacku do innego modelu.
+- Rozmowę z dostawcą prowadzi zewnętrzna brama, docelowo `9router` lub OmniRoute; LiteLLM lub inna brama o tym samym kontrakcie HTTP jest dopuszczalna. Pakiet NIE MOŻE zależeć od `@the-next-ai/ai-gateway` ani innego pakietu bramy; sprawdza to test `boundary::package-has-no-ai-gateway-dependency-or-import` w Task 15.
 - Żadna komenda NIE MOŻE automatycznie zmienić natywnych plików harnessu. Eksport zapisuje tylko do odrębnego katalogu artefaktów, nigdy do katalogu źródłowego agentów, także przy `--force`.
 - Natywne definicje agentów, w tym `model: inherit`, MUSZĄ pozostać niezmienione.
 - Upstream IDs i aliasy są porównywane case-sensitive. Upstream ID NIE MOŻE być przycinany, normalizowany ani wyprowadzany z aliasu. Nazwę roli dostarcza natywny resolver.
@@ -62,7 +73,7 @@ Użytkownik zlecił przygotowanie planu na bazie specyfikacji. Nie jest to polec
 |---|---|---|
 | Core | Katalog ze snapshotu, aliasy, walidacja, czysta decyzja `upstreamModel`, konfiguracja i deterministyczne defaulty. `upstreamModel` jest opaque i case-sensitive. Core dostaje exact resolved ID, na przykład `gateway/fast-worker`, i nie zna natywnego `providerId`; natywne pole może być `gateway/gateway/fast-worker`, gdy provider to `gateway`, ale drugi człon pozostaje niezmienionym ID core. | Żaden provider, auth, normalizacja, strip prefixu, LLM chooser, fallback ani stan sesji. |
 | Adaptery | Read-only inventory, marker i HMAC Claude, natywne bramki OpenCode i Codex, profile pomiarów oraz eksport ręcznej integracji. | Agent loop, narzędzia, lifecycle, UI, scheduler i manager daemonów pozostają własnością natywnych harnessów. |
-| Handler i forwarding | Tylko Claude Code w trybie `marker-routed`: rozpoznaje potwierdzone dziecko, podejmuje decyzję, usuwa marker z kopii body i przekazuje request do skonfigurowanej bramy. | Handler nie jest bramą dostawcy, nie wykonuje auth dostawców, translacji protokołów, decode/re-encode odpowiedzi ani nowego runtime. LiteLLM, OmniRoute lub inna brama obsługuje dostawców. |
+| Handler i forwarding | Tylko Claude Code w trybie `marker-routed`: rozpoznaje potwierdzone dziecko, podejmuje decyzję, usuwa marker z kopii body i przekazuje request do skonfigurowanej bramy. | Handler nie jest bramą dostawcy, nie wykonuje auth dostawców, translacji protokołów, decode/re-encode odpowiedzi ani nowego runtime. Zewnętrzna brama, docelowo `9router` lub OmniRoute, dopuszczalnie LiteLLM, obsługuje dostawców. Pakiet `@the-next-ai/ai-gateway` z CCR nie jest zależnością. |
 | Katalog i CLI | Offline inspection, discovery na jawne żądanie, snapshot, preview, diagnostyka, kontrolowany eksport i `serve`. | KB jest osobnym systemem Markdown/Git plus PostgreSQL i Weaviate z własnym CLI/MCP. Router nie importuje KB, nie otwiera połączenia z jego storage i nie wywołuje MCP KB. |
 | E2E | Fake gateway, opt-in uruchomienie realnych klientów przez ich natywne CLI, capture mierzonego `upstreamModel`, transport i dowody native enforcement. | Nie powstaje własny agent runtime ani wrapper AI SDK. Core i handler nie mają obowiązkowej zależności AI SDK. |
 
@@ -3445,7 +3456,7 @@ describe('e2e routing przez fake gateway', () => {
 
 Test pokazuje ID ze spacją i z wielką literą; brama musi odebrać je bez zmian. Hermetyczny roundtrip używa stałego syntetycznego nonce: scripted `tool_use` z bramy, pasujący `tool_result`, odpowiedź zdekodowana przez test do tekstu nonce oraz dwa capture `upstreamModel` są łącznie wymagane. Dowodzi transportu i korelacji identyfikatorów wiadomości, nie odczytu pliku, wykonania narzędzia ani dekodowania przez natywny klient. Profile tego testu są jawnie syntetyczne i nie certyfikują runtime. `content.length`, deklaracja `model` w body klienta ani odpowiedź self-report nie są dowodem. Prawdziwy roundtrip wykonuje test opt-in.
 
-W `tests/e2e/routing.test.ts` dopisz także `opaque-identifiers-survive-gateway-endpoint-swap`, `unrecognized-fork-pass-through-and-recognized-fork-follows-w19`, `core-and-handler-have-no-required-ai-sdk-or-kb-imports` i `no-vendor-branch-or-llm-selector`. Pierwszy sprawdza zmianę endpointu bez interpretacji ID, drugi rozróżnia nierozpoznany fork od rozpoznanego bez wyboru, trzeci sprawdza graf importów i brak wywołań MCP KB, a czwarty przeszukuje artefakt pod kątem `providers/`, kodu vendorowego i automatycznego selectora. W `tests/e2e/cli-workflow.test.ts` dopisz `offline-preview-never-connects-to-kb-or-mcp`. W `tests/probes/evidence.test.ts` dodaj `m8-client-model-upstream-model-table-exists`: fixture kompletnego raportu z parami modeli i obserwacjami przechodzi, brak tabeli albo samo puste miejsce nie przechodzą. Sprawdzenie rzeczywistego raportu po opt-in M8 należy do Task 15 Step 6, a bez wykonanego M8 raport pozostaje pending, nie zalicza obserwacji.
+W `tests/e2e/routing.test.ts` dopisz także `opaque-identifiers-survive-gateway-endpoint-swap`, `unrecognized-fork-pass-through-and-recognized-fork-follows-w19`, `core-and-handler-have-no-required-ai-sdk-or-kb-imports`, `no-vendor-branch-or-llm-selector` i `package-has-no-ai-gateway-dependency-or-import`. Pierwszy sprawdza zmianę endpointu bez interpretacji ID, drugi rozróżnia nierozpoznany fork od rozpoznanego bez wyboru, trzeci sprawdza graf importów i brak wywołań MCP KB, czwarty przeszukuje artefakt pod kątem `providers/`, kodu vendorowego i automatycznego selectora, a piąty czyta `package.json` i sprawdza brak `@the-next-ai/ai-gateway` w `dependencies`, `devDependencies`, `peerDependencies` i `optionalDependencies`, a następnie przeszukuje `src` pod kątem importu tej nazwy. W `tests/e2e/cli-workflow.test.ts` dopisz `offline-preview-never-connects-to-kb-or-mcp`. W `tests/probes/evidence.test.ts` dodaj `m8-client-model-upstream-model-table-exists`: fixture kompletnego raportu z parami modeli i obserwacjami przechodzi, brak tabeli albo samo puste miejsce nie przechodzą. Sprawdzenie rzeczywistego raportu po opt-in M8 należy do Task 15 Step 6, a bez wykonanego M8 raport pozostaje pending, nie zalicza obserwacji.
 
 - [ ] **Step 2: Napisz test przepływu CLI**
 
@@ -3506,7 +3517,7 @@ Ta mapa pokazuje miejsce implementacji, nie zaliczenie testów. Wykonawca uzupe�
 | 24-30 | Model klienta i model upstream; D1; D3 | 3 / 1-4, 7 / 7, 15 / 1, 4-5 | `e2e routing przez fake gateway::rodzic-A-oraz-równoczesne-dzieci-B-i-C-trafiają-do-właściwych-modeli-marker-nie-wycieka`, `e2e::fork-client-model-upstream-model-separate` |
 | 31-33 | Tryby integracji; Macierz adapterów, punktów kontroli runtime i odmowy | 7 / 5-7, 10 / 1-4, 11 / 1-4, 13 / 2, 5, 15 / 4-5 | `native-e2e::denies-before-opencode-task-spawn`, `createOpenCodePlugin::requires-effective-native-model-and-artifact-generation`, `native-e2e::deny-prevents-codex-child-request` |
 | 34-43 | Routing przed bramą; Routing handler; Asercje strategii testów | 8 / 6-7, 9 / 1-5, 13 / 3-6, 15 / 1, 4 | `createHandler::forwards-parent-enrichment-to-upstream-without-changing-parent-model`, `createHandler::passes-through-sse-unknown-events-errors-content-and-usage`, `createHandler::measures-selected-fetch-compression-contract`, `createHandler::preserves-backpressure-with-a-slow-consumer` |
-| 44-47 | Niezależność od bramy; Macierz granic odpowiedzialności | 2 / 7-8, 5 / 1-8, 15 / 1, 6 | `resolveSource::usuwa-końcowy-ukośnik-nie-dokleja-v1-dwa-razy-i-dodaje-nagłówek-auth`, `e2e::opaque-identifiers-survive-gateway-endpoint-swap` |
+| 44-47 | Niezależność od bramy; Macierz granic odpowiedzialności | 2 / 7-8, 5 / 1-8, 15 / 1, 6 | `resolveSource::usuwa-końcowy-ukośnik-nie-dokleja-v1-dwa-razy-i-dodaje-nagłówek-auth`, `e2e::opaque-identifiers-survive-gateway-endpoint-swap`, `boundary::package-has-no-ai-gateway-dependency-or-import` |
 | 48-51 | Katalog i inspekcja; D4 | 2 / 5-8, 3 / 1-4, 5 / 5-8, 12 / 1-4 | `buildCatalog::nakładka-dla-ID-spoza-snapshotu-nie-tworzy-modelu`, `resolveModel::rozwiązuje-po-dokładnym-ID-i-po-aliasie-ale-nie-po-innej-wielkości-liter`, `synchronize::zniknięty-model-zostaje-jako-missing-powrót-przywraca-available` |
 | 52-53 | Katalog i inspekcja; D9; D11 | 6 / 2-5, 12 / 1-4, 13 / 1-5 | `readAgentInventory::odczyt-nie-zmienia-żadnego-pliku-fixture`, `config export::eksport-OpenCode-zapisuje-wariant-do-katalogu-artefaktów-i-nie-zmienia-natywnych-plików`, `read-only CLI::route-preview-symuluje-decyzję-z-generacją-plików-bez-uruchamiania-agenta-i-sieci` |
 | D1-D4 | D1, D2, D3, D4 | 1 / 2, 3 / 1-4, 4 / 1-4, 8 / 1-7, 9 / 1-5 | `normalizeClaudeRequest::nieznany-alias-markera-nie-może-zostać-odczytany-jako-przypadkowe-raw-upstream-ID`, `createHandler::B2-wymaga-osobnego-one-shot-freshness-proof-i-nie-przekazuje-control-upstream` |
@@ -3534,7 +3545,7 @@ Nazwy z `::` identyfikują grupę i przypadek; polskie nazwy wierszy tabeli są 
 | 24-30 | 3, 7, 8, 15 | Rozdzielone modele, oddzielny probe forka bez fałszywej gwarancji |
 | 31-33 | 7, 10, 11, 15 | Natywny model podlega kontroli runtime, certyfikat wersji wynika z dowodów |
 | 34-43 | 8, 9, 13, 15 | Embed i serve używają tego samego handlera, stream i abort są propagowane |
-| 44-47 | 2, 5, 9, 15 | Zmiana skonfigurowanego endpointu nie zmienia logiki dostawcy |
+| 44-47 | 2, 5, 9, 15 | Zmiana skonfigurowanego endpointu nie zmienia logiki dostawcy; brak zależności od pakietu bramy CCR |
 | 48-51 | 2, 3, 5, 12, 13 | Brak opisu ukrywa sugestię, nie definiuje ręcznie modelu; missing/disabled nie routują |
 | 52 | 6, 8, 10, 11, 13, 15 | Hash natywnych definicji nie zmienia się, także dla inherit i symlinków |
 | 53 | 4, 12, 13, 14 | Offline JSON, poprawne kody, konflikt równoległych zapisów bez utraty danych |
