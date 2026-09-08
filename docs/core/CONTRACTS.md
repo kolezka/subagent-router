@@ -37,9 +37,17 @@ enforcement: [../../tests/io/environment.test.ts](../../tests/io/environment.tes
 
 `generation` is a hash of `(configHash, snapshotHash)`. `commitState` refuses a write if either
 file changed since `loadState`, and writes exactly one file per call via a temp-file rename.
-[verified] against [../../src/io/store.ts](../../src/io/store.ts).
+Cleanup after a failed write (temp file, lock file) never replaces the original error: the write
+error stays primary and a cleanup failure is attached to it (`runWithCleanup`,
+[../../src/io/cleanup.ts](../../src/io/cleanup.ts)). Only a temp file this call created is
+removed, including one whose write failed part-way; a pre-existing file at the temp path is left
+alone and the write fails with `EEXIST`. [verified] against
+[../../src/io/store.ts](../../src/io/store.ts).
 
-enforcement: [../../tests/io/store.test.ts](../../tests/io/store.test.ts)
+enforcement: [../../tests/io/store.test.ts](../../tests/io/store.test.ts) (conflict, lock held,
+lock released after failure, foreign temp file, failed rename leaves nothing behind, partial write
+removed), [../../tests/io/cleanup.test.ts](../../tests/io/cleanup.test.ts) (error precedence,
+frozen error wrapped with cause)
 
 ## Package boundary (no provider SDK, no translation, no selector)
 

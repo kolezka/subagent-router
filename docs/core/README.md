@@ -12,6 +12,7 @@ owns:
   - src/core/hash.ts
   - src/io/environment.ts
   - src/io/store.ts
+  - src/io/cleanup.ts
 depends_on: []
 ---
 

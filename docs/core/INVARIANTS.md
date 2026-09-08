@@ -14,7 +14,10 @@
   [../../src/io/environment.ts](../../src/io/environment.ts)
 - `commitState` never writes both config and snapshot in one call, and never writes an unparseable
   payload; a conflicting concurrent edit is detected by comparing hashes, not by the lock file
-  alone. [../../src/io/store.ts](../../src/io/store.ts)
+  alone. A failed write reports the write error, never a cleanup error in its place; it removes
+  the temp and lock files it created itself (including a half-written temp file) and never one it
+  did not create. [../../src/io/store.ts](../../src/io/store.ts),
+  [../../src/io/cleanup.ts](../../src/io/cleanup.ts)
 - `modelAlias` / `sourceFingerprint` are case-sensitive and never trim whitespace: `gateway/model`
   and `gateway/Model ` hash to different values. [../../src/core/hash.ts](../../src/core/hash.ts)
 
