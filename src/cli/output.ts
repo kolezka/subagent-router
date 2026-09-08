@@ -1,0 +1,39 @@
+import type { CliDeps } from '../core/types';
+
+// Matches C0 controls (0x00-0x1F, 0x7F) and the ESC byte that starts every ANSI/CSI escape
+// sequence, so a value copied from an untrusted source (a model description, an agent name)
+// can never inject terminal control sequences into text-mode output. Each matched character is
+// replaced by its \uXXXX form; escapeControl does not need to parse full ANSI grammar because
+// stripping the lone ESC byte (0x1B) that introduces every such sequence already neutralizes it.
+// Written as \x escapes on purpose: raw control bytes in a regex literal are invisible in most
+// editors and fragile under encoders (tests/cli/output.test.ts checks the source form).
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHAR = /[\x00-\x1f\x7f]/g;
+
+export function escapeControl(value: string): string {
+  return value.replace(CONTROL_CHAR, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/**
+ * Renders a command's result to deps.stdout: the JSON payload verbatim on one line when `json` is
+ * true, otherwise the human-readable string from `human()`. The brief's CliDeps carries no mode
+ * field and this CLI keeps no other mutable global for it, so the caller (main.ts, from the
+ * parsed --json flag) passes the mode explicitly on every call instead. `human()` is expected to
+ * have already run any untrusted string it embeds through escapeControl; render never emits ANSI
+ * itself; deps.isTTY / --no-color affect nothing further because no color codes exist to strip.
+ */
+export function render(deps: CliDeps, payload: unknown, human: () => string, json: boolean): void {
+  deps.stdout(json ? `${JSON.stringify(payload)}\n` : human());
+}
+
+/**
+ * Writes one diagnostic line to stderr, through the same escapeControl boundary human() output
+ * already gets. Every CLI error path (a parse error, an unknown command, a thrown RouterError, a
+ * generic exception, doctor --connect's caught connectivity failure, ...) can carry text copied
+ * from untrusted input verbatim into its message: a CLI argument (an unknown model reference, a
+ * bad --config path), or a gateway-controlled value (a duplicate model ID from discovery). --json
+ * only changes stdout rendering; stderr diagnostics need their own, unconditional escaping.
+ */
+export function writeDiagnostic(deps: CliDeps, text: string): void {
+  deps.stderr(`${escapeControl(text)}\n`);
+}

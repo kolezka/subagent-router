@@ -89,7 +89,9 @@ export interface EntropyProof {
 export function judgeM1(evidence: Evidence, entropyProof: EntropyProof | undefined): ProbeResult {
   if (entropyProof === undefined) return 'pending';
   if (entropyProof.sampleCount < evidence.distinctAgentIds) return 'failed';
-  return 'passed';
+  // Aggregate counts alone cannot prove the required native behavior: sampleCount and
+  // distinctAgentIds matching is not identity-continuity or generator-entropy proof.
+  return 'pending';
 }
 
 export interface OpencodeHookEvidence {
@@ -118,7 +120,9 @@ export interface CodexHookEvidence {
 export function judgeCodexDeny(evidence: Evidence, hook: CodexHookEvidence | undefined): ProbeResult {
   if (hook === undefined || hook.permissionDecision !== 'deny') return 'pending';
   if (!hook.receivedModelField || evidence.childRequests > 0) return 'failed';
-  return 'passed';
+  // Aggregate counts alone cannot prove the required native behavior: a model field plus
+  // zero captured requests is not a registered-hook, allowed-child positive control.
+  return 'pending';
 }
 
 const LIFECYCLE_PHASES = ['next-turn', 'resume', 'compaction', 'nested', 'parallel'] as const;

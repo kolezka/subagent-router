@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "modelSource": {
+    "sourceId": "cliproxyapi",
+    "baseUrlEnv": "CLIPROXYAPI_URL",
+    "endpointPath": "/v1/models",
+    "authEnv": "CLIPROXYAPI_MODELS_AUTH",
+    "headersEnv": [],
+    "timeoutMs": 10000,
+    "fetchLimit": 1000,
+    "staleAfterSeconds": 86400
+  },
+  "modelOverrides": {
+    "<exact-model-id-from-your-CLIProxyAPI-GET-/v1/models-response>": {
+      "alias": "fast",
+      "description": "Replace this id with an exact, case-sensitive id from your own CLIProxyAPI /v1/models response.",
+      "enabled": true
+    }
+  },
+  "roles": {},
+  "defaults": {
+    "child": null,
+    "unmarkedSubagent": "error"
+  },
+  "agentRoots": {
+    "claude-code": { "configRoot": null },
+    "opencode": { "configRoot": null },
+    "codex": { "configRoot": null }
+  },
+  "gateway": {
+    "urlEnv": "CLIPROXYAPI_URL",
+    "headersEnv": ["CLIPROXYAPI_GATEWAY_HEADERS"]
+  },
+  "harness": {
+    "claudeCode": { "correlation": "off", "secretEnv": "ROUTER_SECRET" },
+    "opencode": { "providerId": "cliproxyapi" },
+    "codex": { "emitModelCatalog": false }
+  }
+}
