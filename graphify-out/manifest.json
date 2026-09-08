@@ -1,0 +1,356 @@
+{
+  ".claude/settings.local.json": {
+    "mtime": 1788821959.313728,
+    "seen": 1788859359.578781,
+    "ast_hash": "87f4b3de3ff8d6c2aada22eec8fc984c",
+    "semantic_hash": "87f4b3de3ff8d6c2aada22eec8fc984c"
+  },
+  "package.json": {
+    "mtime": 1788837388.1322048,
+    "seen": 1788859359.578784,
+    "ast_hash": "4312b63d2b3bf8192da8f7dfca3bda37",
+    "semantic_hash": "4312b63d2b3bf8192da8f7dfca3bda37"
+  },
+  "scripts/poc-demo.ts": {
+    "mtime": 1788837388.1324546,
+    "seen": 1788859359.578785,
+    "ast_hash": "83a068104b5b43a4332bba8f654fd2e0",
+    "semantic_hash": "83a068104b5b43a4332bba8f654fd2e0"
+  },
+  "scripts/poc-serve.ts": {
+    "mtime": 1788837388.1327007,
+    "seen": 1788859359.5787861,
+    "ast_hash": "e930dd78068782885dcf96f603e9563e",
+    "semantic_hash": "e930dd78068782885dcf96f603e9563e"
+  },
+  "src/adapters/capabilities.ts": {
+    "mtime": 1788837388.1333268,
+    "seen": 1788859359.5787861,
+    "ast_hash": "083e479fcd1bb18e8334729169ba0964",
+    "semantic_hash": "083e479fcd1bb18e8334729169ba0964"
+  },
+  "src/adapters/claude-code.ts": {
+    "mtime": 1788837388.1334782,
+    "seen": 1788859359.578787,
+    "ast_hash": "e7fff5c799a591459f48c5fe7fa42a7e",
+    "semantic_hash": "e7fff5c799a591459f48c5fe7fa42a7e"
+  },
+  "src/adapters/correlation.ts": {
+    "mtime": 1788837388.1336162,
+    "seen": 1788859359.578787,
+    "ast_hash": "e869b3ed42d0cba72c18fc2f8a7ba43e",
+    "semantic_hash": "e869b3ed42d0cba72c18fc2f8a7ba43e"
+  },
+  "src/adapters/markers.ts": {
+    "mtime": 1788837388.1340034,
+    "seen": 1788859359.578787,
+    "ast_hash": "dab2b7d699cb04eaacbedc66c26b7470",
+    "semantic_hash": "dab2b7d699cb04eaacbedc66c26b7470"
+  },
+  "src/cli/serve.ts": {
+    "mtime": 1788837388.134163,
+    "seen": 1788859359.578788,
+    "ast_hash": "b5bfdc3d8893e81f4155465b3455b5a9",
+    "semantic_hash": "b5bfdc3d8893e81f4155465b3455b5a9"
+  },
+  "src/core/catalog.ts": {
+    "mtime": 1788837388.1343791,
+    "seen": 1788859359.578788,
+    "ast_hash": "2643dea8f84b03ab7c22521cf695bfc1",
+    "semantic_hash": "2643dea8f84b03ab7c22521cf695bfc1"
+  },
+  "src/core/config.ts": {
+    "mtime": 1788837388.13459,
+    "seen": 1788859359.5787892,
+    "ast_hash": "3c0364987282a0179a5895ea01f0bee7",
+    "semantic_hash": "3c0364987282a0179a5895ea01f0bee7"
+  },
+  "src/core/errors.ts": {
+    "mtime": 1788837388.1347847,
+    "seen": 1788859359.5787892,
+    "ast_hash": "eb1121f7d8eb5bc15acdb49386bc256a",
+    "semantic_hash": "eb1121f7d8eb5bc15acdb49386bc256a"
+  },
+  "src/core/hash.ts": {
+    "mtime": 1788837388.1349921,
+    "seen": 1788859359.5787892,
+    "ast_hash": "e5c5369f7539ee4b755868c47be231f7",
+    "semantic_hash": "e5c5369f7539ee4b755868c47be231f7"
+  },
+  "src/core/route.ts": {
+    "mtime": 1788837388.135302,
+    "seen": 1788859359.57879,
+    "ast_hash": "2e6fa96033da04398e9553b6118dc341",
+    "semantic_hash": "2e6fa96033da04398e9553b6118dc341"
+  },
+  "src/core/types.ts": {
+    "mtime": 1788837388.1355064,
+    "seen": 1788859359.57879,
+    "ast_hash": "faea2507a6f9c88e37be63819f0baec1",
+    "semantic_hash": "faea2507a6f9c88e37be63819f0baec1"
+  },
+  "src/io/environment.ts": {
+    "mtime": 1788837388.135745,
+    "seen": 1788859359.578791,
+    "ast_hash": "242ed254fe889065e37d1c642e93d02b",
+    "semantic_hash": "242ed254fe889065e37d1c642e93d02b"
+  },
+  "src/io/store.ts": {
+    "mtime": 1788837388.1359527,
+    "seen": 1788859359.578791,
+    "ast_hash": "bd08c270e6b066134abc16c909ca8f9d",
+    "semantic_hash": "bd08c270e6b066134abc16c909ca8f9d"
+  },
+  "src/transport/bun-fetch.ts": {
+    "mtime": 1788837388.136116,
+    "seen": 1788859359.578791,
+    "ast_hash": "02305969a724450823a60d8249181177",
+    "semantic_hash": "02305969a724450823a60d8249181177"
+  },
+  "src/transport/claude-hook.ts": {
+    "mtime": 1788837388.1362433,
+    "seen": 1788859359.5787919,
+    "ast_hash": "34ded5add6c1d5fc4da132f84f24f606",
+    "semantic_hash": "34ded5add6c1d5fc4da132f84f24f606"
+  },
+  "src/transport/handler.ts": {
+    "mtime": 1788837388.1364822,
+    "seen": 1788859359.5787919,
+    "ast_hash": "5c6ffe12f8ccd842a261d583e7e9ac16",
+    "semantic_hash": "5c6ffe12f8ccd842a261d583e7e9ac16"
+  },
+  "src/transport/hooks.ts": {
+    "mtime": 1788837388.1366262,
+    "seen": 1788859359.578793,
+    "ast_hash": "cfcf2096912798ed01af68ed49c57f94",
+    "semantic_hash": "cfcf2096912798ed01af68ed49c57f94"
+  },
+  "tests/adapters/capabilities.test.ts": {
+    "mtime": 1788837388.1368232,
+    "seen": 1788859359.578793,
+    "ast_hash": "75396b60697bd965c4b8a17201e174b2",
+    "semantic_hash": "75396b60697bd965c4b8a17201e174b2"
+  },
+  "tests/adapters/claude-code.test.ts": {
+    "mtime": 1788837388.1369677,
+    "seen": 1788859359.578793,
+    "ast_hash": "b0f4d015a5528b9100c20b938e8a677d",
+    "semantic_hash": "b0f4d015a5528b9100c20b938e8a677d"
+  },
+  "tests/adapters/correlation.test.ts": {
+    "mtime": 1788837388.137103,
+    "seen": 1788859359.578794,
+    "ast_hash": "b39f5d508eb1a4a72a26af02a82b67ff",
+    "semantic_hash": "b39f5d508eb1a4a72a26af02a82b67ff"
+  },
+  "tests/adapters/markers.test.ts": {
+    "mtime": 1788837388.137233,
+    "seen": 1788859359.578794,
+    "ast_hash": "fa572277c22fc662fb0a02302699903b",
+    "semantic_hash": "fa572277c22fc662fb0a02302699903b"
+  },
+  "tests/cli/poc.test.ts": {
+    "mtime": 1788837388.1374207,
+    "seen": 1788859359.578795,
+    "ast_hash": "6371bbfcf17bf8596c74e71b17028601",
+    "semantic_hash": "6371bbfcf17bf8596c74e71b17028601"
+  },
+  "tests/cli/serve.test.ts": {
+    "mtime": 1788837388.1376302,
+    "seen": 1788859359.578795,
+    "ast_hash": "5d6dc9b3bb44079035bc5f1ca51294f0",
+    "semantic_hash": "5d6dc9b3bb44079035bc5f1ca51294f0"
+  },
+  "tests/core/catalog.test.ts": {
+    "mtime": 1788837388.13778,
+    "seen": 1788859359.578795,
+    "ast_hash": "bd6ee0403ae6dba54074aba9424e1c7a",
+    "semantic_hash": "bd6ee0403ae6dba54074aba9424e1c7a"
+  },
+  "tests/core/config.test.ts": {
+    "mtime": 1788837388.1379125,
+    "seen": 1788859359.5787961,
+    "ast_hash": "ca36bb92f3e546be93a511815c05a32c",
+    "semantic_hash": "ca36bb92f3e546be93a511815c05a32c"
+  },
+  "tests/core/hash.test.ts": {
+    "mtime": 1788837388.13811,
+    "seen": 1788859359.5787961,
+    "ast_hash": "d05984fd59d8e06b7352e94ea86974da",
+    "semantic_hash": "d05984fd59d8e06b7352e94ea86974da"
+  },
+  "tests/core/route.test.ts": {
+    "mtime": 1788837388.1383228,
+    "seen": 1788859359.5787961,
+    "ast_hash": "ad90354e83cfda082317ed6519e21a3e",
+    "semantic_hash": "ad90354e83cfda082317ed6519e21a3e"
+  },
+  "tests/fixtures/capabilities-invalid/claude-code-9.0.0.json": {
+    "mtime": 1788837388.1385844,
+    "seen": 1788859359.578797,
+    "ast_hash": "5f97b9235e9c917f9ef428666f9972a9",
+    "semantic_hash": "5f97b9235e9c917f9ef428666f9972a9"
+  },
+  "tests/fixtures/capabilities-invalid/claude-code-9.0.1.json": {
+    "mtime": 1788837388.138801,
+    "seen": 1788859359.578797,
+    "ast_hash": "695d2c5a53598167f3b227274bd2d00b",
+    "semantic_hash": "695d2c5a53598167f3b227274bd2d00b"
+  },
+  "tests/fixtures/capabilities-invalid/claude-code-9.0.2.json": {
+    "mtime": 1788837388.1395988,
+    "seen": 1788859359.578797,
+    "ast_hash": "aeab2c1bda81947980abacd3019654bc",
+    "semantic_hash": "aeab2c1bda81947980abacd3019654bc"
+  },
+  "tests/fixtures/capabilities-invalid/claude-code-9.0.3.json": {
+    "mtime": 1788837388.1397507,
+    "seen": 1788859359.578798,
+    "ast_hash": "58f4ba14cccff4828dd3074a5af99813",
+    "semantic_hash": "58f4ba14cccff4828dd3074a5af99813"
+  },
+  "tests/fixtures/capabilities-invalid/claude-code-9.0.4.json": {
+    "mtime": 1788837388.1398818,
+    "seen": 1788859359.578798,
+    "ast_hash": "eaa7a11729568ccf92c2a7ad6559b6f0",
+    "semantic_hash": "eaa7a11729568ccf92c2a7ad6559b6f0"
+  },
+  "tests/fixtures/capabilities-invalid/transport-bun-fetch-9.0.0.json": {
+    "mtime": 1788837388.1400003,
+    "seen": 1788859359.578798,
+    "ast_hash": "f5fc3df5a2881f621664136c701e9c31",
+    "semantic_hash": "f5fc3df5a2881f621664136c701e9c31"
+  },
+  "tests/fixtures/capabilities-invalid/transport-bun-fetch-9.0.1.json": {
+    "mtime": 1788837388.1401148,
+    "seen": 1788859359.578799,
+    "ast_hash": "aaaf58ba4aacd35e04436709aba8574f",
+    "semantic_hash": "aaaf58ba4aacd35e04436709aba8574f"
+  },
+  "tests/fixtures/capabilities/claude-code-2.1.263.json": {
+    "mtime": 1788837388.1402671,
+    "seen": 1788859359.578799,
+    "ast_hash": "c7b721470f64859f49e552b607ebee1f",
+    "semantic_hash": "c7b721470f64859f49e552b607ebee1f"
+  },
+  "tests/fixtures/capabilities/codex-pending.json": {
+    "mtime": 1788837388.1403937,
+    "seen": 1788859359.578799,
+    "ast_hash": "499a1a68e0dea3f9d3af755d32db8b84",
+    "semantic_hash": "499a1a68e0dea3f9d3af755d32db8b84"
+  },
+  "tests/fixtures/capabilities/opencode-1.18.29.json": {
+    "mtime": 1788837388.140507,
+    "seen": 1788859359.5788002,
+    "ast_hash": "a3aa0fa103bc11c27390814ccf60db91",
+    "semantic_hash": "a3aa0fa103bc11c27390814ccf60db91"
+  },
+  "tests/fixtures/capabilities/transport-bun-fetch-1.3.11.json": {
+    "mtime": 1788837388.1406143,
+    "seen": 1788859359.5788002,
+    "ast_hash": "c640daa6d0b42cd9364705f632a79c54",
+    "semantic_hash": "c640daa6d0b42cd9364705f632a79c54"
+  },
+  "tests/fixtures/capabilities/transport-bun-fetch-1.4.2.json": {
+    "mtime": 1788837388.140721,
+    "seen": 1788859359.578801,
+    "ast_hash": "13ba2078f4360f47ec35f86a532644ef",
+    "semantic_hash": "13ba2078f4360f47ec35f86a532644ef"
+  },
+  "tests/fixtures/capabilities/transport-bun-fetch-raw-1.4.2.json": {
+    "mtime": 1788837388.1408386,
+    "seen": 1788859359.578801,
+    "ast_hash": "21a258c231bad7944d5f8efdddb48414",
+    "semantic_hash": "21a258c231bad7944d5f8efdddb48414"
+  },
+  "tests/io/environment.test.ts": {
+    "mtime": 1788837388.1410873,
+    "seen": 1788859359.5788019,
+    "ast_hash": "3dc338427dd8eab170dbf7d72d63a875",
+    "semantic_hash": "3dc338427dd8eab170dbf7d72d63a875"
+  },
+  "tests/io/store.test.ts": {
+    "mtime": 1788837388.1413457,
+    "seen": 1788859359.5788019,
+    "ast_hash": "613ba02ffc673167d0b21360af0b48eb",
+    "semantic_hash": "613ba02ffc673167d0b21360af0b48eb"
+  },
+  "tests/probes/evidence.test.ts": {
+    "mtime": 1788837388.1415367,
+    "seen": 1788859359.5788019,
+    "ast_hash": "a08d05501dedbdf137c1c9e743eead30",
+    "semantic_hash": "a08d05501dedbdf137c1c9e743eead30"
+  },
+  "tests/probes/run.ts": {
+    "mtime": 1788837388.1416664,
+    "seen": 1788859359.578803,
+    "ast_hash": "575463ff7e3653d2d4c1106b40f2cb83",
+    "semantic_hash": "575463ff7e3653d2d4c1106b40f2cb83"
+  },
+  "tests/support/capture-gateway.ts": {
+    "mtime": 1788837388.1418293,
+    "seen": 1788859359.578803,
+    "ast_hash": "ac09f88e8711593979ddf8db8426bfdc",
+    "semantic_hash": "ac09f88e8711593979ddf8db8426bfdc"
+  },
+  "tests/support/fixtures.ts": {
+    "mtime": 1788837388.142025,
+    "seen": 1788859359.578803,
+    "ast_hash": "7d510642ace44872fd54adbf073aa049",
+    "semantic_hash": "7d510642ace44872fd54adbf073aa049"
+  },
+  "tests/transport/bun-fetch.test.ts": {
+    "mtime": 1788837388.142169,
+    "seen": 1788859359.578804,
+    "ast_hash": "af094daa3db2aca734bec570830bb5a0",
+    "semantic_hash": "af094daa3db2aca734bec570830bb5a0"
+  },
+  "tests/transport/claude-hook.test.ts": {
+    "mtime": 1788837388.1423395,
+    "seen": 1788859359.578804,
+    "ast_hash": "5ca1b5b73d837f93d2fcc1a118d7c825",
+    "semantic_hash": "5ca1b5b73d837f93d2fcc1a118d7c825"
+  },
+  "tests/transport/handler.test.ts": {
+    "mtime": 1788837388.1424994,
+    "seen": 1788859359.578804,
+    "ast_hash": "2658d17ff7df6c5635237dca788a7eec",
+    "semantic_hash": "2658d17ff7df6c5635237dca788a7eec"
+  },
+  "tests/transport/hooks.test.ts": {
+    "mtime": 1788837388.1426613,
+    "seen": 1788859359.578805,
+    "ast_hash": "6018f75b4bf854546cf031e14d0b6582",
+    "semantic_hash": "6018f75b4bf854546cf031e14d0b6582"
+  },
+  "tsconfig.json": {
+    "mtime": 1788837388.142889,
+    "seen": 1788859359.578805,
+    "ast_hash": "07d9d129720754b8cd3ce505d58b2783",
+    "semantic_hash": "07d9d129720754b8cd3ce505d58b2783"
+  },
+  "README.md": {
+    "mtime": 1788837388.1291234,
+    "seen": 1788859359.578805,
+    "ast_hash": "6d8bda1c3d1a3537776878fe3b182ab7",
+    "semantic_hash": "6d8bda1c3d1a3537776878fe3b182ab7"
+  },
+  "docs/CONVENTIONS.md": {
+    "mtime": 1788707229.3511288,
+    "seen": 1788859359.578806,
+    "ast_hash": "c105cf0d7c27ba34ecb8f5ed67df3b90",
+    "semantic_hash": "c105cf0d7c27ba34ecb8f5ed67df3b90"
+  },
+  "docs/superpowers/plans/2026-09-06-subagent-model-routing.md": {
+    "mtime": 1788837388.1311367,
+    "seen": 1788859359.578806,
+    "ast_hash": "ca28c509dbaedcf2338187df1bfd075a",
+    "semantic_hash": "ca28c509dbaedcf2338187df1bfd075a"
+  },
+  "docs/superpowers/specs/2026-09-06-subagent-model-routing-design.md": {
+    "mtime": 1788837388.131981,
+    "seen": 1788859359.578807,
+    "ast_hash": "1456c1a703f159d70cdf435b71232b14",
+    "semantic_hash": "1456c1a703f159d70cdf435b71232b14"
+  }
+}
