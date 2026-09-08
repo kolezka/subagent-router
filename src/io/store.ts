@@ -1,9 +1,10 @@
-import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { parseOperatorConfig, parseSnapshot } from '../core/config';
 import { RouterError } from '../core/errors';
 import { sha256 } from '../core/hash';
 import type { CatalogSnapshot, LoadedState, OperatorConfig } from '../core/types';
+import { runWithCleanup } from './cleanup';
 
 export function snapshotPathFor(configPath: string): string {
   return join(dirname(configPath), 'models.lock.json');
@@ -55,6 +56,7 @@ export async function loadState(configPath: string): Promise<LoadedState> {
     ...(snapshot === undefined ? {} : { snapshot }),
     expected: { configHash: current.configHash, snapshotHash: current.snapshotHash },
     generation,
+    configPath: resolve(configPath),
   };
 }
 
@@ -71,21 +73,40 @@ async function withLock<T>(configPath: string, work: () => Promise<T>): Promise<
     throw error;
   }
 
-  try {
-    return await work();
-  } finally {
+  const lockHandle = handle;
+  // The lock file is ours (created with wx above), so removing it on every exit path is correct.
+  // runWithCleanup keeps the work error primary if close or rm fails as well.
+  return runWithCleanup(work, async () => {
     try {
-      await handle.close();
+      await lockHandle.close();
     } finally {
       await rm(lockPath, { force: true });
     }
+  });
+}
+
+// Creates `temp` exclusively and writes `payload` into it. Split from the rename so a failure
+// between create and a complete write (ENOSPC, EIO) still leaves `tempCreated` true in the caller
+// and the half-written file gets removed instead of blocking every later commit with EEXIST.
+async function writeTempPayload(temp: string, payload: string): Promise<void> {
+  const handle = await open(temp, 'wx');
+  try {
+    await handle.writeFile(payload);
+  } finally {
+    await handle.close();
   }
+}
+
+export interface CommitStateOptions {
+  // Test seam only: replaces the temp-file write to simulate a failure after the file exists.
+  writePayload?: (temp: string, payload: string) => Promise<void>;
 }
 
 export async function commitState(
   configPath: string,
   base: LoadedState,
   change: { config?: OperatorConfig; snapshot?: CatalogSnapshot },
+  options: CommitStateOptions = {},
 ): Promise<void> {
   if (change.config !== undefined && change.snapshot !== undefined) {
     throw new RouterError('store-single-file', 'write config or snapshot, not both');
@@ -111,11 +132,26 @@ export async function commitState(
     const temp = `${target}.${process.pid}.tmp`;
 
     await mkdir(dirname(target), { recursive: true });
-    try {
-      await writeFile(temp, payload, { flag: 'wx' });
-      await rename(temp, target);
-    } finally {
-      await rm(temp, { force: true });
-    }
+    // Only a temp file this call created is removed on failure. `tempCreated` is set once the
+    // exclusive create can no longer have been refused: any later failure (partial write, rename)
+    // means the file at `temp` is ours. If the create itself was refused (EEXIST), the file at
+    // `temp` belongs to someone else and stays.
+    let tempCreated = false;
+    const writePayload = options.writePayload ?? writeTempPayload;
+    await runWithCleanup(
+      async () => {
+        try {
+          await writePayload(temp, payload);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') tempCreated = true;
+          throw error;
+        }
+        tempCreated = true;
+        await rename(temp, target);
+      },
+      async () => {
+        if (tempCreated) await rm(temp, { force: true });
+      },
+    );
   });
 }

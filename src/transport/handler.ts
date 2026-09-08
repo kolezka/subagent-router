@@ -19,6 +19,13 @@ import type {
   TrustedLifecycleContext,
 } from '../core/types';
 
+// Re-exported so the published `./handler` entrypoint exposes both halves of the transport
+// contract from one module: the request handler and the SubagentStart hook output builder that
+// feeds it. Consumers of the package import `createClaudeStartOutput` from here rather than
+// reaching into an unexported internal path.
+export { createClaudeStartOutput } from './hooks';
+export type { CreateClaudeStartOutputInput, CreateClaudeStartOutputOptions } from './hooks';
+
 // Freshness receipts prove a subagent-start hook ran recently, not forever. This TTL is not
 // exposed as config anywhere in the brief or shared types, so it is an internal, undocumented
 // default rather than a spec value.
@@ -399,7 +406,7 @@ async function handleRoutable(request: Request, url: URL, ctx: RoutableContext):
 
   if (normalized.input.scope === 'parent') {
     const enriched = enrichParentTools(normalized.forwardBody, ctx.catalog);
-    return forwardJson(request, targetUrl, ctx.source.headers, ctx.fetch, enriched);
+    return forwardJson(request, targetUrl, ctx.source.gatewayHeaders, ctx.fetch, enriched);
   }
 
   const context = ctx.trustedContext(request);
@@ -458,7 +465,7 @@ async function handleRoutable(request: Request, url: URL, ctx: RoutableContext):
   if (decision.kind === 'error') return errorResponse(422, decision.code);
 
   if (decision.kind === 'pass-through') {
-    return forwardJson(request, targetUrl, ctx.source.headers, ctx.fetch, normalized.forwardBody);
+    return forwardJson(request, targetUrl, ctx.source.gatewayHeaders, ctx.fetch, normalized.forwardBody);
   }
 
   if (ctx.correlationStore !== undefined && agentId !== undefined) {
@@ -471,7 +478,7 @@ async function handleRoutable(request: Request, url: URL, ctx: RoutableContext):
   }
 
   const forwardBody = { ...normalized.forwardBody, model: decision.upstreamModel };
-  return forwardJson(request, targetUrl, ctx.source.headers, ctx.fetch, forwardBody);
+  return forwardJson(request, targetUrl, ctx.source.gatewayHeaders, ctx.fetch, forwardBody);
 }
 
 const ROUTABLE_PATHS = new Set(['/v1/messages', '/v1/messages/count_tokens']);
@@ -530,6 +537,6 @@ export function createHandler(options: CreateHandlerOptions): (request: Request)
       return handleRoutable(request, url, routableCtx);
     }
 
-    return forwardRaw(request, buildUpstreamUrl(url.pathname, url.search, gatewayBase), source.headers, options.fetch);
+    return forwardRaw(request, buildUpstreamUrl(url.pathname, url.search, gatewayBase), source.gatewayHeaders, options.fetch);
   };
 }

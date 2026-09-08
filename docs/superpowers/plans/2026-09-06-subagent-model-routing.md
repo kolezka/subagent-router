@@ -40,6 +40,13 @@ Użytkownik zlecił przygotowanie planu na bazie specyfikacji. Nie jest to polec
 
 Źródłem jest specyfikacja rewizji 5. Jedna zmiana merytoryczna: rozmowę z dostawcą prowadzi zewnętrzna brama, docelowo `9router` lub OmniRoute, a pakiet nie może zależeć od `@the-next-ai/ai-gateway` używanego przez CCR. Powodem jest obserwowana przez operatora niska wydajność tego pakietu z dostawcą OpenAI; nie wykonano pomiaru w tym projekcie. Dodano ograniczenie globalne i nazwany test granic w Task 15. Zadania 1-4 wykonane przed tą rewizją nie wymagają zmian, bo nie dodają zależności runtime.
 
+## Uściślenia integracyjne wykonania, 2026-09-08
+
+- `SourceContext.headers` dotyczy wyłącznie discovery. `gatewayHeaders` dotyczy wyłącznie forwardingu. `effectiveGatewayUrl` pochodzi z `gateway.urlEnv`, a `effectiveModelsUrl` z `modelSource.baseUrlEnv` i `endpointPath`. Credentiale katalogu nie są fallbackiem nagłówków bramy.
+- W OpenCode `tool.execute.before` otrzymuje `(input, output)`, argumenty narzędzia są w `output.args`, sukces kończy się bez wartości, a odmowa rzuca wyjątek. Ten rzeczywisty kontrakt zastępuje szkic jednoargumentowego callbacka z Task 10. Sama próba testowego pluginu dowodzi mechanizmu hooka, nie kompletnego M6-runtime routera.
+- Generation i hash artefaktu są oczekiwaniami adaptera porównywanymi z rzeczywistą effective konfiguracją. Nie są natywnymi polami klienta. Sidecar ani literalne `source: 'authoritative-native-resolver'` nie zastępują odczytu native resolvera.
+- Test dodatni walidatora native wymaga rzeczywiście natywnego inventory lub jawnego syntetycznego odpowiednika. `files-only` nie może zostać podniesione do `native` samą obecnością argumentu `nativeInventory`.
+
 ## Global Constraints
 
 - Pakiet MUSI być pojedynczym pakietem Bun + TypeScript, bez monorepo.
@@ -422,7 +429,8 @@ export interface SourceContext {
   sourceId: string;
   effectiveGatewayUrl: string;
   effectiveModelsUrl: string;
-  headers: HeaderMap;
+  headers: HeaderMap; // discovery only
+  gatewayHeaders: HeaderMap; // forwarding only
 }
 
 export interface LoadedState {
