@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, realpath, rename, rm, stat, writeFile } from 'node:fs/p
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { candidateAgentRoots, getAgent } from './inventory';
 import { opencodeVariants } from '../adapters/opencode';
-import { buildCatalog } from '../core/catalog';
+import { buildCatalog, resolveModel } from '../core/catalog';
 import { RouterError } from '../core/errors';
 import { sha256 } from '../core/hash';
 import { assertSafePathSegment } from '../core/path-segment';
@@ -368,6 +368,17 @@ function buildCodexFiles(ctx: BuildContext, catalog: EffectiveCatalog | undefine
       throw error;
     }
     if (nativeEntry.client !== 'codex') continue;
+
+    // Validate only when a catalog was actually built. With no snapshot, this stays the
+    // documented no-snapshot, naming-only path: routeOverride is emitted as-is, unverified.
+    // With a catalog, resolveModel throws on an unresolvable or disabled model, same as
+    // route.ts's live resolver, so a role never silently emits a model the operator disallows.
+    if (catalog !== undefined) {
+      const model = resolveModel(role.routeOverride, catalog);
+      if (!model.enabled) {
+        throw new RouterError('model-not-allowed', `model-not-allowed: codex role "${name}" routes to disabled model ${role.routeOverride}`);
+      }
+    }
 
     const merged: Record<string, unknown> = { ...nativeEntry.native, model: role.routeOverride };
     files.push({ relativePath: `${ctx.clientDir}/agents/${name}.toml`, content: dumpToml(merged) }); // dumpToml throws loudly on an unsupported native shape

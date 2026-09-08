@@ -28,15 +28,29 @@ export function parseAgentMarkdown(text: string, path: string): ParsedAgentMarkd
   let parsed: unknown;
   try {
     parsed = yamlText.trim().length === 0 ? {} : Bun.YAML.parse(yamlText);
-  } catch (error) {
-    throw new RouterError('agent-file-malformed', `${path}: invalid YAML frontmatter (${(error as Error).message})`);
+  } catch {
+    // Never interpolate the parser's own exception message: it can echo raw source
+    // content back into the router's error output.
+    throw new RouterError('agent-file-malformed', `${path}: invalid YAML frontmatter`);
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new RouterError('agent-file-malformed', `${path}: frontmatter must be a YAML mapping`);
   }
 
-  const body = lines.slice(closingIndex + 1).join('\n').replace(/^\n+/, '');
-  return { native: parsed as Record<string, unknown>, body };
+  return { native: parsed as Record<string, unknown>, body: bodyAfterLine(text, closingIndex) };
+}
+
+// Returns the exact original substring after line `lineIndex`, preserving CRLF/LF and blank
+// lines as written. Unlike lines.slice().join('\n'), this never rewrites the file's bytes.
+function bodyAfterLine(text: string, lineIndex: number): string {
+  const terminator = /\r?\n/g;
+  let occurrence = 0;
+  let match: RegExpExecArray | null;
+  while ((match = terminator.exec(text)) !== null) {
+    if (occurrence === lineIndex) return text.slice(match.index + match[0].length);
+    occurrence++;
+  }
+  return '';
 }
 
 function effectiveName(native: Record<string, unknown>, filename: string, stripLength: number): string {

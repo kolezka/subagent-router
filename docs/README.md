@@ -24,6 +24,10 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   directories, from a separate integration slice.
 - Every block above carries `verified_against` with the commit its claims were checked against
   (file by file, test by test); a later commit is not covered until the stamp is refreshed.
+- [measurements/claude-code-2.1.263-partial.md](measurements/claude-code-2.1.263-partial.md):
+  przegląd historycznych artefaktów parent/child dla Claude Code 2.1.263. To jest przegląd
+  zapisanych danych, nie nowy pomiar natywny ani promocja wsparcia; M1, M3/M3-B2, M4, M10 i
+  freshness pozostają niepotwierdzone.
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 

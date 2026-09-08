@@ -1,8 +1,8 @@
 ---
 block: transport
 doc: README
-verified_against: 688d1736a12a96dc35cb444cd93405b38b0aa77f
-verified_on: 2026-09-08
+verified_against: 008ed4b05b8b28e89bfbd67d76d1ceaf220c9db0
+verified_on: 2026-09-09
 owns:
   - src/transport/handler.ts
   - src/transport/claude-hook.ts
@@ -26,8 +26,9 @@ against.
 The Claude Code path only. Unlike [agents](../agents/README.md)'s native OpenCode/Codex mode,
 Claude Code talks to this router over HTTP: `createHandler` fronts the external gateway, parses an
 in-body `<subagent-router .../>` marker (`src/adapters/markers.ts`), decides a route via
-[core](../core/README.md)'s `resolveRoute`, and forwards the rewritten request. The marker is
-always stripped before forwarding; it never reaches the gateway or the model.
+[core](../core/README.md)'s `resolveRoute`, and forwards the rewritten request. Accepted routing
+markers are stripped from child requests before forwarding. Ignored marker-like text remains
+ordinary request content.
 
 `src/transport/claude-hook.ts` and `hooks.ts` implement the other half: Claude Code's
 SubagentStart hook, which can register a one-shot freshness receipt with the running handler
@@ -42,8 +43,7 @@ one piece of this block with a real, non-synthetic passing measurement (see [GAP
 
 `createHandler` deep-clones its config/profile/source at creation time: a caller mutating the
 original objects afterward cannot change a running handler's behavior. Freshness envelope fields
-(`handlerInstanceId`, `agentId`, `nonce`) are bounded opaque tokens (max 256 chars), never
-interpreted as anything but map keys.
+(`handlerInstanceId`, `agentId`, `nonce`) are bounded opaque identifiers (max 256 chars).
 
 ## See also
 

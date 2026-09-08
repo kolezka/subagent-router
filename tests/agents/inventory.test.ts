@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getAgent, readAgentInventory } from '../../src/agents/inventory';
+import { parseAgentMarkdown } from '../../src/agents/claude-code';
 import { RouterError } from '../../src/core/errors';
 
 const FIXTURES = join(import.meta.dir, '..', 'fixtures', 'agents');
@@ -138,5 +139,118 @@ describe('readAgentInventory nativeInventory merge integrity', () => {
     };
     const inventory = await readAgentInventory('claude-code', { ...options, nativeInventory: native });
     expect(getAgent(inventory, 'ghost').availability).toBe('fileless');
+  });
+});
+
+describe('body and parser errors do not modify or leak source content', () => {
+  test('body preserves CRLF and blank lines exactly as in the file', async () => {
+    // Expected body is the fixture's literal tail, typed independently of the parser.
+    const inventory = await readAgentInventory('claude-code', {
+      cwd: join(FIXTURES, 'claude-code', 'project'),
+      home: join(FIXTURES, 'claude-code', 'home'),
+      env: {},
+      additionalRoots: [],
+    });
+    const agent = getAgent(inventory, 'crlf-agent');
+    expect(agent.body).toBe('\r\n\r\nLinia z pustymi liniami przed.\r\nDruga linia.\r\n');
+  });
+
+  test('malformed YAML frontmatter error does not leak file contents (sentinel secret)', async () => {
+    const options = {
+      cwd: join(FIXTURES, 'claude-code', 'malformed'),
+      home: join(FIXTURES, 'claude-code', 'malformed'),
+      env: {},
+      additionalRoots: [],
+    };
+    let caught: unknown;
+    try {
+      await readAgentInventory('claude-code', options);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(RouterError);
+    const message = (caught as RouterError).message;
+    expect(message.includes('SENTINEL_YAML_9f3a')).toBe(false);
+    expect(message).toContain('broken.md');
+  });
+
+  test('YAML parse error does not leak the underlying parser exception message (fault injection)', async () => {
+    // The fixture test above passing is not proof this path is safe, since Bun.YAML.parse may
+    // just never echo source text. This forces a sentinel-bearing error to prove the catch
+    // itself never forwards the parser's message.
+    const original = Bun.YAML.parse;
+    let caught: unknown;
+    try {
+      Bun.YAML.parse = () => {
+        throw new Error('SENTINEL_YAML_FAULT_8c21');
+      };
+      parseAgentMarkdown('---\nname: x\n---\nbody', '/fake/agent.md');
+    } catch (error) {
+      caught = error;
+    } finally {
+      Bun.YAML.parse = original;
+    }
+    expect(caught).toBeInstanceOf(RouterError);
+    expect((caught as RouterError).message.includes('SENTINEL_YAML_FAULT_8c21')).toBe(false);
+  });
+
+  test('malformed opencode.json error does not leak file contents (sentinel secret)', async () => {
+    let caught: unknown;
+    try {
+      await readAgentInventory('opencode', {
+        cwd: join(FIXTURES, 'opencode', 'malformed'),
+        home: join(FIXTURES, 'opencode', 'malformed'),
+        env: {},
+        additionalRoots: [],
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(RouterError);
+    const message = (caught as RouterError).message;
+    expect(message.includes('SENTINEL_JSON_7d2c')).toBe(false);
+    expect(message).toContain('opencode.json');
+  });
+
+  test('malformed TOML error does not leak file contents (sentinel secret)', async () => {
+    let caught: unknown;
+    try {
+      await readAgentInventory('codex', {
+        cwd: join(FIXTURES, 'codex', 'malformed'),
+        home: join(FIXTURES, 'codex', 'malformed'),
+        env: {},
+        additionalRoots: [],
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(RouterError);
+    const message = (caught as RouterError).message;
+    expect(message.includes('SENTINEL_TOML_4a1b')).toBe(false);
+    expect(message).toContain('broken.toml');
+  });
+});
+
+describe('parseAgentMarkdown boundaries', () => {
+  test('LF body with leading blank lines is preserved exactly', () => {
+    const { body } = parseAgentMarkdown('---\nname: x\n---\n\n\nBody line\n', '/fake/agent.md');
+    expect(body).toBe('\n\nBody line\n');
+  });
+
+  test('closing delimiter at EOF (no trailing newline) yields an empty body', () => {
+    const { body } = parseAgentMarkdown('---\nname: x\n---', '/fake/agent.md');
+    expect(body).toBe('');
+  });
+
+  test('a newline right after the closing delimiter with nothing after it yields an empty body', () => {
+    const { body } = parseAgentMarkdown('---\nname: x\n---\n', '/fake/agent.md');
+    expect(body).toBe('');
+  });
+
+  test('no frontmatter passes the text through unchanged', () => {
+    const text = 'no frontmatter\njust plain text\n';
+    const { native, body } = parseAgentMarkdown(text, '/fake/agent.md');
+    expect(native).toEqual({});
+    expect(body).toBe(text);
   });
 });

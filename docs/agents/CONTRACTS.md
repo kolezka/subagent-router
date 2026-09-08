@@ -73,3 +73,39 @@ emits `updatedInput`. [verified] against
 
 enforcement: [../../tests/adapters/opencode-plugin.test.ts](../../tests/adapters/opencode-plugin.test.ts),
 [../../tests/adapters/codex-hook.test.ts](../../tests/adapters/codex-hook.test.ts)
+
+## parseAgentMarkdown (exact body text)
+
+The body returned is the exact original substring of the file after the closing frontmatter
+delimiter's line terminator: whatever mix of CRLF/LF, blank lines and trailing whitespace the
+source file used is preserved byte for byte, never normalized through a `join('\n')`. A file
+with no frontmatter passes through unchanged as the body. [verified] against
+[../../src/agents/claude-code.ts](../../src/agents/claude-code.ts) (`bodyAfterLine`).
+
+enforcement: [../../tests/agents/inventory.test.ts](../../tests/agents/inventory.test.ts),
+`describe('parseAgentMarkdown boundaries')` and the CRLF fixture case in
+`describe('body and parser errors do not modify or leak source content')`
+
+## parseAgentMarkdown / listTomlAgents / readOpencodeAgents (safe parse errors)
+
+A malformed YAML, TOML or JSON agent file throws `RouterError('agent-file-malformed', ...)` with
+a message built only from the file path, never from the underlying parser's own exception
+message, which could otherwise echo raw source content (including secrets) back into CLI output.
+[verified] against [../../src/agents/claude-code.ts](../../src/agents/claude-code.ts),
+[../../src/agents/codex.ts](../../src/agents/codex.ts),
+[../../src/agents/opencode.ts](../../src/agents/opencode.ts).
+
+enforcement: [../../tests/agents/inventory.test.ts](../../tests/agents/inventory.test.ts),
+sentinel-secret and fault-injection cases in
+`describe('body and parser errors do not modify or leak source content')`
+
+## buildCodexFiles (catalog validation, no-snapshot naming-only exception)
+
+When a catalog was built (a snapshot exists), each exported role's `routeOverride` is resolved
+against it; an unresolvable ID/alias or a resolved-but-disabled model throws before any file is
+written (`unknown-model`/`model-not-allowed`, the same codes `route.ts`'s live resolver uses).
+When no snapshot exists, this check does not run: `routeOverride` is emitted into the role's TOML
+as-is, unverified. This is the documented no-snapshot, naming-only export path, not a bug.
+[verified] against [../../src/agents/export.ts](../../src/agents/export.ts) (`buildCodexFiles`).
+
+enforcement: [../../tests/cli/export-catalog.test.ts](../../tests/cli/export-catalog.test.ts)

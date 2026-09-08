@@ -1,8 +1,8 @@
 ---
 block: agents
 doc: README
-verified_against: 688d1736a12a96dc35cb444cd93405b38b0aa77f
-verified_on: 2026-09-08
+verified_against: 008ed4b05b8b28e89bfbd67d76d1ceaf220c9db0
+verified_on: 2026-09-09
 owns:
   - src/agents/inventory.ts
   - src/agents/export.ts
@@ -49,9 +49,10 @@ imports `buildCatalog` from `../core/catalog` and reads the `models.lock.json` s
 
 ## Profile refusal, by construction
 
-Every native path fails closed: no measured production resolver exists for either client today
-(see [GAPS.md](GAPS.md)), so every real invocation denies with `unsupported-path`. Not a bug fixed
-by a config flag; it needs a real M6/M6-runtime (OpenCode) or M7 (Codex) measurement first.
+Matching child-spawn hooks fail closed when native runtime context or measured capabilities are
+missing. Other tools are left unchanged. No measured production resolver exists for either
+client today (see [GAPS.md](GAPS.md)); support needs real M6/M6-runtime (OpenCode) or M7 (Codex)
+evidence, not a config flag.
 
 ## See also
 

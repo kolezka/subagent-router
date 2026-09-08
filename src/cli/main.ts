@@ -52,14 +52,15 @@ const EXPORT_USAGE_CODES = new Set([
   'export-snapshot-missing',
 ]);
 
-// RouterError codes starting with config-/snapshot-/usage-, plus the exact codes unknown-model
-// and agent-unknown, are usage/config/selection problems (exit 2); every other RouterError is an
-// operational failure (exit 1: I/O or network), per the CLI's documented exit-code contract.
+// config-/snapshot-/usage- codes, plus unknown-model, model-not-allowed and agent-unknown, are
+// usage/config problems (exit 2); everything else is exit 1. model-not-allowed comes from
+// config export refusing a codex role routed to a disabled catalog model.
 function isUsageOrConfigCode(code: string): boolean {
   return (
     code.startsWith('config-') ||
     code.startsWith('snapshot-') ||
     code === 'unknown-model' ||
+    code === 'model-not-allowed' ||
     code === 'agent-unknown' ||
     code.startsWith('usage-') ||
     EXPORT_USAGE_CODES.has(code)
