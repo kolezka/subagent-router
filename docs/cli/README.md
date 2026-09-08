@@ -1,8 +1,8 @@
 ---
 block: cli
 doc: README
-verified_against: 0480ec2e5403d400cd3e1252fa5886923a01b062
-verified_on: 2026-09-08
+verified_against: 008ed4b05b8b28e89bfbd67d76d1ceaf220c9db0
+verified_on: 2026-09-09
 owns:
   - src/cli/main.ts
   - src/cli/args.ts
@@ -32,9 +32,9 @@ stamp is refreshed.
   preview`, `config show`, `config check`, `doctor`.
 - Writes: `models sync`, `models describe`, `config export`, `doctor --connect`, `serve`.
 
-All of it is local: config, snapshot and native agent file inspection. `models sync` and `doctor
---connect` are the only commands that touch the network. `serve` starts a real HTTP listener, but
-does not itself prove a native client (Claude Code, OpenCode, Codex) talks to it correctly; see
+Inspection and config export use local config, snapshots and native agent files. `models sync`
+and `doctor --connect` contact the model source; `serve` listens for requests and forwards them
+to the configured gateway. None of these commands proves native-client compatibility; see
 [GAPS.md](GAPS.md).
 
 ## Command index
@@ -62,7 +62,7 @@ for what must hold across all of them.
 - [../superpowers/specs/2026-09-06-subagent-model-routing-design.md](../superpowers/specs/2026-09-06-subagent-model-routing-design.md):
   the design this CLI implements.
 
-The other documentation blocks, each verified against the same commit:
+The other documentation blocks each record their own verified source revision:
 
 - [../core/README.md](../core/README.md): routing core, config/snapshot parsing, catalog
   resolution, hashing.
