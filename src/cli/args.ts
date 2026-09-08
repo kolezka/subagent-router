@@ -36,6 +36,9 @@ const OPTIONS = {
   port: { type: 'string' as const },
   host: { type: 'string' as const },
   'claude-version': { type: 'string' as const },
+  // config export
+  output: { type: 'string' as const },
+  force: { type: 'boolean' as const },
 };
 
 /**

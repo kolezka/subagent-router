@@ -97,7 +97,7 @@ export async function modelsList(deps: CliDeps, parsed: ParsedArgs): Promise<Com
   const payload = { models, fetchedAt: state.snapshot?.fetchedAt, generation: state.generation };
   const human = () =>
     `${models
-      .map((m) => `${m.id}\t${escapeControl(m.alias)}\t${m.status}${m.enabled ? '' : '\t(disabled)'}${m.description !== undefined ? `\t${escapeControl(m.description)}` : ''}`)
+      .map((m) => `${escapeControl(m.id)}\t${escapeControl(m.alias)}\t${m.status}${m.enabled ? '' : '\t(disabled)'}${m.description !== undefined ? `\t${escapeControl(m.description)}` : ''}`)
       .join('\n')}\n`;
   return { code: 0, payload, human };
 }
@@ -107,7 +107,7 @@ export async function modelsShow(deps: CliDeps, parsed: ParsedArgs): Promise<Com
   const { catalog } = await requireCatalog(deps, parsed, 'models show');
   const model = resolveModel(ref, catalog); // throws RouterError('unknown-model', ...) -> exit 2
   const human = () =>
-    `${model.id}\t${escapeControl(model.alias)}\t${model.status}${model.enabled ? '' : '\t(disabled)'}${model.description !== undefined ? `\t${escapeControl(model.description)}` : ''}\n`;
+    `${escapeControl(model.id)}\t${escapeControl(model.alias)}\t${model.status}${model.enabled ? '' : '\t(disabled)'}${model.description !== undefined ? `\t${escapeControl(model.description)}` : ''}\n`;
   return { code: 0, payload: model, human };
 }
 
@@ -158,7 +158,7 @@ export async function agentsShow(deps: CliDeps, parsed: ParsedArgs): Promise<Com
     ...(routeOverride !== undefined ? { routeOverride } : {}),
   };
   const human = () =>
-    `${escapeControl(payload.name)}\t${payload.scope}\t${escapeControl(payload.declaredModel)}${routeOverride !== undefined ? `\troute=${routeOverride}` : ''}\n`;
+    `${escapeControl(payload.name)}\t${payload.scope}\t${escapeControl(payload.declaredModel)}${routeOverride !== undefined ? `\troute=${escapeControl(routeOverride)}` : ''}\n`;
   return { code: 0, payload, human };
 }
 
@@ -183,19 +183,12 @@ export interface RoutePreviewResult {
 
 /**
  * Simulates a route decision entirely offline: config, snapshot and the agent inventory, never
- * the network or a real agent run. `profile` is accepted for interface symmetry with the runtime
- * handler's capability gate, but is intentionally never consulted here (an offline simulation
- * cannot prove a real capability, so its status, including "pending", is never a reason to accept
- * or reject the preview). `freshDelegation` is always assumed true, `ignoredMarkers` is always 0:
- * this is a stated simulation assumption, not a measurement, which is why it is surfaced in
- * `assumptions` rather than silently folded into the decision.
+ * the network, a capability-profile lookup, or a real agent run. `freshDelegation` is always
+ * assumed true, `ignoredMarkers` is always 0: this is a stated simulation assumption, not a
+ * measurement, which is why it is surfaced in `assumptions` rather than silently folded into the
+ * decision.
  */
-export function previewRoute(
-  options: PreviewRouteOptions,
-  state: LoadedState,
-  inventory: AgentInventory,
-  _profile: CapabilityProfile,
-): RoutePreviewResult {
+export function previewRoute(options: PreviewRouteOptions, state: LoadedState, inventory: AgentInventory): RoutePreviewResult {
   if (state.snapshot === undefined) {
     throw new RouterError('snapshot-missing', 'route preview requires a models.lock.json snapshot; run `models sync` to create one');
   }
@@ -233,9 +226,10 @@ function humanRoutePreview(preview: RoutePreviewResult): string {
     `decision: ${preview.decision.kind}`,
   ];
   if (preview.decision.kind === 'route') {
-    // upstreamModel/clientModel are the real routing identifiers, not display text: printed
-    // verbatim, never escaped, so the terminal representation never differs from the stored ID.
-    lines.push(`upstream: ${preview.decision.upstreamModel} (source: ${preview.decision.source})`);
+    // upstreamModel is a gateway-controlled opaque ID: escaped for the terminal like every other
+    // catalogue-derived value, same as model IDs elsewhere in this file. The JSON payload above
+    // (preview.decision.upstreamModel, unmodified) is the only place the exact stored ID lives.
+    lines.push(`upstream: ${escapeControl(preview.decision.upstreamModel)} (source: ${preview.decision.source})`);
   } else if (preview.decision.kind === 'error') {
     lines.push(`error: ${preview.decision.code}`);
   }
@@ -250,13 +244,17 @@ export async function routePreview(deps: CliDeps, parsed: ParsedArgs): Promise<C
 
   const state = await loadState(resolveConfigPath(deps, parsed));
   const inventory = await readAgentInventory(client, resolverOptionsFor(deps, parsed, state.config, client));
-  const profile = await deps.loadProfile(client, 'unspecified');
 
+  // No capability-profile lookup here: previewRoute is a pure offline simulation and never
+  // consulted one (see its own doc comment). Calling deps.loadProfile anyway used to make an
+  // otherwise fully offline command fail in the real built CLI, whose loadProfile does a real
+  // lookup against shipped profiles and throws capability-unknown-version for the literal
+  // placeholder version 'unspecified' -- an unconditional, avoidable dependency on a real client
+  // version this command has no way to know and does not need.
   const preview = previewRoute(
     { client, agent, ...(model !== undefined ? { model } : {}), ...(parentModel !== undefined ? { parentModel } : {}) },
     state,
     inventory,
-    profile,
   );
 
   // A simulated selection failure (missing/disabled model, conflicting markers, ...) is a

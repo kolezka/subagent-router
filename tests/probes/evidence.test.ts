@@ -103,7 +103,24 @@ describe('probe evidence judges (fail-closed)', () => {
     expect(evidence.distinctAgentIds).toBe(3);
     expect(judgeM1(evidence, undefined)).toBe('pending');
     expect(judgeM1(evidence, { source: 'crypto-random', sampleCount: 1 })).toBe('failed');
-    expect(judgeM1(evidence, { source: 'crypto-random', sampleCount: 3 })).toBe('passed');
+    // sampleCount matching distinctAgentIds is still just an aggregate count match, not
+    // proof of real identity continuity or generator entropy, so this can never pass.
+    expect(judgeM1(evidence, { source: 'crypto-random', sampleCount: 3 })).toBe('pending');
+  });
+
+  test('never-certifies-m1-passed-from-aggregate-counts-alone', () => {
+    // judgeM1 has no way to verify an EntropyProof is real: source is an unchecked string
+    // and sampleCount is an unchecked number, so no combination of inputs may reach 'passed'.
+    const emptyEvidence = { childRequests: 0, distinctAgentIds: 0, requestsByModel: {} };
+    expect(judgeM1(emptyEvidence, { source: '', sampleCount: 0 })).toBe('pending');
+    expect(judgeM1(emptyEvidence, { source: 'crypto-random', sampleCount: 0 })).toBe('pending');
+    const threeAgents = summarizeEvidence([
+      capturedRequest({ agentId: 'agent-1', isChild: true }),
+      capturedRequest({ agentId: 'agent-2', isChild: true }),
+      capturedRequest({ agentId: 'agent-3', isChild: true }),
+    ]);
+    expect(judgeM1(threeAgents, { source: 'crypto-random', sampleCount: 3 })).toBe('pending');
+    expect(judgeM1(threeAgents, { source: 'crypto-random', sampleCount: 100 })).toBe('pending');
   });
 
   test('requires-opencode-hook-invocation-and-effective-model', () => {
@@ -118,7 +135,18 @@ describe('probe evidence judges (fail-closed)', () => {
     expect(judgeCodexDeny(blockedByDeny, undefined)).toBe('pending');
     expect(judgeCodexDeny(blockedByDeny, { receivedModelField: true, permissionDecision: 'allow' })).toBe('pending');
     expect(judgeCodexDeny(spawnedDespiteDeny, { receivedModelField: true, permissionDecision: 'deny' })).toBe('failed');
-    expect(judgeCodexDeny(blockedByDeny, { receivedModelField: true, permissionDecision: 'deny' })).toBe('passed');
+    // receivedModelField + zero captured requests only proves nothing reached the capture
+    // gateway; it is not a registered-hook positive control, so this can never pass.
+    expect(judgeCodexDeny(blockedByDeny, { receivedModelField: true, permissionDecision: 'deny' })).toBe('pending');
+  });
+
+  test('never-certifies-codex-deny-passed-from-aggregate-counts-alone', () => {
+    // judgeCodexDeny only ever sees a boolean flag and a request count; it has no way to
+    // verify a hook was actually registered or invoked, so no input may reach 'passed'.
+    const emptyEvidence = { childRequests: 0, distinctAgentIds: 0, requestsByModel: {} };
+    expect(judgeCodexDeny(emptyEvidence, { receivedModelField: true, permissionDecision: 'deny' })).toBe('pending');
+    const blockedByDenyAgain = summarizeEvidence([]);
+    expect(judgeCodexDeny(blockedByDenyAgain, { receivedModelField: true, permissionDecision: 'deny' })).toBe('pending');
   });
 
   test('keeps-lifecycle-phases-separate', () => {

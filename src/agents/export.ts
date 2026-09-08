@@ -88,11 +88,32 @@ async function resolveRealPath(path: string): Promise<string> {
   return join(await resolveRealPath(parent), basename(target));
 }
 
+// Comparison-only normalization for the native-root overlap guard: folds letter case and
+// canonicalizes Unicode composition (NFC), so two spellings of the same filesystem path can never
+// be told apart by this guard just because they differ in case or accent composition. This
+// matters because `resolveRealPath` above only canonicalizes case/composition for a path segment
+// that already EXISTS on disk (the real syscall does that); for a segment that does not exist yet,
+// it rejoins the caller's original spelling verbatim (see that function's own comment), so a
+// not-yet-created output directory spelled e.g. ".CLAUDE/AGENTS" would otherwise still compare
+// unequal, byte for byte, to the real, lowercase ".claude/agents" root -- even though macOS and
+// Windows would treat them as the exact same directory the moment either is created. This is
+// deliberately conservative: on a case-sensitive filesystem (most Linux setups) two genuinely
+// distinct directories that merely share a case-folded/NFC-normalized spelling would also be
+// rejected as overlapping. That is an accepted false positive for a guard whose only job is to
+// refuse writing into (or over) a native agent directory; it never applies to anything else in
+// this module -- upstream model IDs, exported/written file paths, and model aliases are never run
+// through this function and keep their exact original bytes everywhere else.
+function pathComparisonKey(path: string): string {
+  return path.normalize('NFC').toLowerCase();
+}
+
 function isSameOrNested(a: string, b: string): boolean {
-  if (a === b) return true;
-  const aWithSep = a.endsWith(sep) ? a : `${a}${sep}`;
-  const bWithSep = b.endsWith(sep) ? b : `${b}${sep}`;
-  return b.startsWith(aWithSep) || a.startsWith(bWithSep);
+  const keyA = pathComparisonKey(a);
+  const keyB = pathComparisonKey(b);
+  if (keyA === keyB) return true;
+  const aWithSep = keyA.endsWith(sep) ? keyA : `${keyA}${sep}`;
+  const bWithSep = keyB.endsWith(sep) ? keyB : `${keyB}${sep}`;
+  return keyB.startsWith(aWithSep) || keyA.startsWith(bWithSep);
 }
 
 // Builds one client's ResolverOptions from the caller-supplied context plus that client's

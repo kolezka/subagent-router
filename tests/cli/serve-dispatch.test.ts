@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { parseArgs } from '../../src/cli/args';
 import { runCli } from '../../src/cli/main';
 import { resolveServeOptions, startServeCommand } from '../../src/cli/write';
+import { RouterError } from '../../src/core/errors';
 import type { CliDeps, FetchLike } from '../../src/core/types';
 import { configFixture, snapshotFixture } from '../support/fixtures';
 
@@ -86,6 +87,51 @@ describe('serve: fails on unmeasured profiles, never bypasses', () => {
     await writeFile(join(dir, 'models.lock.json'), JSON.stringify(await snapshotFixture()));
     expect(await runCli(['serve', '--port', '0'], deps())).toBe(1);
     expect(err.join('')).toContain('unsupported-path');
+  });
+
+  // Independent negative case: the test above has BOTH the client and transport profile pending,
+  // so it cannot tell apart which one caused the refusal -- a regression that reintroduced a
+  // startup bind with only the transport gate (assertTransportProfileReady inside createHandler)
+  // would still pass it, since a fully-passed transport profile was never exercised there. This
+  // isolates the CLIENT capability preflight startServer itself must run before Bun.serve, per a
+  // real built-CLI failure: `serve --claude-version 2.1.263` bound a port and hung instead of
+  // refusing, because the shipped transport-bun-fetch-raw fixture for the running Bun version was
+  // already 'passed' while the shipped claude-code client profile stayed 'pending'.
+  test('a pending CLIENT capability profile refuses to start even with a fully passed transport profile (client gate, not transport)', async () => {
+    await writeFile(join(dir, 'subagent-router.json'), JSON.stringify(configFixture()));
+    await writeFile(join(dir, 'models.lock.json'), JSON.stringify(await snapshotFixture()));
+    const clientPendingTransportPassed = deps({
+      loadProfile: async () => ({
+        client: 'claude-code',
+        version: 'synthetic-hermetic',
+        status: 'pending',
+        correlation: false,
+        correlationEntropy: 'pending',
+        fork: false,
+        adapterMarkerPosition: 'unknown',
+        probes: {},
+        lifecycle: { 'next-turn': 'pending', resume: 'pending', compaction: 'pending', nested: 'pending', parallel: 'pending' },
+      }),
+      loadTransportProfile: async () => ({ adapterId: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic', status: 'passed', gzipBytes: 'passed', responseHeaders: 'passed' }),
+    });
+
+    let thrown: unknown;
+    let startedServer: { stop: () => Promise<void> } | undefined;
+    try {
+      const { server } = await startServeCommand(clientPendingTransportPassed, parseArgs(['serve', '--port', '0']));
+      startedServer = server;
+    } catch (error) {
+      thrown = error;
+    } finally {
+      // If the preflight regressed and a server actually bound a port, close it here instead of
+      // leaking an open listener for the rest of the run -- covers both the RED (pre-fix) and
+      // GREEN (post-fix, where this branch is simply never reached) cases.
+      if (startedServer !== undefined) await startedServer.stop();
+    }
+
+    expect(startedServer).toBeUndefined(); // must never have bound a port
+    expect(thrown).toBeInstanceOf(RouterError);
+    expect((thrown as RouterError).code).toBe('unsupported-path');
   });
 });
 

@@ -117,6 +117,28 @@ describe('config check: routeOverride referencing an unknown model', () => {
   });
 });
 
+describe('route preview: never depends on a capability-profile lookup', () => {
+  // Regression for a real built-CLI failure: routePreview used to call deps.loadProfile(client,
+  // 'unspecified') even though previewRoute never consumed the result. A real loadProfile (unlike
+  // this suite's stub) does a genuine lookup against shipped profiles and throws
+  // capability-unknown-version for the literal placeholder version 'unspecified', turning an
+  // otherwise fully offline command into one that fails outside tests. If that dead dependency
+  // were reintroduced, this loadProfile would make the command fail (exit 1, a RouterError with a
+  // code isUsageOrConfigCode does not classify as usage/config), not exit 0.
+  test('succeeds even when deps.loadProfile always throws, and every simulation assumption is preserved', async () => {
+    const throwing = deps({
+      loadProfile: async () => {
+        throw new RouterError('capability-unknown-version', 'no capability fixture for this version');
+      },
+    });
+    expect(await runCli(['route', 'preview', '--client', 'claude-code', '--agent', 'explorer', '--json'], throwing)).toBe(0);
+    const preview = lastJson();
+    expect(preview.mode).toBe('simulation');
+    expect(preview.assumptions).toEqual({ authenticatedChild: true, freshDelegation: true, runtimeCapabilityNotProven: true });
+    expect(preview.decision).toMatchObject({ kind: 'route', upstreamModel: FIXTURE_MODEL_ID });
+  });
+});
+
 describe('agents show: declaredModel falls back to "unknown" when the file has no model field', () => {
   test('an agent file without a model: key reports declaredModel "unknown", not undefined or "inherit"', async () => {
     expect(await runCli(['agents', 'show', 'nomodel', '--client', 'claude-code', '--json'], deps())).toBe(0);

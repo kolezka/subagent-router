@@ -164,6 +164,88 @@ describe('Finding 2: doctor --connect on an unreachable or slow gateway', () => 
   });
 });
 
+describe('Finding 3: terminal control escaping on SUCCESS paths, not just stderr', () => {
+  // Prior rounds only escaped a control byte embedded in a model's DESCRIPTION (see the last test
+  // in tests/cli/read.test.ts). These lock the same guarantee for every other catalogue-derived
+  // value this CLI prints on a successful (exit 0) path: the model ID itself, a role's
+  // routeOverride, route preview's routed upstream model, and models sync's added-list ID. Each
+  // test proves the JSON payload keeps the exact raw ID first, then that text-mode output escapes
+  // the same value instead of leaking the raw byte.
+  test('models list escapes a control byte embedded in the model ID itself, not only its description', async () => {
+    const idWithEsc = `gateway/list${ESC}esc`;
+    await writeFile(join(dir, 'models.lock.json'), JSON.stringify(await snapshotFixture([idWithEsc])));
+
+    expect(await runCli(['models', 'list', '--json'], deps(listing([])))).toBe(0);
+    const rows = lastJson().models as Array<{ id: string }>;
+    expect(rows.some((r) => r.id === idWithEsc)).toBe(true); // JSON keeps the exact raw ID
+
+    out = [];
+    expect(await runCli(['models', 'list'], deps(listing([])))).toBe(0);
+    expect(out.join('')).not.toContain(ESC);
+    expect(out.join('')).toContain('\\u001b');
+  });
+
+  test('models show escapes a control byte in the model ID on the success path', async () => {
+    const idWithEsc = `gateway/show${ESC}esc`;
+    await writeFile(join(dir, 'models.lock.json'), JSON.stringify(await snapshotFixture([idWithEsc])));
+
+    expect(await runCli(['models', 'show', idWithEsc, '--json'], deps(listing([])))).toBe(0);
+    expect(lastJson().id).toBe(idWithEsc); // JSON keeps the exact raw ID
+
+    out = [];
+    expect(await runCli(['models', 'show', idWithEsc], deps(listing([])))).toBe(0);
+    expect(out.join('')).not.toContain(ESC);
+    expect(out.join('')).toContain('\\u001b');
+  });
+
+  test('agents show escapes a control byte embedded in a role\'s routeOverride model ID', async () => {
+    const idWithEsc = `gateway/role${ESC}esc`;
+    await mkdir(join(dir, 'home', '.claude', 'agents'), { recursive: true });
+    await writeFile(join(dir, 'home', '.claude', 'agents', 'explorer.md'), '---\nname: explorer\n---\nExplore.\n');
+    await writeFile(join(dir, 'subagent-router.json'), JSON.stringify(configFixture({ roles: { 'claude-code:explorer': { routeOverride: idWithEsc } } })));
+
+    expect(await runCli(['agents', 'show', 'explorer', '--client', 'claude-code', '--json'], deps(listing([])))).toBe(0);
+    expect(lastJson().routeOverride).toBe(idWithEsc); // JSON keeps the exact raw ID
+
+    out = [];
+    expect(await runCli(['agents', 'show', 'explorer', '--client', 'claude-code'], deps(listing([])))).toBe(0);
+    expect(out.join('')).not.toContain(ESC);
+    expect(out.join('')).toContain('\\u001b');
+  });
+
+  test('route preview escapes a control byte in the routed upstream model on a successful (kind: route) decision', async () => {
+    const idWithEsc = `gateway/route${ESC}esc`;
+    await mkdir(join(dir, 'home', '.claude', 'agents'), { recursive: true });
+    await writeFile(join(dir, 'home', '.claude', 'agents', 'explorer.md'), '---\nname: explorer\n---\nExplore.\n');
+    await writeFile(join(dir, 'subagent-router.json'), JSON.stringify(configFixture({ roles: { 'claude-code:explorer': { routeOverride: idWithEsc } } })));
+    await writeFile(join(dir, 'models.lock.json'), JSON.stringify(await snapshotFixture([idWithEsc])));
+
+    expect(await runCli(['route', 'preview', '--client', 'claude-code', '--agent', 'explorer', '--json'], deps(listing([])))).toBe(0);
+    expect((lastJson().decision as { upstreamModel: string }).upstreamModel).toBe(idWithEsc); // JSON keeps the exact raw ID
+
+    out = [];
+    expect(await runCli(['route', 'preview', '--client', 'claude-code', '--agent', 'explorer'], deps(listing([])))).toBe(0);
+    expect(out.join('')).not.toContain(ESC);
+    expect(out.join('')).toContain('\\u001b');
+  });
+
+  test('models sync JSON payload keeps the exact raw ID for a successfully added model with a control byte', async () => {
+    const idWithEsc = `gateway/sync${ESC}esc`;
+    const withEsc: FetchLike = async () => new Response(JSON.stringify({ data: [{ id: idWithEsc }] }), { status: 200 });
+    expect(await runCli(['models', 'sync', '--json'], deps(withEsc))).toBe(0);
+    expect(lastJson().added).toEqual([idWithEsc]);
+  });
+
+  test('models sync human output escapes that same control byte in the "added" list instead of leaking it raw', async () => {
+    const idWithEsc = `gateway/sync${ESC}esc`;
+    const withEsc: FetchLike = async () => new Response(JSON.stringify({ data: [{ id: idWithEsc }] }), { status: 200 });
+    expect(await runCli(['models', 'sync'], deps(withEsc))).toBe(0);
+    expect(out.join('')).not.toContain(ESC);
+    expect(out.join('')).toContain('\\u001b');
+    expect(out.join('')).toContain('added:');
+  });
+});
+
 // Locks the existing (pre-review) contract this round must not disturb.
 describe('unchanged from the previous round', () => {
   test('a successful models describe still round-trips normally', async () => {

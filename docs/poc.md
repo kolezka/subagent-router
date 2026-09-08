@@ -52,9 +52,25 @@ The external gateway must accept and return the harness-facing Anthropic Message
 
 The raw transport disables automatic decompression and redirect following. Its shipped profile covers Bun 1.4.2 only. Default Bun `fetch` did not preserve gzip bytes in the local control test; it must not reuse the raw adapter's profile. A different runtime needs its own measurement.
 
+## Discover models against a real gateway
+
+`models sync` is implemented. Point `GATEWAY_URL` (and any auth env var your config's
+`modelSource.authEnv` names) at a real gateway and run:
+
+```sh
+bun dist/cli.js models sync --dry-run
+```
+
+See [docs/cli/OPERATIONS.md](cli/OPERATIONS.md) for the full CLI reference. This performs real
+discovery over the network; for a single-model experiment with no network at all, see the
+snapshot-writing script below instead.
+
 ## Prepare a snapshot without discovery
 
-There is no `models sync` command yet. For a single-model experiment, save the following as `prepare-poc.ts` in the repository root. Replace the gateway URL and model ID with the exact values exposed by your gateway, then run `bun run prepare-poc.ts`. It writes only to `./out` and makes no network requests.
+For a single-model experiment with no network call at all, save the following as
+`prepare-poc.ts` in the repository root. Replace the gateway URL and model ID with the exact
+values exposed by your gateway, then run `bun run prepare-poc.ts`. It writes only to `./out` and
+makes no network requests.
 
 ```ts
 import { mkdir, writeFile } from 'node:fs/promises';

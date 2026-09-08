@@ -1,13 +1,15 @@
-// Task 13 write/mutation slice: models sync, models describe, doctor --connect and the serve
-// CLI dispatch. config export and its dispatch are a separate, unfinished piece owned elsewhere;
-// nothing here imports src/agents/export.ts.
+// Task 13 write/mutation slice: models sync, models describe, doctor --connect, serve and
+// config export CLI dispatch. Export itself lives in src/agents/export.ts; this file only wires
+// its options and inventory lookup into the CLI.
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { exportConfig } from '../agents/export';
+import { readAgentInventory } from '../agents/inventory';
 import { checkDiscoveryConnectivity } from '../catalog/discovery';
 import { synchronize } from '../catalog/sync';
 import { buildCatalog, resolveModel } from '../core/catalog';
 import { RouterError } from '../core/errors';
-import type { CliDeps, OperatorConfig } from '../core/types';
+import type { CliDeps, ClientId, OperatorConfig, ResolverOptions } from '../core/types';
 import { resolveSource } from '../io/environment';
 import { commitState, loadState } from '../io/store';
 import type { ParsedArgs } from './args';
@@ -42,11 +44,15 @@ export async function modelsSync(deps: CliDeps, parsed: ParsedArgs): Promise<Com
   const result = await synchronize(configPath, { env: deps.env, fetch: deps.fetch, now: deps.now, allowEmpty, dryRun });
 
   const payload = { added: result.added, changed: result.changed, missing: result.missing, dryRun, fetchedAt: result.snapshot.fetchedAt };
+  // Discovered IDs are gateway-controlled, opaque strings, same as every other catalogue-derived
+  // value this CLI prints -- escaped for the terminal here too. `payload` above (JSON output)
+  // still carries the exact, unmodified IDs.
+  const escapedList = (ids: readonly string[]): string => (ids.length === 0 ? '(none)' : ids.map((id) => escapeControl(id)).join(', '));
   const human = () =>
     `${[
-      `added: ${result.added.length === 0 ? '(none)' : result.added.join(', ')}`,
-      `changed: ${result.changed.length === 0 ? '(none)' : result.changed.join(', ')}`,
-      `missing: ${result.missing.length === 0 ? '(none)' : result.missing.join(', ')}`,
+      `added: ${escapedList(result.added)}`,
+      `changed: ${escapedList(result.changed)}`,
+      `missing: ${escapedList(result.missing)}`,
       ...(dryRun ? ['dry-run: no snapshot written'] : []),
     ].join('\n')}\n`;
   return { code: 0, payload, human };
@@ -248,4 +254,77 @@ export async function startServeCommand(deps: CliDeps, parsed: ParsedArgs): Prom
 export async function serveCommand(deps: CliDeps, parsed: ParsedArgs): Promise<CommandResult> {
   const { result } = await startServeCommand(deps, parsed);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// config export
+// ---------------------------------------------------------------------------
+
+// Duplicated from read.ts (private there; same reasoning as the option helpers at the top of
+// this file): client validation and the resolver-options recipe export's agent inventory needs.
+const CLIENT_IDS: readonly ClientId[] = ['claude-code', 'opencode', 'codex'];
+
+function isClientId(value: unknown): value is ClientId {
+  return typeof value === 'string' && (CLIENT_IDS as readonly string[]).includes(value);
+}
+
+function requireClient(parsed: ParsedArgs, usage: string): ClientId {
+  const value = stringOption(parsed, 'client');
+  if (!isClientId(value)) {
+    throw new RouterError('usage-missing-client', `${usage}: --client <claude-code|opencode|codex> is required`);
+  }
+  return value;
+}
+
+function resolverOptionsFor(deps: CliDeps, parsed: ParsedArgs, config: OperatorConfig, client: ClientId): ResolverOptions {
+  const configRoot = config.agentRoots[client].configRoot;
+  return {
+    cwd: deps.cwd,
+    home: deps.home,
+    env: deps.env,
+    ...(configRoot !== null ? { configRoot } : {}),
+    additionalRoots: parsed.additionalRoots,
+  };
+}
+
+/**
+ * Exports one client's config as a read-only artifact tree. `--output` is required and resolved
+ * relative to cwd, like every other path option in this CLI. The agent inventory is read for the
+ * SAME client being exported, through the same cwd/home/env/configRoot/additionalRoots recipe
+ * read.ts's own commands use, so an export never sees a different agent root set than
+ * `agents list`/`agents show` would for the same invocation. `catalogRequired` is always false
+ * here: exportConfig already forces a catalog for opencode on its own, and no CLI option asks for
+ * it on the other two clients.
+ */
+export async function configExport(deps: CliDeps, parsed: ParsedArgs): Promise<CommandResult> {
+  const client = requireClient(parsed, 'config export');
+  const outputRaw = stringOption(parsed, 'output');
+  if (outputRaw === undefined || outputRaw.length === 0) {
+    throw new RouterError('usage-missing-output', 'config export --client <c> --output <dir>: --output <dir> is required');
+  }
+  const outputDir = resolve(deps.cwd, outputRaw);
+  const dryRun = parsed.options['dry-run'] === true;
+  const force = parsed.options.force === true;
+
+  const configPath = resolveConfigPath(deps, parsed);
+  const state = await loadState(configPath);
+  const inventory = await readAgentInventory(client, resolverOptionsFor(deps, parsed, state.config, client));
+
+  const files = await exportConfig(configPath, client, outputDir, {
+    dryRun,
+    force,
+    inventory,
+    catalogRequired: false,
+    resolverContext: { cwd: deps.cwd, home: deps.home, env: deps.env, additionalRoots: parsed.additionalRoots },
+  });
+
+  const payload = { client, output: outputDir, dryRun, force, files: files.map((file) => file.relativePath) };
+  const human = () =>
+    `${[
+      `client: ${client}`,
+      `output: ${escapeControl(outputDir)}`,
+      ...(dryRun ? ['dry-run: no files written'] : []),
+      ...files.map((file) => `  ${escapeControl(file.relativePath)}`),
+    ].join('\n')}\n`;
+  return { code: 0, payload, human };
 }

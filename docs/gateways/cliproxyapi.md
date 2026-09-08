@@ -89,10 +89,22 @@ deployment; never commit a real value.
 
 ## Discovering exact model IDs
 
-There is no `models sync` CLI command yet: `src/cli/main.ts` reports it as not implemented (that
-part of the implementation is being built separately and has not landed here). Until it lands,
-save the following as `discover-cliproxyapi-models.ts` in the repository root, next to
-`package.json` (the same place `poc.md` saves `prepare-poc.ts`), and run it with
+`models sync` is implemented (`src/cli/write.ts`, dispatched from `src/cli/main.ts`). With the
+three environment variables above set and `examples/cliproxyapi/subagent-router.json` copied to
+`./subagent-router.json`, run:
+
+```sh
+bun dist/cli.js models sync --dry-run
+```
+
+`--dry-run` prints the diff (`added`/`changed`/`missing`) without writing; drop it to write
+`models.lock.json`. See [docs/cli/OPERATIONS.md](../cli/OPERATIONS.md) for the full CLI reference.
+This is CLIProxyAPI-agnostic discovery: it exercises the same `synchronize`/`discoverModels` path
+against any gateway matching the `GET /v1/models` contract below, not a CLIProxyAPI-specific proof.
+
+Alternatively, to discover models with a one-off script instead of the built CLI, save the
+following as `discover-cliproxyapi-models.ts` in the repository root, next to `package.json` (the
+same place `poc.md` saves `prepare-poc.ts`), and run it with
 `bun run discover-cliproxyapi-models.ts` after setting the three environment variables above:
 
 ```ts

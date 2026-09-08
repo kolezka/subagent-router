@@ -480,6 +480,70 @@ describe('native root protection', () => {
     ).rejects.toThrow('export-native-root');
   });
 
+  test('a not-yet-created native root spelled with different case is still refused, even with --force', async () => {
+    // home/.claude/agents (the real, lowercase candidate root claude-code declares) does not
+    // exist in this test; this exercises the exact bypass this fix closes: a native root that
+    // never existed yet cannot be canonicalized by a real `realpath` call, so only a case-folded
+    // string comparison -- not the filesystem itself -- can catch a differently-cased spelling.
+    const configPath = join(dir, 'project', 'subagent-router.json');
+    const context: ExportOptions['resolverContext'] = { cwd: join(dir, 'project'), home: join(dir, 'home'), env: {}, additionalRoots: [] };
+    const differentlyCasedTarget = join(dir, 'home', '.CLAUDE', 'AGENTS');
+
+    await expect(
+      exportConfig(configPath, 'claude-code', differentlyCasedTarget, {
+        dryRun: false, force: true, inventory: emptyInventory, catalogRequired: false, resolverContext: context,
+      }),
+    ).rejects.toThrow('export-native-root');
+
+    await expect(readdir(differentlyCasedTarget)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(join(dir, 'home', '.claude', 'agents'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('an EXISTING native root reached through a differently-cased output path is still refused, and its file is untouched', async () => {
+    const configPath = join(dir, 'project', 'subagent-router.json');
+    await mkdir(join(dir, 'home', '.claude', 'agents'), { recursive: true });
+    await writeFile(join(dir, 'home', '.claude', 'agents', 'explorer.md'), '---\nname: explorer\n---\nExplore.\n');
+    const nativeBefore = await readFile(join(dir, 'home', '.claude', 'agents', 'explorer.md'), 'utf8');
+    const context: ExportOptions['resolverContext'] = { cwd: join(dir, 'project'), home: join(dir, 'home'), env: {}, additionalRoots: [] };
+
+    await expect(
+      exportConfig(configPath, 'claude-code', join(dir, 'home', '.CLAUDE', 'AGENTS'), {
+        dryRun: false, force: true, inventory: emptyInventory, catalogRequired: false, resolverContext: context,
+      }),
+    ).rejects.toThrow('export-native-root');
+
+    expect(await readFile(join(dir, 'home', '.claude', 'agents', 'explorer.md'), 'utf8')).toBe(nativeBefore);
+  });
+
+  test('a case-differing spelling of a protected additionalRoots entry is refused, with no files present', async () => {
+    const extraRoot = join(dir, 'Extra-Agents');
+    const configPath = join(dir, 'project', 'subagent-router.json');
+    const context: ExportOptions['resolverContext'] = { cwd: join(dir, 'project'), home: join(dir, 'home'), env: {}, additionalRoots: [extraRoot] };
+
+    await expect(
+      exportConfig(configPath, 'claude-code', join(dir, 'EXTRA-agents'), {
+        dryRun: true, force: true, inventory: emptyInventory, catalogRequired: false, resolverContext: context,
+      }),
+    ).rejects.toThrow('export-native-root');
+    await expect(readdir(extraRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('a Unicode NFD-decomposed spelling of the same accented path segment is treated as the same overlap as its NFC form', async () => {
+    const nfc = 'café-agents'; // "café-agents", one precomposed codepoint for é
+    const nfd = 'café-agents'; // "café-agents", decomposed: e + a combining acute accent
+    expect(nfc).not.toBe(nfd); // sanity: genuinely different byte sequences
+    expect(nfc.normalize('NFC')).toBe(nfc);
+    const nativeRoot = join(dir, nfc);
+    const configPath = join(dir, 'project', 'subagent-router.json');
+    const context: ExportOptions['resolverContext'] = { cwd: join(dir, 'project'), home: join(dir, 'home'), env: {}, additionalRoots: [nativeRoot] };
+
+    await expect(
+      exportConfig(configPath, 'claude-code', join(dir, nfd), {
+        dryRun: true, force: true, inventory: emptyInventory, catalogRequired: false, resolverContext: context,
+      }),
+    ).rejects.toThrow('export-native-root');
+  });
+
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
   (isRoot ? test.skip : test)('a permission error while resolving a candidate root propagates, never silently permitting the export', async () => {
     const blocked = join(dir, 'blocked');
