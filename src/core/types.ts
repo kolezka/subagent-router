@@ -133,7 +133,10 @@ export interface SourceContext {
   sourceId: string;
   effectiveGatewayUrl: string;
   effectiveModelsUrl: string;
+  /** Discovery-only headers (modelSource.headersEnv/authEnv). Never forwarded to the gateway. */
   headers: HeaderMap;
+  /** Forwarding headers (gateway.headersEnv). The only headers the transport handler may send upstream. */
+  gatewayHeaders: HeaderMap;
 }
 
 export interface LoadedState {

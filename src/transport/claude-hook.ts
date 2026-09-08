@@ -221,3 +221,137 @@ export async function runClaudeSubagentStartHook(
   );
   await writeAll(stdout, JSON.stringify(output));
 }
+
+/**
+ * Executable bootstrap for the published `./claude-hook` entrypoint.
+ *
+ * Everything it needs is supplied by the CALLER and validated before use:
+ *
+ *  - `--profile-dir` + `--client-version` select a capability profile through the SAME validated
+ *    `loadCapabilityProfile` the rest of the router uses. The bootstrap never `JSON.parse`s a
+ *    profile itself, so a hand-edited or truncated profile cannot reach the gate unchecked, and
+ *    an unmeasured version fails closed inside the loader.
+ *  - `--config` is read and parsed through `parseOperatorConfig`, inside the same guarded block
+ *    as the file read. A syntax error surfaces as a fixed message; the offending text (which may
+ *    contain secrets) is never echoed.
+ *
+ * Argument handling is strict and tiny -- no parser framework: an unknown flag, a repeated flag,
+ * a flag missing its value, or a stray positional is a usage error (exit 2), never silently
+ * ignored. Every parse/IO failure is redacted to a fixed message.
+ *
+ * `resolveTrustedStart` returns `freshDelegation: false` unconditionally. No measured producer of
+ * a trusted SubagentStart signal exists for Claude Code, and the stdin event is never evidence of
+ * freshness. So the hook writes its real `{}` no-op instead of registering a freshness envelope
+ * or emitting a marker it cannot justify.
+ *
+ * The secret is only required on the path that actually needs it. While the profile is pending or
+ * the start is not fresh, the hook returns `{}` without one; a missing secret becomes an explicit
+ * error only once a capable profile would otherwise sign an envelope.
+ */
+const HOOK_FLAGS = ['config', 'profile-dir', 'client-version', 'control-url'] as const;
+type HookFlag = (typeof HOOK_FLAGS)[number];
+
+export function parseHookArgs(argv: readonly string[]): { values: Record<HookFlag, string> } | { error: string } {
+  const values = new Map<string, string>();
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === undefined) continue;
+    if (!arg.startsWith('--')) return { error: `unexpected argument: ${arg}` };
+    const eq = arg.indexOf('=');
+    const name = eq > 0 ? arg.slice(2, eq) : arg.slice(2);
+    if (!(HOOK_FLAGS as readonly string[]).includes(name)) return { error: `unknown flag: --${name}` };
+    if (values.has(name)) return { error: `repeated flag: --${name}` };
+    let value: string | undefined;
+    if (eq > 0) value = arg.slice(eq + 1);
+    else {
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith('--')) return { error: `flag --${name} requires a value` };
+      value = next;
+      i += 1;
+    }
+    if (value === '') return { error: `flag --${name} requires a value` };
+    values.set(name, value);
+  }
+
+  const missing = HOOK_FLAGS.filter((flag) => !values.has(flag));
+  if (missing.length > 0) return { error: `missing required flag(s): ${missing.map((f) => `--${f}`).join(', ')}` };
+
+  return { values: Object.fromEntries(values) as Record<HookFlag, string> };
+}
+
+export async function main(argv: readonly string[]): Promise<number> {
+  const parsed = parseHookArgs(argv);
+  if ('error' in parsed) {
+    process.stderr.write(`subagent-router claude-hook: ${parsed.error}\n`);
+    process.stderr.write('usage: claude-hook --config <file> --profile-dir <dir> --client-version <version> --control-url <url>\n');
+    return 2;
+  }
+  const configPath = parsed.values.config;
+  const profileDir = parsed.values['profile-dir'];
+  const clientVersion = parsed.values['client-version'];
+  const controlBaseUrl = parsed.values['control-url'];
+
+  const { readFile } = await import('node:fs/promises');
+  const { parseOperatorConfig } = await import('../core/config');
+  const { loadCapabilityProfile } = await import('../adapters/capabilities');
+
+  // Read AND parse inside one guarded block. A JSON syntax error's message can quote the
+  // surrounding source text, which may include secrets, so nothing from it is ever printed.
+  let config: OperatorConfig;
+  try {
+    config = parseOperatorConfig(JSON.parse(await readFile(configPath, 'utf8')));
+  } catch (error) {
+    const code = error instanceof RouterError ? error.code : 'config-unreadable';
+    process.stderr.write(`subagent-router claude-hook: could not load the operator config (${code})\n`);
+    return 2;
+  }
+
+  // The validated loader: shape, declared identity and version are all checked, and an
+  // unmeasured version fails closed rather than degrading to a permissive default.
+  let profile: CapabilityProfile;
+  try {
+    profile = await loadCapabilityProfile('claude-code', clientVersion, profileDir);
+  } catch (error) {
+    const code = error instanceof RouterError ? error.code : 'capability-unreadable';
+    process.stderr.write(`subagent-router claude-hook: could not load the capability profile (${code})\n`);
+    return 2;
+  }
+
+  // Not required to answer {}. Only the signing path needs it, and that path is unreachable
+  // until a profile is measured capable AND the start is trusted-fresh.
+  const secret = process.env[config.harness.claudeCode.secretEnv] ?? '';
+
+  const stdout = new WritableStream<Uint8Array>({
+    write(chunk) {
+      return new Promise<void>((resolve, reject) => {
+        process.stdout.write(chunk, (error) => (error ? reject(error) : resolve()));
+      });
+    },
+  });
+
+  try {
+    await runClaudeSubagentStartHook(Bun.stdin.stream(), stdout, {
+      controlBaseUrl,
+      secret,
+      roles: config.roles,
+      profile,
+      fetch: (request) => fetch(request),
+      now: () => Date.now(),
+      nonce: () => crypto.randomUUID(),
+      // No measured trusted-start producer exists; never derived from stdin. See the docstring.
+      resolveTrustedStart: () => ({ freshDelegation: false }),
+      correlation: config.harness.claudeCode.correlation,
+    });
+  } catch (error) {
+    // The hook's own errors already carry fixed, safe messages (no secrets, no URLs). Anything
+    // else is reported generically rather than surfacing an underlying message.
+    const message = error instanceof RouterError ? error.message : 'subagent-router claude-hook failed';
+    process.stderr.write(`${message}\n`);
+    return 1;
+  }
+  return 0;
+}
+
+if (import.meta.main) {
+  process.exitCode = await main(process.argv.slice(2));
+}

@@ -8,7 +8,16 @@ import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fix
 
 const CAPABILITY_FIXTURES_DIR = `${import.meta.dir}/../fixtures/capabilities`;
 
-const source = { sourceId: 'test-gateway', effectiveGatewayUrl: 'http://127.0.0.1:8000/v1', effectiveModelsUrl: 'http://127.0.0.1:8000/v1/models', headers: { 'X-Team': 'router' } };
+const source = {
+  sourceId: 'test-gateway',
+  effectiveGatewayUrl: 'http://127.0.0.1:8000/v1',
+  effectiveModelsUrl: 'http://127.0.0.1:8000/v1/models',
+  // Discovery-only headers (would carry the models-endpoint auth); must never reach the handler's
+  // upstream request. gatewayHeaders is a distinct set so a test asserting on one channel proves
+  // the other channel was not used, rather than merely re-asserting a header both share.
+  headers: { Authorization: 'Bearer discovery-only-token' },
+  gatewayHeaders: { 'X-Team': 'router' },
+};
 const FIXTURE_SUPPORTED_PROFILE: CapabilityProfile = { client: 'claude-code', version: 'synthetic-hermetic', status: 'supported', correlation: true, correlationEntropy: 'passed', fork: false, adapterMarkerPosition: 'b2', probes: { M1: 'passed', 'M3-B2': 'passed', M10: 'passed', 'M10-freshness': 'passed' }, lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' } };
 const FIXTURE_TRANSPORT_PROFILE = { adapterId: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic', status: 'passed', gzipBytes: 'passed', responseHeaders: 'passed' } as const;
 const CHILD_SYSTEM = [{ type: 'text', text: 'x-anthropic-billing-header: cc_is_subagent=true' }];
@@ -46,6 +55,7 @@ describe('createHandler', () => {
     expect(seen[0]?.body.model).toBe(FIXTURE_MODEL_ID);
     expect(JSON.stringify(seen[0]?.body)).not.toContain('subagent-router');
     expect(seen[0]?.headers.get('x-team')).toBe('router');
+    expect(seen[0]?.headers.get('authorization')).not.toBe('Bearer discovery-only-token');
     expect(seen[0]?.url).toBe('http://127.0.0.1:8000/v1/messages');
     await handler(post('/v1/messages', { model: 'claude-opus', messages: [{ role: 'user', content: 'rodzic' }] }));
     expect(seen[1]?.body.model).toBe('claude-opus');
@@ -358,12 +368,12 @@ describe('createHandler', () => {
     const { fetch, seen } = upstream();
     const config = configFixture();
     const profile: CapabilityProfile = { ...FIXTURE_SUPPORTED_PROFILE, adapterMarkerPosition: 'system', probes: { ...FIXTURE_SUPPORTED_PROFILE.probes, M3: 'passed' } };
-    const src = { ...source, headers: { ...source.headers } };
+    const src = { ...source, gatewayHeaders: { ...source.gatewayHeaders } };
     const handler = await handlerWith(fetch, { config, profile, source: src });
 
     config.roles['claude-code:explorer'] = { routeOverride: 'tampered-model' };
     profile.status = 'unsupported';
-    src.headers = { 'X-Team': 'tampered' };
+    src.gatewayHeaders = { 'X-Team': 'tampered' };
 
     const child = await handler(post('/v1/messages', { model: 'x', system: CHILD_SYSTEM, messages: [{ role: 'user', content: '<subagent-router v="1" model="fast"/>\nZadanie' }] }));
     expect(child.status).toBe(200);

@@ -3,9 +3,38 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "sideEffects": false,
   "engines": {
     "bun": ">=1.3.11"
   },
+  "exports": {
+    "./core": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./handler": {
+      "types": "./dist/types/transport/handler.d.ts",
+      "import": "./dist/handler.js"
+    },
+    "./bun": {
+      "types": "./dist/types/bun.d.ts",
+      "import": "./dist/cli.js"
+    },
+    "./claude-hook": {
+      "types": "./dist/types/transport/claude-hook.d.ts",
+      "import": "./dist/claude-hook.js"
+    },
+    "./opencode-plugin": {
+      "types": "./dist/types/adapters/opencode-plugin.d.ts",
+      "import": "./dist/opencode-plugin.js"
+    }
+  },
+  "bin": {
+    "subagent-router": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
