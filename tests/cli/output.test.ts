@@ -18,6 +18,25 @@ describe('escapeControl', () => {
   test('leaves ordinary text, including non-ASCII, untouched', () => {
     expect(escapeControl('Szybkie zadania. 日本語')).toBe('Szybkie zadania. 日本語');
   });
+
+  test('covers the whole C0 range, ESC and DEL, and nothing printable', () => {
+    for (let code = 0; code < 0x20; code += 1) {
+      expect(escapeControl(String.fromCharCode(code))).toBe(`\\u${code.toString(16).padStart(4, '0')}`);
+    }
+    expect(escapeControl('\x7f')).toBe('\\u007f');
+    for (let code = 0x20; code < 0x7f; code += 1) {
+      expect(escapeControl(String.fromCharCode(code))).toBe(String.fromCharCode(code));
+    }
+  });
+
+  test('the regex source is written with escape text, never raw control bytes', async () => {
+    // Raw NUL/US/DEL bytes inside a regex literal are invisible in most editors and silently
+    // dropped or rewritten by some encoders; the pattern must be expressed as \x escapes.
+    const source = await Bun.file(new URL('../../src/cli/output.ts', import.meta.url)).text();
+    // eslint-disable-next-line no-control-regex
+    expect(source).not.toMatch(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/);
+    expect(source).toContain('\\x00-\\x1f\\x7f');
+  });
 });
 
 function deps(patch: Partial<CliDeps> = {}): CliDeps {

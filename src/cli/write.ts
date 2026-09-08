@@ -316,6 +316,8 @@ export async function configExport(deps: CliDeps, parsed: ParsedArgs): Promise<C
     inventory,
     catalogRequired: false,
     resolverContext: { cwd: deps.cwd, home: deps.home, env: deps.env, additionalRoots: parsed.additionalRoots },
+    // Same state the inventory above was read from: one generation for roots and sidecar.
+    state,
   });
 
   const payload = { client, output: outputDir, dryRun, force, files: files.map((file) => file.relativePath) };

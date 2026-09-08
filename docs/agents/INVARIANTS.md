@@ -13,8 +13,11 @@
 - Export identity fields (secret env name, control-URL env name, client-version env name) are
   always env-var *names*, never resolved values; no secret or runtime URL is ever baked into a
   written artifact.
-- A Codex or OpenCode role name is a bounded, path-safe segment (`assertSafePathSegment`) before it
-  is joined into an output path; a traversal attempt is rejected before any file is written.
+- A Codex role name, an OpenCode agent name and a model alias are each a bounded, path-safe segment
+  (`assertSafePathSegment`, [../../src/core/path-segment.ts](../../src/core/path-segment.ts))
+  before they are joined into an output path, and every planned export path is additionally
+  containment-checked against the client target (`assertPlanPathContained`); a traversal attempt is
+  rejected before any file is written, in dry runs too.
 - `dumpToml` supports a fixed, small subset (strings, numbers, booleans, one level of tables); an
   unsupported shape throws rather than silently dropping or mangling a field.
 - Both native validators treat a present-but-invalid explicit-model value as an error, never as

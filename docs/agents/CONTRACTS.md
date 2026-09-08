@@ -23,6 +23,24 @@ enforcement: [../../tests/cli/export.test.ts](../../tests/cli/export.test.ts),
 configRoot override plus additionalRoots entry, symlinked ancestor, symlinked concrete target,
 permission error while resolving a root.
 
+## exportConfig / opencodeVariants (output-directory containment)
+
+Every planned file path must be rooted under the client dir, free of empty, `.` and `..`
+segments and backslashes, and resolve strictly below the concrete client target
+(`assertPlanPathContained`, `export-plan-invariant`); the check runs before hashing, before the
+dry-run return and before any write. The names that become file names are validated at their
+source as single safe path segments (`assertSafePathSegment`, `export-unsafe-name`): codex role
+names in `buildCodexFiles`, OpenCode agent names and model aliases in `opencodeVariants`. An
+OpenCode agent name comes verbatim from native frontmatter and is untrusted. [verified] against
+[../../src/agents/export.ts](../../src/agents/export.ts),
+[../../src/adapters/opencode.ts](../../src/adapters/opencode.ts) and
+[../../src/core/path-segment.ts](../../src/core/path-segment.ts).
+
+enforcement: [../../tests/cli/export.test.ts](../../tests/cli/export.test.ts) (file-backed
+OpenCode traversal, real and dry run; codex traversal),
+[../../tests/cli/export-dispatch.test.ts](../../tests/cli/export-dispatch.test.ts) (through
+`runCli`), [../../tests/agents/export-containment.test.ts](../../tests/agents/export-containment.test.ts)
+
 ## assertCapability / loadCapabilityProfile (profile refusal)
 
 A gate applies only to its declared client; a profile that is not `status: 'supported'`, whose

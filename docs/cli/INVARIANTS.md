@@ -57,6 +57,19 @@ is scoped to this one comparison and never applied to upstream model IDs, export
 paths, or model aliases. Enforced by `tests/cli/export.test.ts`'s `native root protection` suite
 and `tests/cli/export-dispatch.test.ts` (the same checks reached through `runCli`).
 
+## `config export` never writes outside the output directory
+
+Every planned path is containment-checked (`assertPlanPathContained`, `src/agents/export.ts`)
+before it is hashed, reported or written: rooted under the client dir, no empty, `.` or `..`
+segment, no backslash, and resolved strictly below `<output>/<client-dir>/`. The names that feed
+those paths (codex role names, OpenCode agent names taken from native frontmatter, model aliases)
+are each required to be one safe path segment at their source (`assertSafePathSegment`,
+`src/core/path-segment.ts`). A native OpenCode agent whose frontmatter `name` carries `..`
+segments used to escape the output directory through this path; it is now `export-unsafe-name`,
+exit 2, with nothing written, in real and dry runs. Enforced by `tests/cli/export.test.ts`
+(file-backed OpenCode and codex traversal regressions), `tests/cli/export-dispatch.test.ts` (the
+same through `runCli`) and `tests/agents/export-containment.test.ts` (the containment helper).
+
 ## `config export` writes atomically or not at all
 
 The full artifact set (including the sidecar) is built and hashed in memory first, staged into a
@@ -64,9 +77,18 @@ temp directory under the resolved output directory, then published with a single
 artifact set is replaced through a backup-rename-restore-on-failure sequence: if the second rename
 fails, the backup is restored, so a failure never leaves neither the old nor the new set on disk. A
 collision without `--force` is refused (`export-collision`) before any write. `--dry-run` returns
-the exact plan and performs no filesystem write. Enforced by `tests/cli/export.test.ts` (force
-replace, dry-run vs real-run byte identity) and the collision/dry-run tests in
+the exact plan, performs no filesystem write, and is not subject to the collision check (there is
+nothing to replace). Enforced by `tests/cli/export.test.ts` (force replace, dry-run vs real-run
+byte identity, dry-run over an existing artifact) and the collision/dry-run tests in
 `tests/cli/export-dispatch.test.ts`.
+
+## `config export` reads state once
+
+`configExport` (`src/cli/write.ts`) loads state once, reads the agent inventory from that state's
+roots and passes the same `LoadedState` into `exportConfig` (`ExportOptions.state`), so the
+inventory and the sidecar's generation cannot come from two different reads of a config file that
+was edited in between. Enforced by `tests/cli/export.test.ts` (a supplied state is used even when
+the config file is gone from disk).
 
 ## Sidecar hashes describe the actual plan, never a claim about native load
 

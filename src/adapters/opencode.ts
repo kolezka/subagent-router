@@ -1,5 +1,6 @@
 import { getAgent } from '../agents/inventory';
 import { assertCapability } from './capabilities';
+import { assertSafePathSegment } from '../core/path-segment';
 import { resolveRoute } from '../core/route';
 import type {
   AgentInventory,
@@ -56,9 +57,16 @@ export function opencodeVariants(
 
   for (const entry of inventory.entries) {
     if (entry.client !== 'opencode' || entry.availability !== 'available' || entry.shadowed) continue;
+    // The name comes verbatim from the native file's frontmatter (`name:`), an untrusted input,
+    // and becomes a filename below. A name with `..` or a separator once escaped the output
+    // directory through export.ts, so it is refused here at its source; export.ts additionally
+    // checks containment of every planned path. Deliberately strict: an odd but legitimate name
+    // is refused rather than risking a write outside `outputDir`.
+    assertSafePathSegment(entry.name, 'opencode agent name');
 
     for (const model of catalog.byId.values()) {
       if (!model.enabled || model.description === undefined) continue;
+      assertSafePathSegment(model.alias, 'model alias');
 
       const variantName = `${entry.name}@${model.alias}`;
       const variantNative: Record<string, unknown> = {

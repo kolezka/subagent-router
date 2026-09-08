@@ -9,8 +9,9 @@ import { opencodeVariants } from '../adapters/opencode';
 import { buildCatalog } from '../core/catalog';
 import { RouterError } from '../core/errors';
 import { sha256 } from '../core/hash';
+import { assertSafePathSegment } from '../core/path-segment';
 import { loadState } from '../io/store';
-import type { AgentInventory, ClientId, EffectiveCatalog, Env, ExportFile, OperatorConfig, ResolverOptions } from '../core/types';
+import type { AgentInventory, ClientId, EffectiveCatalog, Env, ExportFile, LoadedState, OperatorConfig, ResolverOptions } from '../core/types';
 
 const ALL_CLIENTS: readonly ClientId[] = ['claude-code', 'opencode', 'codex'];
 
@@ -35,16 +36,33 @@ function clientDirName(client: ClientId): string {
   }
 }
 
-// Bounds every filesystem-facing name this module itself constructs (a codex role name taken
-// from `config.roles`). A dotted/slashed/empty value could otherwise escape the intended
-// `<clientDir>/agents/` directory once joined into a path. This does not cover names produced by
-// adapters/opencode.ts (out of this file's ownership); it only guards paths export.ts builds.
-const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// Second layer of traversal protection, after the adapters' own name checks: every planned file
+// must land strictly under `target` (the concrete `<outputDir>/<clientDir>` directory). Checks
+// the lexical shape first (rooted under clientDir, no empty/`.`/`..` segments, no backslashes),
+// then re-derives the absolute path and requires it to stay below `target` with a separator, so
+// a plan can never name a file this module would write outside the output directory, whether
+// the run is real or --dry-run. Returns the path relative to the client dir, the exact string
+// the write loop joins into the staging directory. Throws export-plan-invariant (exit 1): a plan
+// that reaches here with a bad path is an internal contract violation, not user input.
+export function assertPlanPathContained(target: string, clientDir: string, relativePath: string): string {
+  const invalid = (reason: string): RouterError =>
+    new RouterError('export-plan-invariant', `export-plan-invariant: ${relativePath} ${reason}`);
 
-function assertSafePathSegment(value: string, label: string): void {
-  if (value === '.' || value === '..' || value.includes('/') || value.includes('\\') || !SAFE_PATH_SEGMENT.test(value)) {
-    throw new RouterError('export-unsafe-name', `export-unsafe-name: ${label} is not a safe path segment (${JSON.stringify(value)})`);
+  const prefix = `${clientDir}/`;
+  if (!relativePath.startsWith(prefix)) throw invalid(`is not rooted under ${prefix}`);
+  const relativeToClient = relativePath.slice(prefix.length);
+  if (relativeToClient.length === 0) throw invalid('names the client directory itself');
+  if (relativeToClient.includes('\\')) throw invalid('contains a backslash');
+  for (const segment of relativeToClient.split('/')) {
+    if (segment.length === 0 || segment === '.' || segment === '..') {
+      throw invalid(`contains an empty, "." or ".." path segment`);
+    }
   }
+
+  const absolute = resolve(target, relativeToClient);
+  const targetWithSep = target.endsWith(sep) ? target : `${target}${sep}`;
+  if (!absolute.startsWith(targetWithSep)) throw invalid(`resolves outside ${target}`);
+  return relativeToClient;
 }
 
 // POSIX single-quotes a literal path for shell command generation: wraps it in `'...'` and
@@ -420,10 +438,15 @@ export interface ExportOptions {
   // exportConfig can protect a root even when it holds no files yet. Per-client configRoot
   // overrides come from OperatorConfig.agentRoots, already loaded from configPath.
   resolverContext: { cwd: string; home: string; env: Env; additionalRoots: readonly string[] };
+  // The state the caller already loaded from `configPath`, when it has one. The CLI reads the
+  // agent inventory from that same state's roots, so passing it here keeps inventory and sidecar
+  // on one generation even if the config file is edited between the two steps. Without it,
+  // exportConfig loads the state itself.
+  state?: LoadedState;
 }
 
 export async function exportConfig(configPath: string, client: ClientId, outputDir: string, options: ExportOptions): Promise<ExportFile[]> {
-  const state = await loadState(configPath);
+  const state = options.state ?? (await loadState(configPath));
 
   // OpenCode's variant generator structurally needs a catalog; every other client only needs one
   // when the caller explicitly requires it (`catalogRequired`).
@@ -484,10 +507,11 @@ export async function exportConfig(configPath: string, client: ClientId, outputD
     }
   }
 
+  // Containment is checked on every planned path before anything else happens with the plan:
+  // before hashing, before the collision check, before the dry-run return, before any write.
+  const stagedRelativePaths = new Map<string, string>();
   for (const file of files) {
-    if (!file.relativePath.startsWith(`${clientDir}/`)) {
-      throw new RouterError('export-plan-invariant', `export-plan-invariant: ${file.relativePath} is not rooted under ${clientDir}/`);
-    }
+    stagedRelativePaths.set(file.relativePath, assertPlanPathContained(target, clientDir, file.relativePath));
   }
 
   const hashes: Record<string, string> = {};
@@ -502,20 +526,27 @@ export async function exportConfig(configPath: string, client: ClientId, outputD
     hashes,
     exportedCodexRoles,
   );
+  stagedRelativePaths.set(sidecar.relativePath, assertPlanPathContained(target, clientDir, sidecar.relativePath));
   const plan = [...files, sidecar];
+
+  // A dry run reports the plan and writes nothing, so a prior artifact set is not a collision
+  // for it; --force is only about replacing files, which never happens here. Native-root and
+  // containment checks above still run unconditionally for dry runs.
+  if (options.dryRun) return plan;
 
   const alreadyExists = await pathExists(target);
   if (alreadyExists && !options.force) {
     throw new RouterError('export-collision', `export-collision: ${target} already exists; pass --force to replace it`);
   }
 
-  if (options.dryRun) return plan;
-
   await mkdir(resolvedOutputDir, { recursive: true });
   const stagingDir = await mkdtemp(join(resolvedOutputDir, '.subagent-router-export-'));
   try {
     for (const file of plan) {
-      const relativeToClient = file.relativePath.slice(clientDir.length + 1);
+      const relativeToClient = stagedRelativePaths.get(file.relativePath);
+      if (relativeToClient === undefined) {
+        throw new RouterError('export-plan-invariant', `export-plan-invariant: ${file.relativePath} was never containment-checked`);
+      }
       const stagedPath = join(stagingDir, relativeToClient);
       await mkdir(dirname(stagedPath), { recursive: true });
       await writeFile(stagedPath, file.content, { flag: 'wx' });

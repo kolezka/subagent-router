@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { readAgentInventory } from '../../src/agents/inventory';
 import { CLAUDE_VERSION_ENV_REF, CONTROL_URL_ENV_REF, dumpToml, exportConfig, findPackageRoot, type ExportOptions } from '../../src/agents/export';
 import { sha256 } from '../../src/core/hash';
+import { loadState } from '../../src/io/store';
 import type { AgentInventory, ClientId, ResolverOptions } from '../../src/core/types';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
 
@@ -115,6 +116,33 @@ describe('config export', () => {
     await exportConfig(configPath, 'opencode', outDir, { dryRun: false, force: true, inventory, catalogRequired: false, resolverContext: resolverContext() });
   });
 
+  test('--dry-run against an existing artifact returns the plan without --force and leaves the artifact untouched', async () => {
+    const configPath = join(dir, 'project', 'subagent-router.json');
+    const inventory = await inventoryFor('opencode', join(dir, 'project'), join(dir, 'home'));
+    const outDir = join(dir, 'out');
+
+    await exportConfig(configPath, 'opencode', outDir, { dryRun: false, force: false, inventory, catalogRequired: false, resolverContext: resolverContext() });
+    const before = await treeHash(outDir);
+
+    const plan = await exportConfig(configPath, 'opencode', outDir, { dryRun: true, force: false, inventory, catalogRequired: false, resolverContext: resolverContext() });
+    expect(plan.some((f) => f.relativePath === 'opencode/agents/reviewer@fast.md')).toBe(true);
+    expect(await treeHash(outDir)).toBe(before);
+  });
+
+  test('a caller-supplied LoadedState is used as-is: exportConfig does not re-read the config from disk', async () => {
+    // Guards the CLI against a config edit landing between its own loadState and exportConfig's:
+    // both must describe the same generation. Proven by removing the on-disk config after loading
+    // and requiring the export to still succeed from the supplied state.
+    const configPath = join(dir, 'project', 'subagent-router.json');
+    const inventory = await inventoryFor('opencode', join(dir, 'project'), join(dir, 'home'));
+    const state = await loadState(configPath);
+    await rm(configPath);
+
+    const files = await exportConfig(configPath, 'opencode', join(dir, 'out'), { dryRun: true, force: false, inventory, catalogRequired: false, resolverContext: resolverContext(), state });
+    const sidecar = JSON.parse(files.find((f) => f.relativePath === 'opencode/sidecar.json')?.content ?? '{}') as { snapshotGeneration: string };
+    expect(sidecar.snapshotGeneration).toBe(state.generation);
+  });
+
   test('force-replace fully swaps content: a renamed alias leaves no stale variant file behind', async () => {
     const configPath = join(dir, 'project', 'subagent-router.json');
     const inventory = await inventoryFor('opencode', join(dir, 'project'), join(dir, 'home'));
@@ -168,6 +196,45 @@ describe('config export', () => {
 
     await expect(
       exportConfig(configPath, 'codex', join(dir, 'out'), { dryRun: false, force: false, inventory, catalogRequired: false, resolverContext: resolverContext() }),
+    ).rejects.toThrow('export-unsafe-name');
+    await expect(readdir(join(dir, 'out'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  // Reproduction of the final-review blocker: a native OpenCode agent file whose frontmatter
+  // `name` carries `..` segments flowed verbatim into `opencode/agents/<name>@<alias>.md` and was
+  // joined into the staging dir, so the write landed OUTSIDE the output directory (here: inside
+  // the toy home's .claude/agents). The file is read through the real inventory scanner, not an
+  // injected entry, so the whole chain frontmatter -> inventory -> variants -> export is covered.
+  const TRAVERSAL_NAME = '../../../home/.claude/agents/unexpected';
+
+  async function writeTraversalAgent(): Promise<void> {
+    await writeFile(
+      join(dir, 'project', '.opencode', 'agents', 'evil.md'),
+      `---\nname: ${TRAVERSAL_NAME}\ndescription: Escapes\nmodel: inherit\n---\nEscape.\n`,
+    );
+  }
+
+  test('a traversal attempt in an opencode agent frontmatter name is rejected and writes nothing outside the output directory', async () => {
+    const configPath = join(dir, 'project', 'subagent-router.json');
+    await writeTraversalAgent();
+    const inventory = await inventoryFor('opencode', join(dir, 'project'), join(dir, 'home'));
+    expect(inventory.entries.some((entry) => entry.name === TRAVERSAL_NAME)).toBe(true); // positive control: the scanner really picked the name up
+
+    await expect(
+      exportConfig(configPath, 'opencode', join(dir, 'out'), { dryRun: false, force: false, inventory, catalogRequired: false, resolverContext: resolverContext() }),
+    ).rejects.toThrow('export-unsafe-name');
+
+    await expect(readdir(join(dir, 'out'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(join(dir, 'home', '.claude'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('the same opencode traversal is rejected in --dry-run too, and the plan is never returned', async () => {
+    const configPath = join(dir, 'project', 'subagent-router.json');
+    await writeTraversalAgent();
+    const inventory = await inventoryFor('opencode', join(dir, 'project'), join(dir, 'home'));
+
+    await expect(
+      exportConfig(configPath, 'opencode', join(dir, 'out'), { dryRun: true, force: false, inventory, catalogRequired: false, resolverContext: resolverContext() }),
     ).rejects.toThrow('export-unsafe-name');
     await expect(readdir(join(dir, 'out'))).rejects.toMatchObject({ code: 'ENOENT' });
   });

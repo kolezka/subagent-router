@@ -36,17 +36,30 @@ otherwise `human()` renders text. Every string on stderr, and every human-mode s
 untrusted input, goes through `escapeControl` (`src/cli/output.ts`) first, so a value copied from a
 model ID, agent name or file path can never inject a terminal control sequence.
 
+enforcement: [../../tests/cli/poc.test.ts](../../tests/cli/poc.test.ts) (`--version`/`--help`,
+unknown command), [../../tests/cli/read.test.ts](../../tests/cli/read.test.ts) and
+[../../tests/cli/write.test.ts](../../tests/cli/write.test.ts) (exit-code mapping),
+[../../tests/cli/diagnostics.test.ts](../../tests/cli/diagnostics.test.ts) and
+[../../tests/cli/output.test.ts](../../tests/cli/output.test.ts) (escaping, including the regex
+source form), [../../tests/cli/export-dispatch.test.ts](../../tests/cli/export-dispatch.test.ts)
+(`export-` code classification).
+
 ## `models sync [--dry-run] [--allow-empty]`
 
 Discovers models from the configured gateway endpoint (`synchronize`, `src/catalog/sync.ts`) and
 writes `models.lock.json` unless `--dry-run`. An empty discovered list without `--allow-empty` is
 `sync-empty`, exit 1, and writes nothing. Payload: `{ added, changed, missing, dryRun, fetchedAt }`.
 
+enforcement: [../../tests/cli/write.test.ts](../../tests/cli/write.test.ts),
+[../../tests/catalog/sync.test.ts](../../tests/catalog/sync.test.ts)
+
 ## `models describe <id-or-alias> (--text <t> | --file <path> | --clear)`
 
 Exactly one mode. Writes or clears `modelOverrides[id].description` only; every other override
 field is preserved. Works on a model with snapshot status `missing` (the description is kept, the
 model stays disabled). Never touches the snapshot.
+
+enforcement: [../../tests/cli/write.test.ts](../../tests/cli/write.test.ts)
 
 ## `agents list --client <c>` / `agents show <name> --client <c>`
 
@@ -55,12 +68,20 @@ Read the agent inventory for one client (`readAgentInventory`, `src/agents/inven
 `additionalRoots`). Shows hidden, shadowed and unavailable entries rather than hiding them behind
 one catalog-wide error.
 
+enforcement: [../../tests/cli/read.test.ts](../../tests/cli/read.test.ts),
+[../../tests/cli/read-additional.test.ts](../../tests/cli/read-additional.test.ts)
+
 ## `route preview --client <c> --agent <name> [--model <ref>] [--parent-model <m>]`
 
 Offline simulation only (`previewRoute`, `src/cli/read.ts`): never runs an agent, never calls
-`deps.fetch`. `assumptions.freshDelegation` is always `true` and is a stated simulation assumption,
-not a measurement. Payload includes `generation` (see INVARIANTS.md) and a `RouteDecision`
-(`src/core/route.ts`). A selection error (`decision.kind === 'error'`) is exit 2, not 0.
+`deps.fetch`, never loads a capability profile. `assumptions.freshDelegation` is always `true` and
+is a stated simulation assumption, not a measurement. Payload includes `generation` (see
+INVARIANTS.md) and a `RouteDecision` (`src/core/route.ts`). A selection error
+(`decision.kind === 'error'`) is exit 2, not 0.
+
+enforcement: [../../tests/cli/read.test.ts](../../tests/cli/read.test.ts),
+[../../tests/cli/read-additional.test.ts](../../tests/cli/read-additional.test.ts),
+[../../tests/e2e/cli-workflow.test.ts](../../tests/e2e/cli-workflow.test.ts)
 
 ## `config show` / `config check`
 
@@ -71,14 +92,19 @@ resolved secret values, so it can never leak a value even verbatim.
 `routeOverride` against the catalog. `{ problems: string[], generation }`. Exit 2 iff
 `problems.length > 0`.
 
+enforcement: [../../tests/cli/read.test.ts](../../tests/cli/read.test.ts),
+[../../tests/e2e/cli-workflow.test.ts](../../tests/e2e/cli-workflow.test.ts)
+
 ## `config export --client <c> --output <dir> [--dry-run] [--force]`
 
 CLI wiring for `exportConfig` (`src/agents/export.ts`); see that file for the full contract. The
-CLI resolves `--output` relative to `cwd`, builds the client's agent inventory through the same
-`cwd`/`home`/`env`/`configRoot`/`additionalRoots` recipe `agents list`/`agents show` use for that
-client, and passes `{ cwd, home, env, additionalRoots }` through unchanged as
-`ExportOptions.resolverContext`. `catalogRequired` is always `false` from the CLI; `exportConfig`
-itself forces a catalog for `opencode`.
+CLI resolves `--output` relative to `cwd`, loads state once, builds the client's agent inventory
+from that state through the same `cwd`/`home`/`env`/`configRoot`/`additionalRoots` recipe
+`agents list`/`agents show` use for that client, and passes `{ cwd, home, env, additionalRoots }`
+through unchanged as `ExportOptions.resolverContext` together with the already loaded state
+(`ExportOptions.state`), so inventory roots and the sidecar's generation come from one read of the
+config, never two. `catalogRequired` is always `false` from the CLI; `exportConfig` itself forces a
+catalog for `opencode`.
 
 Per-client output, all under `<output>/<client-dir>/`:
 
@@ -95,10 +121,27 @@ Per-client output, all under `<output>/<client-dir>/`:
   `dist/codex-hook.js`. Explicitly labeled naming-only: PreToolUse wiring is unmeasured (M7
   pending).
 
-`--dry-run` returns the exact plan (including the sidecar) without writing. Every plan is written
-atomically: staged into a temp directory under the resolved output directory, then renamed into
-place; a prior artifact set is only replaced (via a backup-rename-restore-on-failure sequence) with
-`--force`.
+Every planned file path is validated before anything is hashed, reported or written: it must be
+rooted under the client dir, contain no empty, `.` or `..` segment and no backslash, and resolve to
+a location strictly below `<output>/<client-dir>/` (`assertPlanPathContained`,
+`src/agents/export.ts`, `export-plan-invariant`). Independently, the names that become file names
+(a codex role name, an OpenCode agent name, a model alias) must each be one safe path segment
+(`assertSafePathSegment`, `src/core/path-segment.ts`, `export-unsafe-name`, exit 2). Both checks
+run for `--dry-run` too.
+
+`--dry-run` returns the exact plan (including the sidecar) without writing, and does not need
+`--force` when an artifact set already exists at the target: the collision check applies only to
+a real write. Every real plan is written atomically: staged into a temp directory under the resolved
+output directory, then renamed into place; a prior artifact set is only replaced (via a
+backup-rename-restore-on-failure sequence) with `--force`.
+
+enforcement: [../../tests/cli/export-dispatch.test.ts](../../tests/cli/export-dispatch.test.ts)
+(argument validation, dispatch, collisions, native roots, unsafe OpenCode names through `runCli`),
+[../../tests/cli/export.test.ts](../../tests/cli/export.test.ts) (full `exportConfig` contract,
+codex and OpenCode traversal regressions, dry-run without `--force`, supplied state),
+[../../tests/agents/export-containment.test.ts](../../tests/agents/export-containment.test.ts)
+(`assertPlanPathContained`), [../../tests/package.test.ts](../../tests/package.test.ts) (built
+artifacts)
 
 ## `doctor [--connect]`
 
@@ -106,6 +149,9 @@ Plain `doctor` never calls `deps.fetch`; `network: false` in the payload. `--con
 extra discovery-connectivity check (`checkDiscoveryConnectivity`) on top of the same offline
 report; a connectivity failure is caught, classified by `isUsageOrConfigCode`, and reported in the
 payload rather than discarding the rest of the report.
+
+enforcement: [../../tests/cli/diagnostics.test.ts](../../tests/cli/diagnostics.test.ts),
+[../../tests/cli/read.test.ts](../../tests/cli/read.test.ts)
 
 ## `serve [--port <n>] [--host <h>] [--claude-version <v>]`
 
@@ -122,3 +168,6 @@ extra production-only rule is not part of `startServer` itself, so DI synthetic 
 profiles keep working for this module's own hermetic tests). This preflight is standalone
 `serve`'s own gate; `createHandler`'s per-request capability gates (`assertCapability`) are
 unchanged and are still the only gate an embedder using `createHandler` directly goes through.
+
+enforcement: [../../tests/cli/serve.test.ts](../../tests/cli/serve.test.ts),
+[../../tests/cli/serve-dispatch.test.ts](../../tests/cli/serve-dispatch.test.ts)

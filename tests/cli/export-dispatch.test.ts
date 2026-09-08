@@ -181,6 +181,37 @@ describe('config export: native-root protection reached through the CLI', () => 
   });
 });
 
+describe('config export: unsafe opencode agent names reached through the CLI', () => {
+  // The final-review reproduction, through runCli: a native agent file whose frontmatter `name`
+  // carries `..` segments used to exit 0 and write `home/.claude/agents/unexpected@fast.md`
+  // outside --output. Exit 2 with export-unsafe-name, nothing under --output, nothing under the
+  // toy home's .claude, in both the real run and --dry-run.
+  const traversalName = '../../../home/.claude/agents/unexpected';
+
+  beforeEach(async () => {
+    await writeFile(
+      join(dir, 'project', '.opencode', 'agents', 'evil.md'),
+      `---\nname: ${traversalName}\ndescription: Escapes\nmodel: inherit\n---\nEscape.\n`,
+    );
+  });
+
+  test('a real export is refused with exit 2 and writes nothing outside the output directory', async () => {
+    const outDir = join(dir, 'out');
+    expect(await runCli(['config', 'export', '--client', 'opencode', '--output', outDir], deps())).toBe(2);
+    expect(err.join('')).toContain('export-unsafe-name');
+    await expect(readdir(outDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(join(dir, 'home', '.claude'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('--dry-run is refused the same way and reports no plan', async () => {
+    const outDir = join(dir, 'out');
+    expect(await runCli(['config', 'export', '--client', 'opencode', '--output', outDir, '--dry-run', '--json'], deps())).toBe(2);
+    expect(err.join('')).toContain('export-unsafe-name');
+    expect(out.join('')).toBe('');
+    await expect(readdir(outDir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
 describe('config export: never touches the network', () => {
   test('a real export makes zero fetch calls (deps.fetch throws if it is ever invoked)', async () => {
     expect(await runCli(['config', 'export', '--client', 'codex', '--output', join(dir, 'out')], deps())).toBe(0);
