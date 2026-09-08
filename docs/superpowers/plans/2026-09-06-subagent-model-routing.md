@@ -12,7 +12,13 @@
 
 Date: 2026-09-06
 
-Status: draft planu, do przeglądu; wykonanie nie rozpoczęte.
+Status: wykonanie w toku; pierwszy kamień milowy to lokalny PoC. Pełna macierz wsparcia klientów pozostaje niezweryfikowana.
+
+## Checkpoint PoC, 2026-09-08
+
+Na prośbę użytkownika pierwszeństwo ma uruchamialny pion Claude Code, marker, handler HTTP, zewnętrzna brama. Zadania 1-4 dostarczyły rdzeń i store. Dla PoC realizowane są lokalne elementy Task 7, Task 8, Task 9 oraz minimalny `serve` z Task 13. Task 5-6, 10-12, pełny Task 13, pakowanie i pełne Task 15 pozostają do wykonania, nie zostały anulowane.
+
+Profile rzeczywistych klientów pozostają `pending`. Lokalny scenariusz syntetyczny nie zalicza M1-M10 i nie zastępuje natywnego roundtripu. Sterownik probe bez ekstraktorów dowodów nie może oznaczyć pomiaru jako zaliczonego. Wpisy poniżej opisujące brak implementacji należą do historycznych rewizji dokumentu.
 
 ## Rewizja 2 planu, 2026-09-07
 

@@ -9,7 +9,9 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "build": "bun run scripts/build.ts"
+    "build": "bun run scripts/build.ts",
+    "poc:demo": "bun run scripts/poc-demo.ts",
+    "poc:serve": "bun run scripts/poc-serve.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.1",
