@@ -22,13 +22,13 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
 - [core/](core/README.md), [catalog/](catalog/README.md), [agents/](agents/README.md),
   [transport/](transport/README.md): the same five-file documentation block for those source
   directories, from a separate integration slice.
-- Every block above has `verified_against: null`: they describe an uncommitted worktree state, not
-  a landed commit.
+- Every block above carries `verified_against` with the commit its claims were checked against
+  (file by file, test by test); a later commit is not covered until the stamp is refreshed.
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 
 ## Docelowe bloki po wdrożeniu
 
-Dopiero gdy powstanie działający, zweryfikowany blok, jego dokumentacja będzie zawierać pięć plików: `README`, `CONTRACTS`, `INVARIANTS`, `GAPS` i `OPERATIONS`. W razie potrzeb może dojść `DECISIONS`. `cli/`, `core/`, `catalog/`, `agents/` i `transport/` (opisane powyżej) są takimi blokami; `verified_against` pozostaje `null` w każdym z nich do czasu commita.
+Dopiero gdy powstanie działający, zweryfikowany blok, jego dokumentacja będzie zawierać pięć plików: `README`, `CONTRACTS`, `INVARIANTS`, `GAPS` i `OPERATIONS`. W razie potrzeb może dojść `DECISIONS`. `cli/`, `core/`, `catalog/`, `agents/` i `transport/` (opisane powyżej) są takimi blokami; każdy ma `verified_against` ze sprawdzonym commitem.
 
 Te bloki nie są tworzone dla samego draftu. Nie zastępują ich spekulatywne opisy ani deklaracje weryfikacji nieistniejącego kodu.

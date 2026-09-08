@@ -1,7 +1,7 @@
 ---
 block: cli
 doc: CONTRACTS
-verified_against: null
+verified_against: 688d1736a12a96dc35cb444cd93405b38b0aa77f
 verified_on: 2026-09-08
 ---
 
@@ -109,7 +109,7 @@ catalog for `opencode`.
 Per-client output, all under `<output>/<client-dir>/`:
 
 - `claude-code` -> `claude/`: a read-only `settings-fragment.json` naming the built
-  `dist/claude-hook.js`, absolute config/profile/sidecar paths, and only the *names* of the
+  `dist/claude-hook.js`, absolute config and profile-dir paths, and only the *names* of the
   control-URL and secret env vars, never values. The active `settings.json` is never touched.
 - `opencode` -> `opencode/`: one `agents/<role>@<alias>.md` per described, enabled model variant
   (`opencodeVariants`), a `plugin-fragment.json` naming `dist/opencode-plugin.js`, and a sidecar

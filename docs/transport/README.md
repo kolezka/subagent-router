@@ -1,7 +1,7 @@
 ---
 block: transport
 doc: README
-verified_against: null
+verified_against: 688d1736a12a96dc35cb444cd93405b38b0aa77f
 verified_on: 2026-09-08
 owns:
   - src/transport/handler.ts
@@ -18,8 +18,8 @@ depends_on:
 
 # Transport
 
-Same caveat as [core](../core/README.md): `verified_against` is null, no commit exists for this
-working tree yet.
+Same rule as [core](../core/README.md): `verified_against` is the commit this block was checked
+against.
 
 ## What this block is
 

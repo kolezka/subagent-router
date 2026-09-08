@@ -1,7 +1,7 @@
 ---
 block: catalog
 doc: README
-verified_against: null
+verified_against: 688d1736a12a96dc35cb444cd93405b38b0aa77f
 verified_on: 2026-09-08
 owns:
   - src/catalog/discovery.ts
@@ -12,8 +12,8 @@ depends_on:
 
 # Catalog
 
-Same caveat as [core](../core/README.md): no commit exists yet for this working tree;
-`verified_against` is null on purpose.
+Same rule as [core](../core/README.md): `verified_against` is the commit this block was checked
+against.
 
 ## What this block is
 

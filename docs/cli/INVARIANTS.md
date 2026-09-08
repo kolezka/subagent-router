@@ -1,7 +1,7 @@
 ---
 block: cli
 doc: INVARIANTS
-verified_against: null
+verified_against: 688d1736a12a96dc35cb444cd93405b38b0aa77f
 verified_on: 2026-09-08
 ---
 

@@ -1,7 +1,7 @@
 ---
 block: core
 doc: README
-verified_against: null
+verified_against: 688d1736a12a96dc35cb444cd93405b38b0aa77f
 verified_on: 2026-09-08
 owns:
   - src/core/types.ts
@@ -18,9 +18,8 @@ depends_on: []
 
 # Core
 
-No commit exists for this description. `feat/complete-routing` is uncommitted on top of
-`133261f`; `verified_against` stays null until a commit lands. Read this doc as checked against
-the file paths below, not against a SHA.
+`verified_against` names the commit every claim in this block was checked against; a later commit
+is not covered until the stamp is refreshed.
 
 ## What this block is
 

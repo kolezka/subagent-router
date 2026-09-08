@@ -1,7 +1,7 @@
 ---
 block: cli
 doc: README
-verified_against: null
+verified_against: 688d1736a12a96dc35cb444cd93405b38b0aa77f
 verified_on: 2026-09-08
 owns:
   - src/cli/main.ts
@@ -22,9 +22,9 @@ depends_on:
 # CLI
 
 This block is `subagent-router`'s command-line surface: `src/cli/*` plus the config-export
-subsystem in `src/agents/export.ts`. `verified_against` is `null` because this describes the
-uncommitted state of this worktree (branch `feat/complete-routing`), not a landed commit; no
-commit SHA is invented here. Re-verify and fill in `verified_against` once this work is committed.
+subsystem in `src/agents/export.ts`. `verified_against` names the commit every claim in this
+block was checked against, file by file and test by test; a later commit is not covered until the
+stamp is refreshed.
 
 ## What exists today
 
@@ -62,8 +62,7 @@ for what must hold across all of them.
 - [../superpowers/specs/2026-09-06-subagent-model-routing-design.md](../superpowers/specs/2026-09-06-subagent-model-routing-design.md):
   the design this CLI implements.
 
-A separate integration slice's documentation blocks now exist alongside this one, each with the
-same `verified_against: null` caveat (uncommitted worktree, no commit to check against yet):
+The other documentation blocks, each verified against the same commit:
 
 - [../core/README.md](../core/README.md): routing core, config/snapshot parsing, catalog
   resolution, hashing.

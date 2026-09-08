@@ -1,7 +1,7 @@
 ---
 block: cli
 doc: GAPS
-verified_against: null
+verified_against: 688d1736a12a96dc35cb444cd93405b38b0aa77f
 verified_on: 2026-09-08
 ---
 
@@ -52,13 +52,6 @@ There is no `config export --verify` or equivalent that spawns a real client and
 up the exported fragment. Building one requires a measured native resolver first (see above); until
 then, "the export ran successfully" and "a client is using this" are two separate, unlinked claims,
 and this documentation does not conflate them.
-
-## Related documentation not yet integrated
-
-A separate integration slice is expected to add `docs/core/`, `docs/catalog/`, `docs/agents/`, and
-`docs/transport/` blocks. `docs/cli/README.md` reserves links to them, but as of this writing they
-do not exist in this worktree. Do not treat their absence as a broken link introduced by this
-change; it is a placeholder for work owned elsewhere.
 
 ## Stale claims already fixed elsewhere in this task
 
