@@ -33,4 +33,16 @@ See [../measurements/claude-code-2.1.263-partial.md](../measurements/claude-code
 for a review of historical parent/child model artifacts. It is not a new native run and closes
 none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
 
+- **M3-A has an extractor and judge, but no real pass.** [verified] direct read of
+  [../../tests/probes/evidence-m3a.ts](../../tests/probes/evidence-m3a.ts): `readRunCapture` +
+  `extractM3AEvidence` + `judgeM3A` turn a native-claude-handler.ts run capture into a
+  pending/failed/passed verdict, refusing to pass on an undeclared scaffold override or a
+  version-'synthetic-hermetic' profile. The one recorded run
+  (`tests/probes/.runs/handler-4r0D99`) predates the scaffold-manifest requirement and has no
+  `NNN-profile-scaffold.json`, so it judges `pending` by construction; the earlier synthetic
+  handler trial referenced above cannot and does not count as an M3-A pass. `M3-A` in
+  [../../tests/fixtures/capabilities/claude-code-2.1.266.json](../../tests/fixtures/capabilities/claude-code-2.1.266.json)
+  stays `pending` until a future approved loopback run, scaffolded and declared, judges `passed`
+  and is narrowed in via `tests/probes/fixture-writer.ts`.
+
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

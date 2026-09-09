@@ -109,6 +109,14 @@ export function syntheticLayoutProfile(observedClientVersion: string): Capabilit
   };
 }
 
+// The scaffold manifest for syntheticLayoutProfile(): exactly the dotted paths its spread
+// actually overrides relative to the real claude-code-<version>.json fixture -- status, the two
+// probes it sets (M10, M3-A), all five lifecycle phases (via the wildcard), and the alternate-
+// layout position flag. Consumed by tests/probes/evidence-m3a.ts's extractM3AEvidence: a run
+// capture without this manifest (or with one that omits a path that actually diverges) can never
+// judge M3-A past 'pending', however clean its request/response pairs look.
+export const SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS: readonly string[] = ['status', 'probes.M10', 'probes.M3-A', 'lifecycle.*', 'parentPromptPosition'];
+
 export interface RecordedUpstreamRequest {
   url: string;
   headers: Record<string, string>;
@@ -360,6 +368,12 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   }
   const profile = syntheticLayoutProfile(observedClientVersion);
   rec('profile', profile);
+  // Sibling to NNN-profile.json, same sequence number, written directly (not through rec()) so
+  // it never consumes a seq number of its own and shifts every later capture file's numbering.
+  writeFileSync(
+    `${OUT}/${String(seq).padStart(3, '0')}-profile-scaffold.json`,
+    JSON.stringify({ overriddenPaths: SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS }, null, 2),
+  );
   const { handler } = await createHandlerFixture({
     onUpstreamRequest: (record) => rec('post-handler-upstream', record),
     profile,
