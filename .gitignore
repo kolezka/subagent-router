@@ -4,3 +4,5 @@ node_modules/
 dist/
 coverage/
 .DS_Store
+/tests/probes/.runs/
+/tests/probes/.last-run
