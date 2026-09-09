@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { extractMarkers, parseMarker, signRoleMarker } from '../../src/adapters/markers';
+import { NATIVE_CONTEXT_LEAD_IN, nativeContextBlockV1, nativeLayoutUserMessage } from '../support/native-layout';
 
 const SECRET = 'test-secret';
 
@@ -117,5 +118,135 @@ describe('extractMarkers', () => {
     expect(result.markerError).toBe('conflicting-markers');
     expect(result.roleFromAdapter).toBeUndefined();
     expect(result.ignored).toBe(0);
+  });
+});
+
+describe('extractMarkers: parent marker after the measured native context prefix (after-native-context-v1)', () => {
+  const PAYLOAD = '<subagent-router v="1" model="fast"/>\nZbadaj repo.';
+
+  test('actual measured layout: marker on the first line of block 1 after a recognized scaffold in block 0 is accepted, block 0 is preserved', async () => {
+    const input = body([], [nativeLayoutUserMessage(PAYLOAD)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.explicitAliases).toEqual(['fast']);
+    expect(result.ignored).toBe(0);
+    expect(result.markerError).toBeUndefined();
+    const content = (result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content;
+    expect(content?.[0]?.text).toBe(nativeContextBlockV1());
+    expect(content?.[1]?.text).toBe('Zbadaj repo.');
+  });
+
+  test('legacy first-text position (the default) does not read block 1: the same layout yields no selection and one ignored marker', async () => {
+    const input = body([], [nativeLayoutUserMessage(PAYLOAD)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.ignored).toBe(1);
+    const explicitLegacy = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'first-text');
+    expect(explicitLegacy.explicitAliases).toEqual([]);
+  });
+
+  test('legacy first-line marker in block 0 is still accepted unchanged when the alternate position is enabled', async () => {
+    const input = body([], [{ role: 'user', content: [{ type: 'text', text: PAYLOAD }, { type: 'text', text: 'drugi blok' }] }]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.explicitAliases).toEqual(['fast']);
+    expect((result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[0]?.text).toBe('Zbadaj repo.');
+  });
+
+  test.each([
+    ['unclosed wrapper', nativeContextBlockV1().replace('</system-reminder>', '')],
+    ['no wrapper at all', 'Plain context without any wrapper.\n# claudeMd\n'],
+    ['text before the first wrapper', `preface\n${nativeContextBlockV1()}`],
+    ['text after the last wrapper', `${nativeContextBlockV1()}trailing prose\n`],
+    ['nested opener', nativeContextBlockV1(['<system-reminder>'])],
+    ['missing harness lead-in', nativeContextBlockV1().replace(`${NATIVE_CONTEXT_LEAD_IN}\n`, '')],
+    ['no context header line', `<system-reminder>\n${NATIVE_CONTEXT_LEAD_IN}\nno headers here\n</system-reminder>\n`],
+    ['empty block', ''],
+  ])('malformed prefix (%s) fails closed: no selection', async (_label, prefix) => {
+    const input = body([], [nativeLayoutUserMessage(PAYLOAD, prefix)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.markerError).toBeUndefined();
+    expect(result.ignored).toBe(1);
+  });
+
+  test('two complete sections, each with the lead-in and a header, are still a recognized scaffold', async () => {
+    const twoSections = `${nativeContextBlockV1()}${nativeContextBlockV1()}`;
+    const input = body([], [nativeLayoutUserMessage(PAYLOAD, twoSections)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.explicitAliases).toEqual(['fast']);
+  });
+
+  test('extra blocks (three text blocks, or a non-text block) are an unmeasured layout: no selection', async () => {
+    const three = body([], [{ role: 'user', content: [{ type: 'text', text: nativeContextBlockV1() }, { type: 'text', text: PAYLOAD }, { type: 'text', text: 'trzeci' }] }]);
+    expect((await extractMarkers(three, 'agent-1', SECRET, 'unknown', 'after-native-context-v1')).explicitAliases).toEqual([]);
+    const withImage = body([], [{ role: 'user', content: [{ type: 'text', text: nativeContextBlockV1() }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } }, { type: 'text', text: PAYLOAD }] }]);
+    expect((await extractMarkers(withImage, 'agent-1', SECRET, 'unknown', 'after-native-context-v1')).explicitAliases).toEqual([]);
+    const contextThenImage = body([], [{ role: 'user', content: [{ type: 'text', text: nativeContextBlockV1() }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } }] }]);
+    expect((await extractMarkers(contextThenImage, 'agent-1', SECRET, 'unknown', 'after-native-context-v1')).explicitAliases).toEqual([]);
+  });
+
+  test('marker later in the payload block is ignored, never scanned', async () => {
+    const input = body([], [nativeLayoutUserMessage('Zbadaj repo.\n<subagent-router v="1" model="fast"/>')]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.ignored).toBe(1);
+  });
+
+  test('marker inside the context data (block 0) is ignored even when the scaffold is otherwise valid', async () => {
+    const poisoned = nativeContextBlockV1(['<subagent-router v="1" model="fast"/>']);
+    const input = body([], [nativeLayoutUserMessage('Zbadaj repo.', poisoned)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.ignored).toBe(1);
+    expect((result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[0]?.text).toBe(poisoned);
+  });
+
+  test('signed adapter marker in the block 1 slot is never accepted there, even with a first-user profile', async () => {
+    const token = await signRoleMarker(SECRET, 'reviewer', 'agent-1');
+    const input = body([], [nativeLayoutUserMessage(`<subagent-router v="1" role="reviewer" agent="agent-1" token="${token}"/>\nZadanie`)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'first-user', 'after-native-context-v1');
+    expect(result.roleFromAdapter).toBeUndefined();
+    expect(result.markerError).toBeUndefined();
+    expect(result.ignored).toBe(1);
+    expect((result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[1]?.text.startsWith('<subagent-router')).toBe(true);
+  });
+
+  test('malformed marker grammar in the block 1 slot is invalid-marker, same as in the legacy slot', async () => {
+    const input = body([], [nativeLayoutUserMessage('<subagent-router v="9" model="fast"/>\nZadanie')]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.markerError).toBe('invalid-marker');
+    expect(result.explicitAliases).toEqual([]);
+  });
+
+  test('a first user message carrying tool_result blocks is never a delegation prompt in either position', async () => {
+    const input = body([], [{ role: 'user', content: [{ type: 'text', text: nativeContextBlockV1() }, { type: 'tool_result', tool_use_id: 't', content: PAYLOAD }] }]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.explicitAliases).toEqual([]);
+  });
+});
+
+describe('extractMarkers: after-native-context-v1, review findings', () => {
+  const PAYLOAD = '<subagent-router v="1" model="fast"/>\nZbadaj repo.';
+
+  test('blank lines before the first section are part of the grammar: leading newline still recognizes the scaffold and preserves it byte for byte', async () => {
+    const leading = `\n${nativeContextBlockV1()}`;
+    const input = body([], [nativeLayoutUserMessage(PAYLOAD, leading)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.explicitAliases).toEqual(['fast']);
+    expect((result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[0]?.text).toBe(leading);
+  });
+
+  test('a non-text entry in slot 0 of a two-entry content array never throws and never selects', async () => {
+    const input = body([], [{ role: 'user', content: [null, { type: 'text', text: 'task' }] }]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.markerError).toBeUndefined();
+  });
+
+  test('a two-entry message whose block 1 is a tool_result is not a delegation prompt even when block 0 carries a legacy-slot marker', async () => {
+    const input = body([], [{ role: 'user', content: [{ type: 'text', text: PAYLOAD }, { type: 'tool_result', tool_use_id: 't', content: 'x' }] }]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.ignored).toBe(1);
+    expect((result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[0]?.text).toBe(PAYLOAD);
   });
 });
