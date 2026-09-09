@@ -1,6 +1,6 @@
 import { countMarkerLines, extractMarkers } from './markers';
 import type { CorrelationStore } from './correlation';
-import type { CapabilityProfile, EffectiveCatalog, OperatorConfig, RouteInput } from '../core/types';
+import type { CapabilityProfile, EffectiveCatalog, OperatorConfig, ParentPromptPosition, RouteInput } from '../core/types';
 
 const CATALOG_BLOCK_HEADER = '<subagent-router catalog>';
 const ENRICHED_TOOL_NAMES = new Set(['agent', 'task', 'workflow']);
@@ -111,6 +111,28 @@ function findBillingBlockIndex(system: unknown): number | undefined {
   return undefined;
 }
 
+// The native client identifies its exact version in the user-agent it sends, e.g.
+// `claude-cli/2.1.266 (external, sdk-cli)`. Only the version token is read, bounded on both
+// sides so a longer version string never prefix-matches a shorter profile version.
+const CLAUDE_CLI_USER_AGENT_RE = /^claude-cli\/(\d+\.\d+\.\d+)(?:\s|$)/;
+
+export function observedClaudeClientVersion(headers: Headers): string | undefined {
+  const userAgent = headers.get('user-agent');
+  if (userAgent === null) return undefined;
+  return CLAUDE_CLI_USER_AGENT_RE.exec(userAgent)?.[1];
+}
+
+// createHandler freezes one profile per generation and never reloads it per request, so the
+// alternate layout, measured on one exact client version, must additionally be bound to the
+// version this request actually claims. Anything else falls back to the legacy first-text slot.
+function effectiveParentPromptPosition(profile: CapabilityProfile, headers: Headers): ParentPromptPosition {
+  if (profile.parentPromptPosition !== 'after-native-context-v1') return 'first-text';
+  if (profile.probes['M3-A'] !== 'passed') return 'first-text';
+  const observedVersion = observedClaudeClientVersion(headers);
+  if (observedVersion === undefined || observedVersion !== profile.version) return 'first-text';
+  return 'after-native-context-v1';
+}
+
 export async function normalizeClaudeRequest(
   body: Record<string, unknown>,
   headers: Headers,
@@ -145,7 +167,13 @@ export async function normalizeClaudeRequest(
     };
   }
 
-  const markers = await extractMarkers(body, agentId, options.secret, options.profile.adapterMarkerPosition);
+  const markers = await extractMarkers(
+    body,
+    agentId,
+    options.secret,
+    options.profile.adapterMarkerPosition,
+    effectiveParentPromptPosition(options.profile, headers),
+  );
 
   let explicitIds: string[] = [];
   let explicitError: 'unknown-model' | undefined;

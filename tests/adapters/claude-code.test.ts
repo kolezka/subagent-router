@@ -5,6 +5,7 @@ import { signRoleMarker } from '../../src/adapters/markers';
 import { buildCatalog } from '../../src/core/catalog';
 import type { CapabilityProfile } from '../../src/core/types';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
+import { nativeContextBlockV1, nativeLayoutUserMessage } from '../support/native-layout';
 
 const SECRET = 'router-secret';
 
@@ -169,4 +170,97 @@ describe('normalizeClaudeRequest', () => {
     expect(result.adapterRole).toBeUndefined();
     expect(result.input.ignoredMarkers).toBeGreaterThan(0);
   });
+});
+
+describe('normalizeClaudeRequest: channel-A marker after the measured native context prefix', () => {
+  const CHILD_SYSTEM = [{ type: 'text', text: 'x-anthropic-billing-header: cc_is_subagent=true' }];
+  const PAYLOAD = '<subagent-router v="1" model="fast"/>\nZadanie';
+  const layoutProfile: CapabilityProfile = {
+    ...profile,
+    version: '2.1.266',
+    parentPromptPosition: 'after-native-context-v1',
+    probes: { 'M3-A': 'passed' },
+  };
+  const matchingHeaders = () => new Headers({ 'x-claude-code-agent-id': 'agent-1', 'user-agent': 'claude-cli/2.1.266 (external, sdk-cli)' });
+
+  function layoutBody(payload = PAYLOAD): Record<string, unknown> {
+    return { model: 'claude-haiku', system: CHILD_SYSTEM, messages: [nativeLayoutUserMessage(payload)] };
+  }
+
+  test('zmierzony układ: profil z M3-A i pozycją alternatywną, zgodna wersja klienta z requestu, marker w bloku 1 daje explicitIds, blok 0 zostaje', async () => {
+    const catalog = buildCatalog(configFixture(), await snapshotFixture());
+    const body = layoutBody();
+    const result = await normalizeClaudeRequest(body, matchingHeaders(), { profile: layoutProfile, catalog, roles: configFixture().roles });
+    expect(result.input).toMatchObject({ scope: 'child', explicitIds: [FIXTURE_MODEL_ID], ignoredMarkers: 0 });
+    const content = (result.forwardBody.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content;
+    expect(content?.[0]?.text).toBe(nativeContextBlockV1());
+    expect(content?.[1]?.text).toBe('Zadanie');
+    expect((body.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[1]?.text).toBe(PAYLOAD);
+  });
+
+  test('brak zaliczonego M3-A (pending albo nieobecne) nie otwiera pozycji alternatywnej', async () => {
+    const catalog = buildCatalog(configFixture(), await snapshotFixture());
+    for (const probes of [{ 'M3-A': 'pending' as const }, {}]) {
+      const result = await normalizeClaudeRequest(layoutBody(), matchingHeaders(), { profile: { ...layoutProfile, probes }, catalog, roles: configFixture().roles });
+      expect(result.input.explicitIds).toEqual([]);
+      expect(result.input.ignoredMarkers).toBe(1);
+    }
+  });
+
+  test('samo M3-A bez jawnego ustawienia układu w profilu nie otwiera pozycji alternatywnej', async () => {
+    const catalog = buildCatalog(configFixture(), await snapshotFixture());
+    const { parentPromptPosition: _omit, ...withoutLayout } = layoutProfile;
+    const result = await normalizeClaudeRequest(layoutBody(), matchingHeaders(), { profile: withoutLayout, catalog, roles: configFixture().roles });
+    expect(result.input.explicitIds).toEqual([]);
+    const legacy = await normalizeClaudeRequest(layoutBody(), matchingHeaders(), { profile: { ...layoutProfile, parentPromptPosition: 'first-text' }, catalog, roles: configFixture().roles });
+    expect(legacy.input.explicitIds).toEqual([]);
+  });
+
+  test('wersja klienta z requestu musi dokładnie odpowiadać wersji profilu: inna wersja albo brak nagłówka zamyka pozycję alternatywną', async () => {
+    const catalog = buildCatalog(configFixture(), await snapshotFixture());
+    const mismatch = await normalizeClaudeRequest(layoutBody(), new Headers({ 'user-agent': 'claude-cli/2.1.263 (external, sdk-cli)' }), { profile: layoutProfile, catalog, roles: configFixture().roles });
+    expect(mismatch.input.explicitIds).toEqual([]);
+    expect(mismatch.input.ignoredMarkers).toBe(1);
+    const absent = await normalizeClaudeRequest(layoutBody(), new Headers({ 'x-claude-code-agent-id': 'agent-1' }), { profile: layoutProfile, catalog, roles: configFixture().roles });
+    expect(absent.input.explicitIds).toEqual([]);
+    const prefixOnly = await normalizeClaudeRequest(layoutBody(), new Headers({ 'user-agent': 'claude-cli/2.1.2660 (external, sdk-cli)' }), { profile: layoutProfile, catalog, roles: configFixture().roles });
+    expect(prefixOnly.input.explicitIds).toEqual([]);
+    const foreign = await normalizeClaudeRequest(layoutBody(), new Headers({ 'user-agent': 'Bun/1.4.1' }), { profile: layoutProfile, catalog, roles: configFixture().roles });
+    expect(foreign.input.explicitIds).toEqual([]);
+  });
+
+  test('legacy marker w pierwszej linii pierwszego bloku działa bez zmian także przy profilu z pozycją alternatywną', async () => {
+    const catalog = buildCatalog(configFixture(), await snapshotFixture());
+    const body = { model: 'claude-haiku', system: CHILD_SYSTEM, messages: [{ role: 'user', content: PAYLOAD }] };
+    const result = await normalizeClaudeRequest(body, matchingHeaders(), { profile: layoutProfile, catalog, roles: configFixture().roles });
+    expect(result.input.explicitIds).toEqual([FIXTURE_MODEL_ID]);
+  });
+
+  test('podpisany marker adaptera w slocie bloku 1 nie daje roli, nawet z first-user i zaliczonym M3', async () => {
+    const catalog = buildCatalog(configFixture(), await snapshotFixture());
+    const token = await signRoleMarker(SECRET, 'explorer', 'agent-1');
+    const adapterProfile: CapabilityProfile = { ...layoutProfile, adapterMarkerPosition: 'first-user', probes: { 'M3-A': 'passed', M3: 'passed' } };
+    const body = layoutBody(`<subagent-router v="1" role="explorer" agent="agent-1" token="${token}"/>\nZadanie`);
+    const result = await normalizeClaudeRequest(body, matchingHeaders(), { profile: adapterProfile, catalog, roles: configFixture().roles, secret: SECRET });
+    expect(result.input.role).toBeUndefined();
+    expect(result.input.roleDefaultId).toBeUndefined();
+    expect(result.adapterRole).toBeUndefined();
+    expect(result.input.ignoredMarkers).toBe(1);
+  });
+});
+
+describe('normalizeClaudeRequest: client version token boundary', () => {
+  const CHILD_SYSTEM = [{ type: 'text', text: 'x-anthropic-billing-header: cc_is_subagent=true' }];
+  const layoutProfile: CapabilityProfile = { ...profile, version: '2.1.266', parentPromptPosition: 'after-native-context-v1', probes: { 'M3-A': 'passed' } };
+
+  test.each(['claude-cli/2.1.266-beta (external, sdk-cli)', 'claude-cli/2.1.266.1 (external, sdk-cli)', 'claude-cli/2.1.266x', 'xclaude-cli/2.1.266 (external, sdk-cli)'])(
+    'user-agent %s does not satisfy profile 2.1.266',
+    async (userAgent) => {
+      const catalog = buildCatalog(configFixture(), await snapshotFixture());
+      const body = { model: 'claude-haiku', system: CHILD_SYSTEM, messages: [nativeLayoutUserMessage('<subagent-router v="1" model="fast"/>\nZadanie')] };
+      const result = await normalizeClaudeRequest(body, new Headers({ 'user-agent': userAgent }), { profile: layoutProfile, catalog, roles: configFixture().roles });
+      expect(result.input.explicitIds).toEqual([]);
+      expect(result.input.ignoredMarkers).toBe(1);
+    },
+  );
 });

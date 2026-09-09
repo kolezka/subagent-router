@@ -5,6 +5,7 @@ import type { CapabilityProfile, FetchLike, FreshDelegationEnvelope } from '../.
 import { BUN_RAW_FETCH_ADAPTER, bunRawFetch } from '../../src/transport/bun-fetch';
 import { createHandler, signFreshDelegation } from '../../src/transport/handler';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
+import { nativeContextBlockV1, nativeLayoutUserMessage } from '../support/native-layout';
 
 const CAPABILITY_FIXTURES_DIR = `${import.meta.dir}/../fixtures/capabilities`;
 
@@ -529,5 +530,30 @@ describe('createHandler', () => {
     for (const patch of cases) {
       await expect(handlerWith(fetch, patch)).rejects.toThrow();
     }
+  });
+});
+
+describe('createHandler: channel-A marker after the measured native context prefix', () => {
+  const LAYOUT_PROFILE: CapabilityProfile = { ...FIXTURE_SUPPORTED_PROFILE, version: '2.1.266', correlation: false, correlationEntropy: 'pending', adapterMarkerPosition: 'unknown', parentPromptPosition: 'after-native-context-v1', probes: { M10: 'passed', 'M3-A': 'passed' } };
+  const PAYLOAD = '<subagent-router v="1" model="fast"/>\nZadanie';
+
+  test('request w zmierzonym układzie z zgodną wersją klienta jest routowany, blok kontekstu jest przekazany bez zmian, marker znika', async () => {
+    const { fetch, seen } = upstream();
+    const handler = await handlerWith(fetch, { profile: LAYOUT_PROFILE });
+    const res = await handler(post('/v1/messages', { model: 'claude-haiku', system: CHILD_SYSTEM, messages: [nativeLayoutUserMessage(PAYLOAD)] }, { 'user-agent': 'claude-cli/2.1.266 (external, sdk-cli)', 'x-claude-code-agent-id': 'agent-1' }));
+    expect(res.status).toBe(200);
+    expect(seen[0]?.body.model).toBe(FIXTURE_MODEL_ID);
+    const content = (seen[0]?.body.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content;
+    expect(content?.[0]?.text).toBe(nativeContextBlockV1());
+    expect(content?.[1]?.text).toBe('Zadanie');
+  });
+
+  test('ten sam układ z inną wersją klienta w requeście kończy się missing-selection bez requestu upstream', async () => {
+    const { fetch, seen } = upstream();
+    const handler = await handlerWith(fetch, { profile: LAYOUT_PROFILE });
+    const res = await handler(post('/v1/messages', { model: 'claude-haiku', system: CHILD_SYSTEM, messages: [nativeLayoutUserMessage(PAYLOAD)] }, { 'user-agent': 'claude-cli/2.1.263 (external, sdk-cli)' }));
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: { code: 'missing-selection' } });
+    expect(seen).toHaveLength(0);
   });
 });

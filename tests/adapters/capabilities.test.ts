@@ -103,3 +103,31 @@ describe('capabilities fixture validation (fail-closed schema/identity checks)',
     await expect(loadTransportCapabilityProfile('../../../../etc', '1.3.11', FIXTURES)).rejects.toMatchObject({ code: 'capability-invalid-identifier' });
   });
 });
+
+describe('capabilities: parentPromptPosition (channel-A layout amendment)', () => {
+  test('profil bez pola parentPromptPosition ładuje się bez tego pola (legacy first-text pozostaje domyślne)', async () => {
+    const profile = await loadCapabilityProfile('claude-code', '2.1.266', FIXTURES);
+    expect(profile.parentPromptPosition).toBeUndefined();
+    expect('parentPromptPosition' in profile).toBe(false);
+  });
+
+  test('nieznana wartość parentPromptPosition jest odrzucana jako błąd schematu', async () => {
+    await expect(loadCapabilityProfile('claude-code', '9.0.5', INVALID_FIXTURES)).rejects.toMatchObject({ code: 'capability-fixture-invalid-schema' });
+  });
+
+  test('zmierzona wartość after-native-context-v1 jest ładowana dosłownie z pliku profilu', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(join(tmpdir(), 'capabilities-layout-'));
+    const fixture = {
+      client: 'claude-code', version: '9.1.0', status: 'pending', correlation: false, correlationEntropy: 'pending', fork: false,
+      adapterMarkerPosition: 'unknown', parentPromptPosition: 'after-native-context-v1',
+      probes: { 'M3-A': 'passed' },
+      lifecycle: { 'next-turn': 'pending', resume: 'pending', compaction: 'pending', nested: 'pending', parallel: 'pending' },
+    };
+    writeFileSync(join(dir, 'claude-code-9.1.0.json'), JSON.stringify(fixture));
+    const profile = await loadCapabilityProfile('claude-code', '9.1.0', dir);
+    expect(profile.parentPromptPosition).toBe('after-native-context-v1');
+    expect(profile.probes['M3-A']).toBe('passed');
+  });
+});
