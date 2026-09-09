@@ -45,4 +45,31 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   stays `pending` until a future approved loopback run, scaffolded and declared, judges `passed`
   and is narrowed in via `tests/probes/fixture-writer.ts`.
 
+- **M10 lifecycle-phase and M10-freshness judges exist, but no real pass is recorded.**
+  [verified] direct read of
+  [../../tests/probes/evidence-m10.ts](../../tests/probes/evidence-m10.ts) and
+  [../../tests/probes/evidence-freshness.ts](../../tests/probes/evidence-freshness.ts):
+  `extractLifecycleEvidence` + `judgeLifecyclePhase` turn a run's declared
+  `capture/000-run-manifest.json` (`phasesExercised`, `mode`) plus its request/response pairs
+  into a per-phase `next-turn`/`resume`/`compaction`/`nested`/`parallel` verdict, and
+  `extractFreshnessEvidence` + `judgeM10Freshness` turn instance-fetch/register/consume/replay
+  records into an `M10-freshness` verdict; both fail closed to `pending` when the run declares
+  nothing. `compaction` additionally stays `pending` until a later request of the same agent
+  is observed carrying a `compact_boundary` marker (`compaction-requires-observed-compact-boundary`);
+  nothing in the current saved runs or fixtures ever exercises real lifecycle transitions, so
+  every phase and `M10-freshness` in
+  [../../tests/fixtures/capabilities/claude-code-2.1.266.json](../../tests/fixtures/capabilities/claude-code-2.1.266.json)
+  stay `pending`.
+- **The production freshness hook can be wired into the handler-mode fixture, but was never run.**
+  `tests/probes/native-claude-handler.ts` records instance-fetch/delegation-register/consume/replay
+  capture files when `PROBE_FRESHNESS_HOOK=production` is set (gated inside the existing
+  `RUN_NATIVE_PROBES` block only), and `tests/probes/native-claude-run.sh`'s handler mode can
+  swap its static fake `hook.sh` for a wrapper that runs the real published `claude-hook`
+  entrypoint against the run's own front server. Neither this worktree nor any session working
+  in it may set `RUN_NATIVE_PROBES` or run the real `claude` binary, so this path has never
+  actually executed: `src/transport/claude-hook.ts`'s own bootstrap still always resolves
+  `freshDelegation: false` (see above), so even a real run of this wiring would record zero
+  successful registrations today. This is wiring for a future measurement, not a measurement
+  itself.
+
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

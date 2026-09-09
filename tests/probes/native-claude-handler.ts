@@ -18,6 +18,7 @@ import http from 'node:http';
 import type { CapabilityProfile, FetchLike } from '../../src/core/types';
 import { createHandler } from '../../src/transport/handler';
 import { configFixture, snapshotFixture } from '../support/fixtures';
+import { hashNonce } from './evidence-freshness';
 
 // Two named fixture agents, two distinct opaque upstream model ids/aliases. The
 // parent's Task/Agent tool-use response picks between them via a first-line
@@ -374,10 +375,48 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
     `${OUT}/${String(seq).padStart(3, '0')}-profile-scaffold.json`,
     JSON.stringify({ overriddenPaths: SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS }, null, 2),
   );
+
+  // Freshness measurement wiring (opt-in, PROBE_FRESHNESS_HOOK=production only). Records
+  // instance-fetch/delegation-register/delegation-consume/delegation-replay capture files by
+  // wrapping the fixture boundary (the front server's own request handling and the upstream
+  // callback below), never by changing createHandler or FreshDelegationStore themselves.
+  // Absent this env var (the default), none of this runs and no freshness records are ever
+  // written, so evidence-freshness.ts's judgeM10Freshness reports 'pending' -- exactly like
+  // every other unmeasured run.
+  const freshnessHookMode = process.env.PROBE_FRESHNESS_HOOK === 'production' ? 'production' : 'fake';
+  let liveHandler: ((request: Request) => Promise<Response>) | undefined;
+  const registeredEnvelopeByAgent = new Map<string, Record<string, unknown>>();
+  const consumeInferredForAgent = new Set<string>();
+
   const { handler } = await createHandlerFixture({
-    onUpstreamRequest: (record) => rec('post-handler-upstream', record),
+    onUpstreamRequest: (record) => {
+      rec('post-handler-upstream', record);
+      if (freshnessHookMode !== 'production') return;
+      const agentId = record.headers['x-claude-code-agent-id'];
+      if (agentId === undefined || consumeInferredForAgent.has(agentId)) return;
+      const envelope = registeredEnvelopeByAgent.get(agentId);
+      if (envelope === undefined) return;
+      consumeInferredForAgent.add(agentId);
+      const consumed = KNOWN_UPSTREAM_MODELS.has(String(record.body.model));
+      rec('delegation-consume', { agentId, consumed, ...(consumed ? {} : { reason: 'not-routed-to-a-known-upstream-model' }) });
+      // Immediately replay the exact envelope this agent registered, purely to measure
+      // whether the control endpoint rejects it once already consumed -- never a second
+      // legitimate registration attempt.
+      if (liveHandler !== undefined) {
+        liveHandler(
+          new Request('http://router.local/subagent-router/control/delegations', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(envelope),
+          }),
+        )
+          .then((response) => rec('delegation-replay', { agentId, rejected: response.status !== 204 }))
+          .catch(() => rec('delegation-replay', { agentId, rejected: true }));
+      }
+    },
     profile,
   });
+  liveHandler = handler;
 
   const front = http.createServer((req, res) => {
     let raw = '';
@@ -390,12 +429,20 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
         // recorded raw below regardless
       }
       rec('pre-handler', { url: req.url, headers: req.headers, body: parsed });
+      const isInstanceFetch = freshnessHookMode === 'production' && req.url === '/subagent-router/control/instance' && req.method === 'GET';
+      const isDelegationRegister = freshnessHookMode === 'production' && req.url === '/subagent-router/control/delegations' && req.method === 'POST';
+      if (isInstanceFetch) rec('instance-fetch', {});
       const init: { method?: string; headers: Record<string, string>; body?: string } = {
         headers: req.headers as Record<string, string>,
         ...(req.method !== undefined ? { method: req.method } : {}),
         ...(raw ? { body: raw } : {}),
       };
       const out = await handler(new Request(`http://router.local${req.url}`, init));
+      if (isDelegationRegister && isRecord(parsed) && typeof parsed.agentId === 'string' && typeof parsed.role === 'string' && typeof parsed.nonce === 'string') {
+        const accepted = out.status === 204;
+        rec('delegation-register', { agentId: parsed.agentId, role: parsed.role, accepted, nonceHash: await hashNonce(parsed.nonce) });
+        if (accepted) registeredEnvelopeByAgent.set(parsed.agentId, parsed);
+      }
       res.writeHead(out.status, Object.fromEntries(out.headers.entries()));
       res.end(Buffer.from(await out.arrayBuffer()));
     });

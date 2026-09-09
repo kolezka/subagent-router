@@ -125,6 +125,29 @@ test("launcher reaches the client for simple mode too", () => {
   expect(result.status).toBe(FAKE_EXIT_CODE);
 });
 
+test("launcher script parses as valid bash (syntax check only, the production hook branch is never executed here)", () => {
+  const result = spawnSync("/bin/bash", ["-n", REAL_SCRIPT_PATH], { encoding: "utf8" });
+  expect(result.status).toBe(0);
+});
+
+test("handler-mode production hook wrapper carries every flag parseHookArgs requires", () => {
+  // Structural-text check only, per the brief: PROBE_FRESHNESS_HOOK=production can never be
+  // exercised here (no real claude binary, no RUN_NATIVE_PROBES), so this asserts the wrapper
+  // script's own literal source instead of running it. src/transport/claude-hook.ts's
+  // parseHookArgs requires exactly these four flags (HOOK_FLAGS); a run manifest declaration
+  // must also be present.
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  expect(script).toContain("PROBE_FRESHNESS_HOOK");
+  expect(script).toContain("src/transport/claude-hook.ts");
+  expect(script).toContain("--config");
+  expect(script).toContain("--profile-dir");
+  expect(script).toContain("--client-version");
+  expect(script).toContain("--control-url");
+  expect(script).toContain("000-run-manifest.json");
+  expect(script).toContain("phasesExercised");
+  expect(script).toContain("freshnessHook");
+});
+
 test("launcher refuses an unknown mode before touching the filesystem", () => {
   const runsDir = join(fixtureProbesDir, ".runs");
   const before = existsSync(runsDir) ? readdirSync(runsDir) : [];

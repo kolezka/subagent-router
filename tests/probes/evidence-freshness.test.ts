@@ -1,0 +1,317 @@
+// Combined test file for both new M10 evidence modules: pure judge-logic tests for
+// evidence-m10.ts's lifecycle phases (hand-built RunCapture literals, no disk, no live
+// server), plus a hermetic end-to-end test for evidence-freshness.ts driving a REAL
+// createHandler and a REAL runClaudeSubagentStartHook, wired together in-process (an injected
+// fetch that calls the handler directly -- no socket, no real claude/opencode/codex).
+import { describe, expect, test } from 'bun:test';
+import { runClaudeSubagentStartHook } from '../../src/transport/claude-hook';
+import { createHandler, signFreshDelegation } from '../../src/transport/handler';
+import type { CapabilityProfile, FetchLike, FreshDelegationEnvelope } from '../../src/core/types';
+import { configFixture, FIXTURE_MODEL_ID, snapshotFixture } from '../support/fixtures';
+import type { CapturedPair, RunCapture } from './evidence-m3a';
+import { extractLifecycleEvidence, judgeLifecyclePhase, summarizeM10 } from './evidence-m10';
+import type { RunManifest } from './evidence-m10';
+import { extractFreshnessEvidence, hashNonce, judgeM10Freshness } from './evidence-freshness';
+import type { DelegationConsumeRecord, DelegationRegisterRecord, DelegationReplayRecord, FreshnessCapture, InstanceFetchRecord } from './evidence-freshness';
+
+// ---------- lifecycle: hand-built captures, no disk, no live server ----------
+
+function pair(seq: number, agentId: string, opts: { upstreamModel?: string; clientModel?: string; parentAgentId?: string; compactBoundary?: boolean } = {}): CapturedPair {
+  const preHeaders: Record<string, string> = { 'x-claude-code-agent-id': agentId };
+  if (opts.parentAgentId !== undefined) preHeaders['x-claude-code-parent-agent-id'] = opts.parentAgentId;
+  const preBody: Record<string, unknown> = { model: opts.clientModel ?? 'probe-parent-model' };
+  if (opts.compactBoundary === true) preBody.marker = 'compact_boundary';
+  return {
+    seq,
+    agentId,
+    pre: { url: '/v1/messages', headers: preHeaders, body: preBody },
+    post: {
+      url: 'http://127.0.0.1:1/v1/messages',
+      headers: { 'x-claude-code-agent-id': agentId },
+      body: opts.upstreamModel !== undefined ? { model: opts.upstreamModel } : {},
+    },
+  };
+}
+
+function capture(pairs: CapturedPair[]): RunCapture {
+  return { runDir: 'in-memory', profileRaw: {}, pairs, hookAgentIds: new Set() };
+}
+
+function manifest(patch: Partial<RunManifest> = {}): RunManifest {
+  return { mode: '', phasesExercised: [], freshnessHook: 'none', ...patch };
+}
+
+describe('evidence-m10: extractLifecycleEvidence + judgeLifecyclePhase', () => {
+  test('lifecycle-next-turn-passes-on-stable-upstream-model-across-two-requests', () => {
+    const cap = capture([pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' }), pair(2, 'agent-1', { upstreamModel: 'gateway/fast-worker' })]);
+    const evidence = extractLifecycleEvidence(cap);
+    const judgement = judgeLifecyclePhase('next-turn', evidence, manifest({ mode: 'next-turn', phasesExercised: ['next-turn'] }));
+    expect(judgement.result).toBe('passed');
+  });
+
+  test('lifecycle-fails-on-upstream-model-drift', () => {
+    const cap = capture([pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' }), pair(2, 'agent-1', { upstreamModel: 'gateway/smart-worker' })]);
+    const evidence = extractLifecycleEvidence(cap);
+    const judgement = judgeLifecyclePhase('next-turn', evidence, manifest({ mode: 'next-turn', phasesExercised: ['next-turn'] }));
+    expect(judgement.result).toBe('failed');
+    expect(judgement.diagnostic).toContain('upstream-model-drifted');
+  });
+
+  test('lifecycle-parallel-requires-two-interleaved-stable-agents', () => {
+    const runMeta = manifest({ mode: 'parallel', phasesExercised: ['parallel'] });
+
+    // Block pattern (agent-a entirely before agent-b): never proves real concurrency.
+    const blocky = capture([
+      pair(1, 'agent-a', { upstreamModel: 'gateway/fast-worker' }),
+      pair(2, 'agent-a', { upstreamModel: 'gateway/fast-worker' }),
+      pair(3, 'agent-b', { upstreamModel: 'gateway/smart-worker' }),
+      pair(4, 'agent-b', { upstreamModel: 'gateway/smart-worker' }),
+    ]);
+    expect(judgeLifecyclePhase('parallel', extractLifecycleEvidence(blocky), runMeta).result).toBe('pending');
+
+    // Genuinely interleaved and each agent's own upstream model stable throughout.
+    const interleaved = capture([
+      pair(1, 'agent-a', { upstreamModel: 'gateway/fast-worker' }),
+      pair(2, 'agent-b', { upstreamModel: 'gateway/smart-worker' }),
+      pair(3, 'agent-a', { upstreamModel: 'gateway/fast-worker' }),
+      pair(4, 'agent-b', { upstreamModel: 'gateway/smart-worker' }),
+    ]);
+    expect(judgeLifecyclePhase('parallel', extractLifecycleEvidence(interleaved), runMeta).result).toBe('passed');
+  });
+
+  test('lifecycle-compaction-pending-without-observed-compact-boundary', () => {
+    const cap = capture([pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' }), pair(2, 'agent-1', { upstreamModel: 'gateway/fast-worker' })]);
+    const judgement = judgeLifecyclePhase('compaction', extractLifecycleEvidence(cap), manifest({ mode: 'compaction', phasesExercised: ['compaction'] }));
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain('compaction-requires-observed-compact-boundary');
+
+    const withBoundary = capture([
+      pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' }),
+      pair(2, 'agent-1', { upstreamModel: 'gateway/fast-worker', compactBoundary: true }),
+    ]);
+    expect(judgeLifecyclePhase('compaction', extractLifecycleEvidence(withBoundary), manifest({ mode: 'compaction', phasesExercised: ['compaction'] })).result).toBe('passed');
+  });
+
+  test('lifecycle-pending-when-phase-not-declared', () => {
+    const cap = capture([pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' }), pair(2, 'agent-1', { upstreamModel: 'gateway/fast-worker' })]);
+    expect(judgeLifecyclePhase('next-turn', extractLifecycleEvidence(cap), undefined).result).toBe('pending');
+    expect(judgeLifecyclePhase('next-turn', extractLifecycleEvidence(cap), manifest({ mode: 'next-turn', phasesExercised: [] })).result).toBe('pending');
+  });
+
+  test('summarize-m10-never-spreads-a-pass', () => {
+    const summary = summarizeM10({ 'next-turn': 'passed' });
+    expect(summary).toEqual({ 'next-turn': 'passed', resume: 'pending', compaction: 'pending', nested: 'pending', parallel: 'pending' });
+  });
+});
+
+// ---------- freshness: hermetic end-to-end (real createHandler + real hook) ----------
+
+const B2_PROFILE: CapabilityProfile = {
+  client: 'claude-code',
+  version: 'synthetic-hermetic',
+  status: 'supported',
+  correlation: true,
+  correlationEntropy: 'passed',
+  fork: false,
+  adapterMarkerPosition: 'b2',
+  probes: { M1: 'passed', 'M3-B2': 'passed', M10: 'passed', 'M10-freshness': 'passed' },
+  lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' },
+};
+const TRANSPORT_PROFILE = { adapterId: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic', status: 'passed', gzipBytes: 'passed', responseHeaders: 'passed' } as const;
+const SOURCE = { sourceId: 'test-gateway', effectiveGatewayUrl: 'http://127.0.0.1:8000/v1', effectiveModelsUrl: 'http://127.0.0.1:8000/v1/models', headers: {}, gatewayHeaders: {} };
+const CHILD_SYSTEM = [{ type: 'text', text: 'x-anthropic-billing-header: cc_is_subagent=true' }];
+const SECRET = 'freshness-test-secret';
+
+function upstream(): { fetch: FetchLike; seen: Array<{ url: string; body: Record<string, unknown> }> } {
+  const seen: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const fetch: FetchLike = async (request) => {
+    seen.push({ url: request.url, body: (await request.json()) as Record<string, unknown> });
+    return new Response(JSON.stringify({ id: 'msg', content: [{ type: 'text', text: 'ok' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  return { fetch, seen };
+}
+
+function jsonReadableStream(value: unknown): ReadableStream<Uint8Array> {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+function collectingWritableStream(): { stream: WritableStream<Uint8Array>; text: () => string } {
+  let text = '';
+  const stream = new WritableStream<Uint8Array>({
+    write(chunk) {
+      text += new TextDecoder().decode(chunk);
+    },
+  });
+  return { stream, text: () => text };
+}
+
+/**
+ * Drives a real in-process createHandler through a real runClaudeSubagentStartHook (fake
+ * stdin SubagentStart event, injected fetch pointed straight at the handler -- no socket), then
+ * a real routed child request, then a replay of the exact registered envelope. Returns a
+ * FreshnessCapture assembled from what actually happened, never from the router's internal
+ * state.
+ */
+async function runFreshnessScenario(agentId: string) {
+  const config = configFixture();
+  const { fetch: upstreamFetch, seen } = upstream();
+  const handler = createHandler({
+    config,
+    snapshot: await snapshotFixture(),
+    source: SOURCE,
+    profile: B2_PROFILE,
+    transportProfile: TRANSPORT_PROFILE,
+    secret: SECRET,
+    fetch: upstreamFetch,
+    fetchAdapter: { id: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic' },
+    trustedContext: () => ({ freshDelegation: false }),
+    now: () => 0,
+    nonce: () => `nonce-${agentId}`,
+    instanceId: () => 'freshness-instance',
+  });
+
+  let seq = 0;
+  const nextSeq = () => (seq += 1);
+  const instanceFetches: InstanceFetchRecord[] = [];
+  const delegationRegisters: DelegationRegisterRecord[] = [];
+  const delegationConsumes: DelegationConsumeRecord[] = [];
+  const delegationReplays: DelegationReplayRecord[] = [];
+  const firstRoutedRequestSeqByAgent = new Map<string, number>();
+  let capturedEnvelope: FreshDelegationEnvelope | undefined;
+
+  const hookFetch: FetchLike = async (request) => {
+    const url = new URL(request.url);
+    if (url.pathname === '/subagent-router/control/instance') {
+      const s = nextSeq();
+      const response = await handler(request);
+      instanceFetches.push({ seq: s });
+      return response;
+    }
+    if (url.pathname === '/subagent-router/control/delegations') {
+      const s = nextSeq();
+      const bodyText = await request.clone().text();
+      const response = await handler(request);
+      let envelope: FreshDelegationEnvelope | undefined;
+      try {
+        envelope = JSON.parse(bodyText) as FreshDelegationEnvelope;
+      } catch {
+        envelope = undefined;
+      }
+      if (envelope !== undefined) {
+        capturedEnvelope = envelope;
+        delegationRegisters.push({ seq: s, agentId: envelope.agentId, role: envelope.role, accepted: response.status === 204, nonceHash: await hashNonce(envelope.nonce) });
+      }
+      return response;
+    }
+    return handler(request);
+  };
+
+  const stdinEvent = { agent_id: agentId, agent_type: 'explorer', hook_event_name: 'SubagentStart' };
+  const stdout = collectingWritableStream();
+  await runClaudeSubagentStartHook(jsonReadableStream(stdinEvent), stdout.stream, {
+    controlBaseUrl: 'http://router.local',
+    secret: SECRET,
+    roles: config.roles,
+    profile: B2_PROFILE,
+    fetch: hookFetch,
+    now: () => 0,
+    nonce: () => `nonce-${agentId}`,
+    resolveTrustedStart: () => ({ freshDelegation: true }),
+    correlation: 'auto',
+  });
+
+  const firstSeq = nextSeq();
+  firstRoutedRequestSeqByAgent.set(agentId, firstSeq);
+  const childResponse = await handler(
+    new Request('http://router.local/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-claude-code-agent-id': agentId },
+      body: JSON.stringify({ model: 'x', system: CHILD_SYSTEM, messages: [{ role: 'user', content: 'bez markera' }] }),
+    }),
+  );
+  const consumed = childResponse.status === 200 && seen.length > 0 && seen[seen.length - 1]?.body.model === FIXTURE_MODEL_ID;
+  delegationConsumes.push({ seq: firstSeq, agentId, consumed, ...(consumed ? {} : { reason: 'not-routed-to-role-default' }) });
+
+  if (capturedEnvelope !== undefined) {
+    const replaySeq = nextSeq();
+    const replayResponse = await handler(
+      new Request('http://router.local/subagent-router/control/delegations', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(capturedEnvelope),
+      }),
+    );
+    delegationReplays.push({ seq: replaySeq, agentId, rejected: replayResponse.status !== 204 });
+  }
+
+  const freshnessCapture: FreshnessCapture = { instanceFetches, delegationRegisters, delegationConsumes, delegationReplays, firstRoutedRequestSeqByAgent };
+  return { freshnessCapture, seen };
+}
+
+describe('evidence-freshness: extractFreshnessEvidence + judgeM10Freshness', () => {
+  test('freshness-passes-only-with-register-consume-and-rejected-replay', async () => {
+    const { freshnessCapture, seen } = await runFreshnessScenario('agent-fresh-1');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.body.model).toBe(FIXTURE_MODEL_ID);
+
+    const evidence = extractFreshnessEvidence(freshnessCapture);
+    expect(evidence.perAgent).toHaveLength(1);
+    expect(evidence.perAgent[0]).toMatchObject({
+      registerAcceptedBeforeFirstRequest: true,
+      consumeSuccessesOnFirstRequest: 1,
+      replayRejected: true,
+      consumeSucceededWithoutPriorAcceptedRegister: false,
+    });
+    expect(judgeM10Freshness(evidence).result).toBe('passed');
+  });
+
+  test('freshness-fails-when-consume-succeeds-without-register', () => {
+    // Hand-built: a consume succeeded but no register was ever recorded for this agent at all --
+    // a contradiction judgeM10Freshness must catch on its own, independent of any live handler.
+    const cap: FreshnessCapture = {
+      instanceFetches: [{ seq: 1 }],
+      delegationRegisters: [],
+      delegationConsumes: [{ seq: 5, agentId: 'agent-x', consumed: true }],
+      delegationReplays: [{ seq: 6, agentId: 'agent-x', rejected: true }],
+      firstRoutedRequestSeqByAgent: new Map([['agent-x', 5]]),
+    };
+    const judgement = judgeM10Freshness(extractFreshnessEvidence(cap));
+    expect(judgement.result).toBe('failed');
+    expect(judgement.diagnostic).toContain('consume-without-register');
+  });
+
+  test('freshness-fails-when-replay-is-accepted', () => {
+    const cap: FreshnessCapture = {
+      instanceFetches: [{ seq: 1 }],
+      delegationRegisters: [{ seq: 2, agentId: 'agent-y', role: 'explorer', accepted: true, nonceHash: 'deadbeef' }],
+      delegationConsumes: [{ seq: 5, agentId: 'agent-y', consumed: true }],
+      delegationReplays: [{ seq: 6, agentId: 'agent-y', rejected: false }],
+      firstRoutedRequestSeqByAgent: new Map([['agent-y', 5]]),
+    };
+    const judgement = judgeM10Freshness(extractFreshnessEvidence(cap));
+    expect(judgement.result).toBe('failed');
+    expect(judgement.diagnostic).toContain('replay-not-rejected');
+  });
+
+  test('freshness-pending-without-freshness-records', () => {
+    // A run with real routed requests but zero freshness records of any kind -- the shape of
+    // the pre-existing saved run tests/probes/.runs/handler-4r0D99, which used the fake stdin
+    // hook, never the production one.
+    const cap: FreshnessCapture = {
+      instanceFetches: [],
+      delegationRegisters: [],
+      delegationConsumes: [],
+      delegationReplays: [],
+      firstRoutedRequestSeqByAgent: new Map([['agent-z', 1]]),
+    };
+    const judgement = judgeM10Freshness(extractFreshnessEvidence(cap));
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain('freshness-no-records');
+  });
+});

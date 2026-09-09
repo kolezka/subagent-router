@@ -85,11 +85,38 @@ MD
 done
 
 # SubagentStart hook: capture whatever payload the CLI actually delivers.
-cat >"$RUN/hook.sh" <<HOOK
+# Default (fake): a static script that echoes a canned marker, never a real measurement.
+# Opt-in production hook (handler mode only, PROBE_FRESHNESS_HOOK=production): tee the raw
+# event to the same capture file the fake hook writes, then feed it to the REAL published
+# claude-hook entrypoint (src/transport/claude-hook.ts) pointed at THIS run's own front
+# server, so M10-freshness measures the real hook, never a stand-in.
+FRESHNESS_HOOK="${PROBE_FRESHNESS_HOOK:-fake}"
+if [ "$MODE" = "handler" ] && [ "$FRESHNESS_HOOK" = "production" ]; then
+  cat >"$RUN/router-config.json" <<JSON
+{ "version": 1,
+  "modelSource": { "sourceId": "native-probe-gateway", "baseUrlEnv": "SUBAGENT_ROUTER_UNUSED_MODELS_URL", "endpointPath": "/v1/models", "headersEnv": [], "timeoutMs": 10000, "fetchLimit": 1000, "staleAfterSeconds": 86400 },
+  "modelOverrides": {},
+  "roles": { "claude-code:native-probe-alpha": { "routeOverride": "gateway/fast-worker" }, "claude-code:native-probe-beta": { "routeOverride": "gateway/smart-worker" } },
+  "defaults": { "child": null, "unmarkedSubagent": "error" },
+  "agentRoots": { "claude-code": { "configRoot": null }, "opencode": { "configRoot": null }, "codex": { "configRoot": null } },
+  "gateway": { "urlEnv": "SUBAGENT_ROUTER_UNUSED_GATEWAY_URL", "headersEnv": [] },
+  "harness": { "claudeCode": { "correlation": "off", "secretEnv": "SUBAGENT_ROUTER_SECRET" }, "opencode": { "providerId": "gateway" }, "codex": { "emitModelCatalog": false } } }
+JSON
+  cat >"$RUN/hook.sh" <<HOOK
+#!/bin/bash
+tee "$RUN/capture/hook-subagentstart-\$\$.json" | bun "$ROOT/src/transport/claude-hook.ts" \\
+  --config "$RUN/router-config.json" \\
+  --profile-dir "$ROOT/tests/fixtures/capabilities" \\
+  --client-version "$CLIENT_VERSION" \\
+  --control-url "http://127.0.0.1:$PORT"
+HOOK
+else
+  cat >"$RUN/hook.sh" <<HOOK
 #!/bin/bash
 cat > "$RUN/capture/hook-subagentstart-\$\$.json"
 echo '{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"PROBE_HOOK_CTX"}}'
 HOOK
+fi
 chmod +x "$RUN/hook.sh"
 python3 - "$CFG/settings.json" "$RUN/hook.sh" <<'PY'
 import json,sys
@@ -98,6 +125,21 @@ d=json.load(open(p))
 d["hooks"]={"SubagentStart":[{"hooks":[{"type":"command","command":h}]}]}
 json.dump(d,open(p,"w"),indent=2)
 PY
+
+# Run declaration: which lifecycle phases this run means to exercise (never inferred, always
+# explicit -- see tests/probes/evidence-m10.ts's readRunManifest). native-claude-run.sh's own
+# scenarios (simple/delegate/handler) never exercise next-turn/resume/compaction/nested/parallel
+# on purpose, so this defaults to declaring nothing; an operator driving a real lifecycle
+# transition sets PROBE_PHASES_EXERCISED (comma-separated) before invoking this script. Only
+# handler mode writes NNN-profile.json etc. at all, so only handler mode gets a manifest.
+if [ "$MODE" = "handler" ]; then
+  PHASES_JSON="$(printf '%s' "${PROBE_PHASES_EXERCISED:-}" | python3 -c 'import json,sys
+s = sys.stdin.read().strip()
+print(json.dumps([p for p in s.split(",") if p]))')"
+  cat >"$RUN/capture/000-run-manifest.json" <<JSON
+{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK" }
+JSON
+fi
 
 TIMEOUT="$(command -v timeout || command -v gtimeout)"
 [ -x "$TIMEOUT" ] || { echo "FAIL: no timeout/gtimeout binary"; exit 1; }
@@ -117,6 +159,7 @@ echo "=== RUN mode=$MODE port=$PORT run=$RUN"
     ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" \
     ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
     ANTHROPIC_MODEL="probe-parent-model" \
+    SUBAGENT_ROUTER_SECRET="${PROBE_ROUTER_SECRET:-}" \
     "$TIMEOUT" 90 /Users/me/.local/bin/claude \
       -p "$PROMPT" --output-format json \
     >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
