@@ -2,19 +2,21 @@
 # Drive the REAL installed `claude` CLI against the local mock gateway only.
 # Strict env allowlist via `env -i`: no inherited ANTHROPIC_API_KEY, no CCR vars,
 # no provider credentials. Loopback base URL + fake token only.
-# Usage: native-claude-run.sh <simple|delegate>
+# Usage: native-claude-run.sh <simple|delegate|handler|next-turn|resume>
 set -uo pipefail
 
 MODE="${1:-simple}"
 case "$MODE" in
-  simple|delegate|handler|next-turn) ;;
-  *) echo "FAIL: unknown mode '$MODE' (expected simple, delegate, handler, or next-turn)" >&2; exit 2 ;;
+  simple|delegate|handler|next-turn|resume) ;;
+  *) echo "FAIL: unknown mode '$MODE' (expected simple, delegate, handler, next-turn, or resume)" >&2; exit 2 ;;
 esac
-# handler and next-turn share the same bun-driven fixture (native-claude-handler.ts) and the
-# same isolation setup. next-turn additionally forces each routed child to issue two upstream
-# requests (see PROBE_CHILD_READ_FILE below) and declares mode "next-turn" in the run manifest;
-# handler mode stays exactly as before.
-is_handler_like() { [ "$MODE" = "handler" ] || [ "$MODE" = "next-turn" ]; }
+# handler, next-turn and resume share the same bun-driven fixture (native-claude-handler.ts) and
+# the same isolation setup. next-turn additionally forces each routed child to issue two upstream
+# requests (see PROBE_CHILD_READ_FILE below) and declares mode "next-turn" in the run manifest.
+# resume runs TWO sequential CLI invocations against the same session (PROBE_RESUME below) and
+# declares mode "resume"; handler mode stays exactly as before (one invocation, one request per
+# child).
+is_handler_like() { [ "$MODE" = "handler" ] || [ "$MODE" = "next-turn" ] || [ "$MODE" = "resume" ]; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 mkdir -p "$ROOT/tests/probes/.runs" || exit 1
 RUN="$(mktemp -d "$ROOT/tests/probes/.runs/$MODE-XXXXXX")" || exit 1
@@ -46,6 +48,14 @@ if is_handler_like; then
     printf 'probe-child-read-notice\n' > "$PROBE_CHILD_READ_FILE"
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
       PROBE_CHILD_READ_FILE="$PROBE_CHILD_READ_FILE" \
+      bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
+  elif [ "$MODE" = "resume" ]; then
+    # resume is handler-like but enables the fixture's resume re-delegation opt-in so a second,
+    # resumed CLI invocation re-delegates instead of replaying the first round's final answer.
+    # No PROBE_CHILD_READ_FILE: the two requests per child come from TWO separate invocations,
+    # never a forced tool_use within one.
+    PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
+      PROBE_RESUME=1 \
       bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
   else
     # Real production createHandler + scripted mock upstream (Bun), not the plain
@@ -185,6 +195,76 @@ echo "=== RUN mode=$MODE port=$PORT run=$RUN"
 # this machine is 3.2.57, where "${ARR[@]}" on a never-populated array throws "unbound variable"
 # under `set -u` -- confirmed empirically, not assumed -- so this uses a duplicated branch
 # instead of an array trick.
+#
+# resume is the one mode that needs TWO sequential CLI invocations against the SAME session: the
+# first creates the session under a fixed --session-id (the CLI echoes that id back), the second
+# resumes it with -c (continue; passing the same --session-id again fails with "already in use",
+# confirmed empirically) so the parent re-delegates and each child issues a second routed request
+# across the resume boundary. The handler server stays up for BOTH invocations (the EXIT trap
+# only kills it at script end), and both write to the SAME $RUN/capture dir.
+if [ "$MODE" = "resume" ]; then
+  # resume drives TWO real CLI invocations, so its two env -i calls carry no
+  # SUBAGENT_ROUTER_SECRET (that var belongs to the handler+production-freshness-hook branch
+  # below, which is single-invocation). Running the production freshness hook under resume would
+  # silently drop the secret the hook needs, so refuse the combination up front rather than run a
+  # half-wired measurement.
+  if [ "$FRESHNESS_HOOK" = "production" ]; then
+    echo "FAIL: resume mode does not support PROBE_FRESHNESS_HOOK=production yet" >&2
+    exit 2
+  fi
+  PROBE_SESSION_ID="c0ffee00-0000-4000-8000-000000000000"
+  PROMPT2="${PROBE_PROMPT2:-Delegate again}"
+  (
+    cd "$WORK" || exit 1
+    env -i \
+      PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Users/me/.local/bin" \
+      HOME="$HOMEDIR" \
+      PWD="$WORK" \
+      CLAUDE_CONFIG_DIR="$CFG" \
+      DISABLE_AUTOUPDATER=1 \
+      DISABLE_UPDATES=1 \
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+      ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" \
+      ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
+      ANTHROPIC_MODEL="probe-parent-model" \
+      "$TIMEOUT" 90 /Users/me/.local/bin/claude \
+        -p "$PROMPT" --output-format json --session-id "$PROBE_SESSION_ID" \
+      >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
+  )
+  CLI1_EXIT=$?
+  if [ "$CLI1_EXIT" -ne 0 ]; then
+    # A timed-out or failed invocation 1 must never be masked by a later invocation 2's success:
+    # report the first failure, leave .last-run pointing at this run, and stop before resuming.
+    echo "exit=$CLI1_EXIT (see $RUN)"
+    echo "--- captured requests:"; ls -1 "$RUN/capture" 2>/dev/null
+    echo "$RUN" > "$ROOT/tests/probes/.last-run"
+    exit "$CLI1_EXIT"
+  fi
+  echo "exit-inv1=$CLI1_EXIT"
+  (
+    cd "$WORK" || exit 1
+    env -i \
+      PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Users/me/.local/bin" \
+      HOME="$HOMEDIR" \
+      PWD="$WORK" \
+      CLAUDE_CONFIG_DIR="$CFG" \
+      DISABLE_AUTOUPDATER=1 \
+      DISABLE_UPDATES=1 \
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+      ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" \
+      ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
+      ANTHROPIC_MODEL="probe-parent-model" \
+      "$TIMEOUT" 90 /Users/me/.local/bin/claude \
+        -c -p "$PROMPT2" --output-format json \
+      >"$RUN/cli2-stdout.json" 2>"$RUN/cli2-stderr.txt"
+  )
+  CLI_EXIT=$?
+  echo "exit=$CLI_EXIT (see $RUN)"
+  echo "--- captured requests:"; ls -1 "$RUN/capture" 2>/dev/null
+  echo "$RUN" > "$ROOT/tests/probes/.last-run"
+  exit "$CLI_EXIT"
+fi
+
 if is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then
   (
     cd "$WORK" || exit 1

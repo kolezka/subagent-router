@@ -151,5 +151,41 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   already exercised twice now with zero records both times) has something real to register and
   consume. Until that producer exists, no run through this probe -- `handler` or `next-turn` --
   can move `M10-freshness` past `pending`, regardless of how many requests a child makes.
+- **`resume` lifecycle measured: the child agent id does NOT persist across a real resume
+  boundary, so the phase stays `pending` (honest, not faked).** [verified] direct read of
+  `tests/probes/.runs/resume-euk9s4` (2026-09-10, real `claude` 2.1.267,
+  `PROBE_PROFILE_BASE=real PROBE_PHASES_EXERCISED=resume tests/probes/native-claude-run.sh
+  resume`, judged with `tests/probes/judge-run.ts`): a new `resume` launcher mode
+  (`tests/probes/native-claude-run.sh`) drives TWO sequential CLI invocations against the same
+  handler server and capture dir. Invocation 1 creates the session under a fixed `--session-id
+  c0ffee00-0000-4000-8000-000000000000` and delegates to the two channel-A children (two routed
+  requests); invocation 2 resumes with `-c` (continue) so the parent re-delegates. Passing the
+  same `--session-id` twice fails with "Session ID ... already in use" (confirmed empirically),
+  and `--fork-session` was deliberately avoided (it forks to a new id). The
+  `native-claude-handler.ts` fixture gained a one-shot `resumeReDelegate` opt-in
+  (`PROBE_RESUME=1`) so a resumed parent turn replaying its prior `tool_result` history
+  re-delegates exactly once instead of ending the turn. Both invocations completed
+  (`PARENT_FINAL_OK` each, the same `session_id` echoed back both times, and every request in
+  both invocations carrying the same `x-claude-code-session-id`), so the resume boundary itself
+  worked: invocation 2 genuinely re-delegated. But the measured child ids did NOT persist:
+  invocation 1 sent two `x-claude-code-agent-id` values and invocation 2 sent two different
+  ones, four distinct ids in all, one routed request each, none with two requests. The same
+  shape was measured twice (the earlier run `resume-TVSClp`, before the review fixes below, and
+  this one). The real client keeps the session id but assigns a fresh child id on re-delegation
+  across a resume boundary, so
+  `judgeLifecyclePhase('resume')` returned `pending` with `resume-insufficient-requests: no agent
+  has two routed requests spanning the declared boundary`. This is the honest, correct outcome;
+  the fixture was deliberately left at `lifecycle.resume: pending` (no headers rewritten, no
+  capture seeded, no forced second request within one invocation). `judgeM3A` returned `passed`
+  on this same run (4 channel-A pairs, all six per-pair booleans true), reconfirming the 2.1.267
+  M3-A pass on genuinely different traffic. `resume` stays `pending` until a client version
+  reuses the child id across the resume boundary, or the judge gains a resume-specific signal
+  other than same-id-two-requests (an operator decision, RED first, not made here). Review fixes
+  folded in before this run: a retried final request (identical body, no new user turn) never
+  consumes the one-shot re-delegation; a resumed round gets its own tool_use id prefix so a
+  request carrying both rounds' `tool_result` blocks still matches; a failed first invocation
+  exits with its own code instead of being masked by the second; `resume` refuses
+  `PROBE_FRESHNESS_HOOK=production` up front because its two `env -i` invocations carry no
+  `SUBAGENT_ROUTER_SECRET`.
 
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

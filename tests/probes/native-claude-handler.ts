@@ -166,6 +166,15 @@ export interface HandlerFixtureOptions {
   // against it; hermetic tests never execute a real Read tool (they drive `handler` directly), so
   // any string works for them.
   childReadFilePath?: string;
+  // Opt-in (the launcher's `resume` mode only): when a parent turn arrives whose tool_results
+  // are all for ids this fixture already finalized, treat it as a resumed session replaying the
+  // prior round's history and force a FRESH Agent delegation (new tool_use ids) instead of ending
+  // the turn. This is what makes a second, resumed CLI invocation actually re-delegate so the
+  // same child can issue a second routed request across the resume boundary. Absent (the default),
+  // behavior is byte-identical to before this option existed. Never fakes continuity: whether the
+  // child reuses its x-claude-code-agent-id across the boundary is the real client's behavior to
+  // prove, never something this fixture synthesizes.
+  resumeReDelegate?: boolean;
 }
 
 export interface HandlerFixture {
@@ -205,14 +214,16 @@ function textSse(model: unknown, text: string): string {
 // JSON-parses these; one chunk is a valid, decodable degenerate case of that).
 // Records each tool_use id -> expected upstream model in `pendingToolUses` so a
 // LATER parent turn (carrying that id's tool_result) can be checked for a real
-// match instead of trusted blindly.
-function agentToolUseSse(model: unknown, pendingToolUses: Map<string, PendingToolUse>): string {
+// match instead of trusted blindly. The map is cleared first so each delegation
+// round owns its ids (a resumed round gets a distinct prefix, never stale ids).
+function agentToolUseSse(model: unknown, pendingToolUses: Map<string, PendingToolUse>, idPrefix = 'toolu_probe'): string {
   const id = `msg_probe_${Math.random().toString(36).slice(2, 10)}`;
   const events: Array<readonly [string, Record<string, unknown>]> = [
     ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }],
   ];
+  pendingToolUses.clear();
   CHANNEL_A_AGENTS.forEach((agent, i) => {
-    const toolUseId = `toolu_probe_${i}`;
+    const toolUseId = `${idPrefix}_${i}`;
     pendingToolUses.set(toolUseId, { upstreamModel: agent.upstreamModel });
     const input = { description: `probe ${agent.name}`, prompt: `${markerLine(agent.alias)}\ndo the ${agent.name} task`, subagent_type: agent.name, run_in_background: false };
     events.push(['content_block_start', { type: 'content_block_start', index: i, content_block: { type: 'tool_use', id: toolUseId, name: AGENT_TOOL_NAME, input: {} } }]);
@@ -268,26 +279,48 @@ interface ExtractedToolResult {
   isError: boolean;
 }
 
+interface ExtractedToolResultWithIndex {
+  result: ExtractedToolResult;
+  // Index into body.messages of the user message this tool_result block lived in. Lets a judge
+  // tell "the conversation continued past this round" from "this is the same final turn resent".
+  messageIndex: number;
+}
+
 // Parses REAL structured tool_result blocks (tool_use_id + content, scoped to
 // user-role messages, the only role the protocol ever carries them in) out of a
 // parent request -- never a JSON-substring guess like
 // `JSON.stringify(...).includes('tool_result')`, which cannot tell a genuine
 // result from an unrelated string that happens to contain that text anywhere.
 function extractToolResults(body: Record<string, unknown>): ExtractedToolResult[] {
+  return extractToolResultsWithIndex(body).map((entry) => entry.result);
+}
+
+function extractToolResultsWithIndex(body: Record<string, unknown>): ExtractedToolResultWithIndex[] {
   const messages = Array.isArray(body.messages) ? body.messages : [];
-  const results: ExtractedToolResult[] = [];
-  for (const message of messages) {
-    if (!isRecord(message) || message.role !== 'user') continue;
+  const results: ExtractedToolResultWithIndex[] = [];
+  messages.forEach((message, messageIndex) => {
+    if (!isRecord(message) || message.role !== 'user') return;
     const content = message.content;
-    if (!Array.isArray(content)) continue;
+    if (!Array.isArray(content)) return;
     for (const block of content) {
       if (!isRecord(block) || block.type !== 'tool_result') continue;
       const toolUseId = block.tool_use_id;
       if (typeof toolUseId !== 'string') continue;
-      results.push({ toolUseId, textBlocks: textBlocksOfToolResultContent(block.content), isError: block.is_error === true });
+      results.push({ result: { toolUseId, textBlocks: textBlocksOfToolResultContent(block.content), isError: block.is_error === true }, messageIndex });
     }
-  }
+  });
   return results;
+}
+
+// True when a user-role message (a genuine new turn, not another tool_result) follows the given
+// message index. This is the resume signal: a retried final request ends at its tool_results,
+// while a resumed session replays those tool_results and then sends a fresh user turn.
+function hasUserTurnAfter(messages: readonly unknown[], afterIndex: number): boolean {
+  for (let i = afterIndex + 1; i < messages.length; i += 1) {
+    const message = messages[i];
+    if (isRecord(message) && message.role === 'user') return true;
+  }
+  return false;
 }
 
 // A parent turn is "final" (carries the children's answers back) exactly when it
@@ -301,13 +334,39 @@ function extractToolResults(body: Record<string, unknown>): ExtractedToolResult[
 // is_error:true result, and the expected echo present as one COMPLETE text
 // block (never a substring of a block, and never checked against the blocks
 // concatenated together, which the trailing metadata block would break).
-function parentFinalText(body: Record<string, unknown>, pendingToolUses: Map<string, PendingToolUse>): string | undefined {
-  const results = extractToolResults(body);
-  if (results.length === 0) return undefined;
+function parentFinalText(
+  body: Record<string, unknown>,
+  pendingToolUses: Map<string, PendingToolUse>,
+  finalizedToolUses: Set<string>,
+  resumeReDelegate: boolean,
+  hasReDelegated: () => boolean,
+  markReDelegated: () => void,
+): { text: string; reDelegate: boolean } | undefined {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const entries = extractToolResultsWithIndex(body);
+  if (entries.length === 0) return undefined;
 
+  // Resume detection: only when the opt-in is on, the handler has not yet re-delegated, every
+  // tool_result names an already-finalized id, AND the conversation continued past that round
+  // (a new user turn follows the tool_results). The "new turn follows" condition is what tells a
+  // genuine resumed session apart from a retry of the same final request, which the handler may
+  // legitimately receive when the client lost the first response and resends the identical body.
+  const lastResultIndex = entries[entries.length - 1]!.messageIndex;
+  const allFinalized = entries.every((entry) => finalizedToolUses.has(entry.result.toolUseId));
+  if (resumeReDelegate && !hasReDelegated() && allFinalized && hasUserTurnAfter(messages, lastResultIndex)) {
+    markReDelegated();
+    return { text: 'PARENT_RESUMED_REDELEGATE', reDelegate: true };
+  }
+
+  const results = entries.map((entry) => entry.result);
+  // A resumed request can carry BOTH the finalized prior round's tool_results and the current
+  // round's. Only the current pending round's ids count: filtering to pending ids first keeps the
+  // default single-round path byte-identical (there, every result id IS a pending id) while a
+  // resumed round's stale ids never break the count or the match.
+  const pendingResults = results.filter((result) => pendingToolUses.has(result.toolUseId));
   const seenIds = new Set<string>();
-  let matched = results.length === pendingToolUses.size;
-  for (const result of results) {
+  let matched = pendingResults.length === pendingToolUses.size;
+  for (const result of pendingResults) {
     if (seenIds.has(result.toolUseId)) matched = false; // a repeated id can't also cover the id it left unanswered
     seenIds.add(result.toolUseId);
 
@@ -323,7 +382,11 @@ function parentFinalText(body: Record<string, unknown>, pendingToolUses: Map<str
     const echo = `CHILD_SAW_MODEL=${expected.upstreamModel}`;
     if (!result.textBlocks.includes(echo)) matched = false;
   }
-  return matched ? 'PARENT_FINAL_OK' : 'PARENT_MISMATCH';
+  if (matched) {
+    for (const result of pendingResults) finalizedToolUses.add(result.toolUseId);
+    return { text: 'PARENT_FINAL_OK', reDelegate: false };
+  }
+  return { text: 'PARENT_MISMATCH', reDelegate: false };
 }
 
 // Creates the measurement fixture: the real production createHandler wired to a
@@ -333,6 +396,17 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
   const seen: RecordedUpstreamRequest[] = [];
   const pendingToolUses = new Map<string, PendingToolUse>();
   const pendingChildToolUseByAgent = new Map<string, PendingChildToolUse>();
+  // Tool_use ids whose parent final turn has already consumed them. A resumed invocation replays
+  // the prior round's tool_results verbatim against the SAME handler process, so those ids arrive
+  // again without being pending; that is the one signal that distinguishes a genuine resumed
+  // session from the current round's final turn.
+  const finalizedToolUses = new Set<string>();
+  // One-shot guard for the resume opt-in: re-delegate exactly once per handler process, the first
+  // time a resumed turn arrives carrying finalized tool_results. Because agentToolUseSse issues
+  // deterministic ids (toolu_probe_0/1), every completed round's results are already finalized, so
+  // a purely shape-based check would re-delegate forever. A resumed session makes exactly one new
+  // delegation, then its round completes normally.
+  let resumeReDelegated = false;
 
   const upstreamFetch: FetchLike = async (request) => {
     const raw = await request.text();
@@ -387,10 +461,25 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
 
     // A parent turn that already carries its children's tool_results must end
     // the turn here (text, never tool_use) or a real client would loop forever
-    // re-delegating the same work every turn.
-    const finalText = parentFinalText(body, pendingToolUses);
-    if (finalText !== undefined) {
-      return new Response(textSse(body.model, finalText), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    // re-delegating the same work every turn. Under the resume opt-in, a turn
+    // whose results are ALL for already-finalized ids is a resumed session
+    // replaying prior history, so it is answered with a FRESH delegation
+    // instead (new tool_use ids) so a second invocation can re-delegate.
+    const final = parentFinalText(
+      body,
+      pendingToolUses,
+      finalizedToolUses,
+      options.resumeReDelegate === true,
+      () => resumeReDelegated,
+      () => {
+        resumeReDelegated = true;
+      },
+    );
+    if (final !== undefined) {
+      if (final.reDelegate) {
+        return new Response(agentToolUseSse(body.model, pendingToolUses, 'toolu_probe_r1'), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }
+      return new Response(textSse(body.model, final.text), { status: 200, headers: { 'content-type': 'text/event-stream' } });
     }
 
     return new Response(agentToolUseSse(body.model, pendingToolUses), { status: 200, headers: { 'content-type': 'text/event-stream' } });
@@ -500,6 +589,11 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   // two-request behavior).
   const childReadFilePath = process.env.PROBE_CHILD_READ_FILE || undefined;
 
+  // Opt-in (the launcher's resume mode only): lets a resumed parent turn re-delegate instead of
+  // ending. See HandlerFixtureOptions.resumeReDelegate for why this must never be inferred from
+  // request shape. Empty/unset for every other mode.
+  const resumeReDelegate = process.env.PROBE_RESUME === '1';
+
   const { handler } = await createHandlerFixture({
     onUpstreamRequest: (record) => {
       rec('post-handler-upstream', record);
@@ -528,6 +622,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
     },
     profile,
     ...(childReadFilePath !== undefined ? { childReadFilePath } : {}),
+    ...(resumeReDelegate ? { resumeReDelegate: true } : {}),
   });
   liveHandler = handler;
 

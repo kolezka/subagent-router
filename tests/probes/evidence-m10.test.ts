@@ -103,3 +103,33 @@ describe('judgeLifecyclePhase: next-turn', () => {
     expect(judgement.diagnostic).toBe('next-turn-insufficient-requests: no agent has two routed requests spanning the declared boundary');
   });
 });
+
+describe('judgeLifecyclePhase: resume', () => {
+  test('passes under mode resume when an agent has two forwarded requests', () => {
+    const evidence = extractLifecycleEvidence(runCapture(TWO_AGENTS_TWO_REQUESTS_INTERLEAVED));
+    const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', ['resume']));
+    expect(judgement.result).toBe('passed');
+  });
+
+  test('stays pending under mode next-turn with identical evidence -- declared mode is the only thing distinguishing resume from next-turn', () => {
+    const evidence = extractLifecycleEvidence(runCapture(TWO_AGENTS_TWO_REQUESTS_INTERLEAVED));
+    const judgement = judgeLifecyclePhase('resume', evidence, manifest('next-turn', ['resume']));
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toBe('resume-requires-declared-mode: the run manifest\'s mode must equal \'resume\', got "next-turn"');
+  });
+
+  test('stays pending when resume is not declared as an exercised phase, even under mode resume', () => {
+    const evidence = extractLifecycleEvidence(runCapture(TWO_AGENTS_TWO_REQUESTS_INTERLEAVED));
+    const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', []));
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toBe('resume-not-declared: the run manifest does not declare resume as an exercised phase');
+  });
+
+  test('stays pending when no agent has two requests, even under a correctly declared mode and phase', () => {
+    const oneEach: readonly CapturedPair[] = [pair(1, 'agent-alpha', 'gateway/fast-worker'), pair(2, 'agent-beta', 'gateway/smart-worker')];
+    const evidence = extractLifecycleEvidence(runCapture(oneEach));
+    const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', ['resume']));
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toBe('resume-insufficient-requests: no agent has two routed requests spanning the declared boundary');
+  });
+});

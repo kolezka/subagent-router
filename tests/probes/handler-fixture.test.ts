@@ -442,6 +442,108 @@ describe('channel-A handler fixture: measured native context layout (stage 2a am
   });
 });
 
+describe('channel-A handler fixture: resume re-delegation (resumeReDelegate, opt-in)', () => {
+  function roundResults(prefix: string) {
+    return CHANNEL_A_AGENTS.map((agent, i) => ({
+      toolUseId: `${prefix}_${i}`,
+      content: nativeStyleResultContent(`CHILD_SAW_MODEL=${agent.upstreamModel}`),
+    }));
+  }
+
+  // A resumed request whose messages extend past the finalized tool_results with a fresh user
+  // turn (the real client's shape when a session continues after a prior round completed).
+  function resumedRequestWithNewTurn(
+    priorResults: Array<{ toolUseId: string; content: Array<{ type: 'text'; text: string }> }>,
+    newPrompt: string,
+  ): Record<string, unknown> {
+    const base = buildParentFinalRequest(priorResults) as { messages: unknown[] };
+    return {
+      ...base,
+      messages: [...base.messages, { role: 'user', content: newPrompt }],
+    };
+  }
+
+  test('a retried final request (identical body, no new user turn) does NOT re-delegate and still reports PARENT_FINAL_OK', async () => {
+    const { handler } = await createHandlerFixture({ resumeReDelegate: true });
+    await handler(jsonRequest('/v1/messages', buildParentRequest()));
+
+    const results = roundResults('toolu_probe');
+    const firstFinal = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(results)));
+    expect(textOf(await decodeSse(firstFinal))).toBe('PARENT_FINAL_OK'); // round 1 finalized
+
+    // The client lost the response and resends the IDENTICAL final body. This is a retry, not a
+    // resume: no new user turn follows, so it must NOT consume the one-shot re-delegation.
+    const retry = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(results)));
+    const retryEvents = await decodeSse(retry);
+    expect(reassembleToolUseBlocks(retryEvents)).toHaveLength(0);
+    expect(textOf(retryEvents)).toBe('PARENT_FINAL_OK');
+  });
+
+  test('a resumed turn with a NEW user turn after the finalized tool_results re-delegates exactly once', async () => {
+    const { handler } = await createHandlerFixture({ resumeReDelegate: true });
+    await handler(jsonRequest('/v1/messages', buildParentRequest()));
+
+    const results = roundResults('toolu_probe');
+    const firstFinal = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(results)));
+    expect(textOf(await decodeSse(firstFinal))).toBe('PARENT_FINAL_OK');
+
+    const resumed = await handler(jsonRequest('/v1/messages', resumedRequestWithNewTurn(results, 'Delegate again')));
+    const resumedEvents = await decodeSse(resumed);
+    const toolUses = reassembleToolUseBlocks(resumedEvents);
+    expect(toolUses).toHaveLength(CHANNEL_A_AGENTS.length);
+    expect(toolUses.every((t) => t.name === AGENT_TOOL_NAME)).toBe(true);
+    expect(stopReasonOf(resumedEvents)).toBe('tool_use');
+
+    // A SECOND resumed turn must NOT re-delegate again (one-shot): the allowance is spent.
+    const second = await handler(jsonRequest('/v1/messages', resumedRequestWithNewTurn(results, 'Again')));
+    const secondEvents = await decodeSse(second);
+    expect(reassembleToolUseBlocks(secondEvents)).toHaveLength(0);
+    expect(stopReasonOf(secondEvents)).toBe('end_turn');
+  });
+
+  test('a resumed round whose final request carries BOTH rounds of tool_results still judges PARENT_FINAL_OK', async () => {
+    const { handler } = await createHandlerFixture({ resumeReDelegate: true });
+    await handler(jsonRequest('/v1/messages', buildParentRequest()));
+
+    const prior = roundResults('toolu_probe');
+    const firstFinal = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(prior)));
+    expect(textOf(await decodeSse(firstFinal))).toBe('PARENT_FINAL_OK');
+
+    // Re-delegate: this round owns toolu_probe_r1_* ids.
+    await handler(jsonRequest('/v1/messages', resumedRequestWithNewTurn(prior, 'Delegate again')));
+
+    const current = roundResults('toolu_probe_r1');
+    // Final request for the resumed round: the real client keeps the PRIOR round's tool_results
+    // in history AND appends the current round's. Only the current (pending) ids may count.
+    const mixedRequest = (() => {
+      const base = buildParentFinalRequest(current) as { messages: unknown[] };
+      const priorFinal = buildParentFinalRequest(prior) as { messages: unknown[] };
+      // Splice the prior round's assistant+user turns before the current round's final user turn.
+      const priorTurns = priorFinal.messages.slice(1, 3);
+      const lastUser = base.messages[base.messages.length - 1];
+      return { ...base, messages: [base.messages[0], ...priorTurns, ...base.messages.slice(1, -1), lastUser] };
+    })();
+    const finalRes = await handler(jsonRequest('/v1/messages', mixedRequest));
+    const events = await decodeSse(finalRes);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(0);
+    expect(textOf(events)).toBe('PARENT_FINAL_OK');
+  });
+
+  test('without resumeReDelegate, the same replayed tool_results end the turn (PARENT_FINAL_OK, never re-delegate)', async () => {
+    const { handler } = await createHandlerFixture();
+    await handler(jsonRequest('/v1/messages', buildParentRequest()));
+
+    const results = roundResults('toolu_probe');
+    const firstFinal = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(results)));
+    expect(textOf(await decodeSse(firstFinal))).toBe('PARENT_FINAL_OK');
+
+    const replayed = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(results)));
+    const events = await decodeSse(replayed);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(0); // no re-delegation: the loop ends
+    expect(textOf(events)).toBe('PARENT_FINAL_OK');
+  });
+});
+
 describe('realLayoutProfile (stage 2a real-base variant, PROBE_PROFILE_BASE=real)', () => {
   test('diverges from the real fixture on exactly the declared scaffold paths, everything else carried over untouched', async () => {
     const realFixture = await loadCapabilityProfile('claude-code', '2.1.266', CAPABILITIES_FIXTURES);

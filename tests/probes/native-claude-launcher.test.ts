@@ -203,6 +203,53 @@ test("next-turn mode's structural additions are present and scoped to next-turn,
   expect(allowGuardIndex).toBeGreaterThan(-1);
 });
 
+test("resume mode is accepted at mode validation (fails later at fake-client version observation, same as handler mode would)", () => {
+  // resume shares handler mode's is_handler_like branch, which needs a real `claude --version`
+  // to observe the client version before it can start the bun fixture. This fixture's fake
+  // client understands no flags and prints no version, so the run fails there -- never at mode
+  // validation. That is enough to prove the case statement accepts "resume" without needing a
+  // real claude binary or bun in this harness (mirrors the next-turn test above).
+  const { result } = runCopy("resume");
+  expect(result.stderr ?? "").not.toMatch(/unknown mode/i);
+  expect(result.stdout ?? "").toContain("FAIL: could not observe client version");
+});
+
+test("resume mode's structural additions are present and scoped to resume, never handler or next-turn", () => {
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  expect(script).toContain("simple|delegate|handler|next-turn|resume");
+  expect(script).toContain("PROBE_RESUME"); // handler-fixture opt-in that lets a resumed parent re-delegate
+
+  // Anchor on the TWO-INVOCATION block specifically. The earlier `elif [ "$MODE" = "resume" ]`
+  // (the handler dispatch branch) also contains the substring `if [ "$MODE" = "resume" ]`, so a
+  // plain indexOf would match it instead. lastIndexOf lands on the actual two-invocation block,
+  // which sits after the dispatch branch.
+  const resumeBlockGuard = script.lastIndexOf('if [ "$MODE" = "resume" ]; then');
+  expect(resumeBlockGuard).toBeGreaterThan(-1);
+
+  // Both invocation flags must sit AFTER the block guard (inside the resume block), not in an
+  // earlier comment or the dispatch branch. -c resumes the same session in invocation 2.
+  expect(script.indexOf('-c -p "$PROMPT2"')).toBeGreaterThan(resumeBlockGuard);
+  expect(script.indexOf('--session-id "$PROBE_SESSION_ID"')).toBeGreaterThan(resumeBlockGuard);
+
+  // The second invocation's capture file is written exactly once, only in the resume block.
+  const cli2Count = script.match(/cli2-stdout\.json/g) ?? [];
+  expect(cli2Count).toHaveLength(1);
+  expect(script.indexOf("cli2-stdout.json")).toBeGreaterThan(resumeBlockGuard);
+});
+
+test("resume mode rejects PROBE_FRESHNESS_HOOK=production inside the resume block", () => {
+  // resume runs TWO env -i invocations that carry no SUBAGENT_ROUTER_SECRET, so the production
+  // freshness hook would silently lose the secret it needs to sign a FreshDelegationEnvelope.
+  // The resume block must refuse that combination up front. Structural-text check: the guard
+  // text must sit inside the resume block (after its opening guard, before the single-invocation
+  // handler+production branch that follows).
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  const resumeBlockGuard = script.lastIndexOf('if [ "$MODE" = "resume" ]; then');
+  const rejectIndex = script.indexOf("FAIL: resume mode does not support PROBE_FRESHNESS_HOOK=production yet");
+  expect(rejectIndex).toBeGreaterThan(resumeBlockGuard);
+  expect(rejectIndex).toBeLessThan(script.lastIndexOf('if is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then'));
+});
+
 test("launcher refuses an unknown mode before touching the filesystem", () => {
   const runsDir = join(fixtureProbesDir, ".runs");
   const before = existsSync(runsDir) ? readdirSync(runsDir) : [];
