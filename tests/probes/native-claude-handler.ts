@@ -346,6 +346,28 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
   return { handler, seen };
 }
 
+export const CONTROL_URL_PREFIX = '/subagent-router/control/';
+
+/** Whether a request URL is a control-plane endpoint (instance/delegations), never a v1/messages request. */
+export function isControlPlaneUrl(url: string | undefined): boolean {
+  return url !== undefined && url.startsWith(CONTROL_URL_PREFIX);
+}
+
+/**
+ * Records the generic pre-handler capture for every request EXCEPT control-plane ones.
+ * Control-plane request bodies are FreshDelegationEnvelope-shaped: a plaintext `nonce` and an
+ * HMAC `proof` (see src/core/types.ts's FreshDelegationEnvelope). The dedicated instance-fetch
+ * / delegation-register / delegation-replay records already capture the redacted form
+ * (nonceHash only, via hashNonce in evidence-freshness.ts -- see its own comment quoting
+ * docs/superpowers/specs/2026-09-06-subagent-model-routing-design.md:358, "proof nie trafia do
+ * diagnostyki"). Recording the raw body here too would put both secrets in plaintext into
+ * NNN-pre-handler.json, defeating that redaction.
+ */
+export function recordPreHandlerIfNotControlPlane(rec: (kind: string, o: unknown) => void, url: string | undefined, headers: unknown, body: unknown): void {
+  if (isControlPlaneUrl(url)) return;
+  rec('pre-handler', { url, headers, body });
+}
+
 // ---- opt-in CLI entry: real front HTTP server for a real native `claude` CLI ----
 // Gated on BOTH the flag AND this file being the process entry point: a bare env
 // check would also fire when some other script merely imports this module with
@@ -428,7 +450,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
       } catch {
         // recorded raw below regardless
       }
-      rec('pre-handler', { url: req.url, headers: req.headers, body: parsed });
+      recordPreHandlerIfNotControlPlane(rec, req.url, req.headers, parsed);
       const isInstanceFetch = freshnessHookMode === 'production' && req.url === '/subagent-router/control/instance' && req.method === 'GET';
       const isDelegationRegister = freshnessHookMode === 'production' && req.url === '/subagent-router/control/delegations' && req.method === 'POST';
       if (isInstanceFetch) rec('instance-fetch', {});

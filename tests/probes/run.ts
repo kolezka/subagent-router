@@ -79,6 +79,16 @@ export function summarizeEvidence(requests: readonly CapturedRequest[]): Evidenc
 export interface EntropyProof {
   source: string;
   sampleCount: number;
+  // Optional fields carried by a statistical-sample proof (see evidence-m1.ts's
+  // buildEntropyProof). distinctCount and totalEntropyBitsEstimate are the sample's own
+  // measurements; generatorInspected is only ever true when a human has directly linked the id
+  // generator to a real >=64-bit entropy source (e.g. reading the compiled client bundle) --
+  // a statistical sample can never set it true on its own. limitation names why a sample-based
+  // proof falls short.
+  distinctCount?: number;
+  totalEntropyBitsEstimate?: number;
+  generatorInspected?: boolean;
+  limitation?: string;
 }
 
 /**
@@ -89,6 +99,11 @@ export interface EntropyProof {
 export function judgeM1(evidence: Evidence, entropyProof: EntropyProof | undefined): ProbeResult {
   if (entropyProof === undefined) return 'pending';
   if (entropyProof.sampleCount < evidence.distinctAgentIds) return 'failed';
+  // A proof that explicitly declares the generator was never inspected can never certify M1,
+  // no matter what else it claims: sample-based variety is not generator-entropy proof. This
+  // is redundant with the fact that no branch below ever returns 'passed' either, but it locks
+  // the intent explicitly so a future added 'passed' branch cannot accidentally bypass it.
+  if (entropyProof.generatorInspected === false) return 'pending';
   // Aggregate counts alone cannot prove the required native behavior: sampleCount and
   // distinctAgentIds matching is not identity-continuity or generator-entropy proof.
   return 'pending';

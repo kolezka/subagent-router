@@ -11,6 +11,13 @@
 - **Correlation (M1) is untested against a live client.** `CorrelationStore` itself is unit-tested
   ([../../tests/adapters/correlation.test.ts](../../tests/adapters/correlation.test.ts)), but no
   shipped Claude Code version has a passing M1 (identifier entropy) measurement.
+- **M1 has a statistical sample analyzer, not a generator-entropy proof.**
+  [../../tests/probes/evidence-m1.ts](../../tests/probes/evidence-m1.ts) reads agent ids out of
+  run captures and measures their observed variety (length, alphabet, per-position entropy).
+  Sample variety is not generator entropy: `judgeM1Sample` can fail a sample outright (a
+  collision, or a large clean sample whose format still measures under 64 bits) but can never
+  return `passed`. M1 stays `pending` until either the id generator is directly inspected or a
+  controlled-generator proof exists.
 - **Fork handling (M4, D3, requirement 19)** is covered only by the hermetic
   `unrecognized-fork-pass-through-and-recognized-fork-follows-w19` case in
   [../../tests/e2e/routing.test.ts](../../tests/e2e/routing.test.ts): a fake gateway, a synthetic

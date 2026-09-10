@@ -146,24 +146,51 @@ TIMEOUT="$(command -v timeout || command -v gtimeout)"
 PROMPT="${PROBE_PROMPT:-Say PARENT_ROUNDTRIP_OK}"
 echo "=== RUN mode=$MODE port=$PORT run=$RUN"
 # PWD alone does not change the client's working directory.
-(
-  cd "$WORK" || exit 1
-  env -i \
-    PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Users/me/.local/bin" \
-    HOME="$HOMEDIR" \
-    PWD="$WORK" \
-    CLAUDE_CONFIG_DIR="$CFG" \
-    DISABLE_AUTOUPDATER=1 \
-    DISABLE_UPDATES=1 \
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-    ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" \
-    ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
-    ANTHROPIC_MODEL="probe-parent-model" \
-    SUBAGENT_ROUTER_SECRET="${PROBE_ROUTER_SECRET:-}" \
-    "$TIMEOUT" 90 /Users/me/.local/bin/claude \
-      -p "$PROMPT" --output-format json \
-    >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
-)
+# SUBAGENT_ROUTER_SECRET is only ever added to the client's env for handler mode with the
+# production freshness hook (the only path that needs it, to sign a FreshDelegationEnvelope
+# proof). simple and delegate mode must stay byte-identical to before this var existed: it may
+# not appear in their env -i invocation, not even set to an empty value. A bash array would be
+# the tidy way to add one conditional assignment, but /bin/bash on this machine is 3.2.57, where
+# "${ARR[@]}" on a never-populated array throws "unbound variable" under `set -u` -- confirmed
+# empirically, not assumed -- so this uses a duplicated branch instead of an array trick.
+if [ "$MODE" = "handler" ] && [ "$FRESHNESS_HOOK" = "production" ]; then
+  (
+    cd "$WORK" || exit 1
+    env -i \
+      PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Users/me/.local/bin" \
+      HOME="$HOMEDIR" \
+      PWD="$WORK" \
+      CLAUDE_CONFIG_DIR="$CFG" \
+      DISABLE_AUTOUPDATER=1 \
+      DISABLE_UPDATES=1 \
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+      ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" \
+      ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
+      ANTHROPIC_MODEL="probe-parent-model" \
+      SUBAGENT_ROUTER_SECRET="${PROBE_ROUTER_SECRET:-}" \
+      "$TIMEOUT" 90 /Users/me/.local/bin/claude \
+        -p "$PROMPT" --output-format json \
+      >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
+  )
+else
+  (
+    cd "$WORK" || exit 1
+    env -i \
+      PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Users/me/.local/bin" \
+      HOME="$HOMEDIR" \
+      PWD="$WORK" \
+      CLAUDE_CONFIG_DIR="$CFG" \
+      DISABLE_AUTOUPDATER=1 \
+      DISABLE_UPDATES=1 \
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+      ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" \
+      ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
+      ANTHROPIC_MODEL="probe-parent-model" \
+      "$TIMEOUT" 90 /Users/me/.local/bin/claude \
+        -p "$PROMPT" --output-format json \
+      >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
+  )
+fi
 CLI_EXIT=$?
 echo "exit=$CLI_EXIT (see $RUN)"
 echo "--- captured requests:"; ls -1 "$RUN/capture" 2>/dev/null

@@ -43,6 +43,9 @@ beforeAll(() => {
       'printf "FAKE_CLAUDE_CWD=%s\\n" "$(pwd -P)"',
       'printf "FAKE_CLAUDE_HOME=%s\\n" "$HOME"',
       'printf "FAKE_CLAUDE_CFG=%s\\n" "$CLAUDE_CONFIG_DIR"',
+      // ${VAR+yes} expands to "yes" only when VAR is SET (even to an empty string), and to
+      // nothing when it is unset -- the only way to tell "set to empty" apart from "absent".
+      'printf "SUBAGENT_ROUTER_SECRET_PRESENT=%s\\n" "${SUBAGENT_ROUTER_SECRET+yes}"',
       `exit ${FAKE_EXIT_CODE}`,
       "",
     ].join("\n"),
@@ -117,6 +120,11 @@ test("launcher runs the client from WORK and propagates its real exit code (mode
   expect(config).toBe(cfgDir);
   expect(home).not.toBe(fixtureHome);
 
+  // simple/delegate mode must never add SUBAGENT_ROUTER_SECRET to the client's env at all --
+  // not even set to an empty string. That var only belongs to handler mode with the
+  // production freshness hook, which needs it to sign a FreshDelegationEnvelope proof.
+  expect(clientStdout).toContain('SUBAGENT_ROUTER_SECRET_PRESENT=\n');
+
   expect(result.status).toBe(FAKE_EXIT_CODE); // old script always exited 0 via its last echo
 });
 
@@ -146,6 +154,25 @@ test("handler-mode production hook wrapper carries every flag parseHookArgs requ
   expect(script).toContain("000-run-manifest.json");
   expect(script).toContain("phasesExercised");
   expect(script).toContain("freshnessHook");
+});
+
+test("SUBAGENT_ROUTER_SECRET is assigned exactly once, and only inside the handler+production-freshness-hook branch", () => {
+  // Structural-text check for the branch that can never run here (PROBE_FRESHNESS_HOOK=production
+  // needs a real claude binary + bun, per the file's other structural test above). The delegate
+  // test above already proves BEHAVIORALLY that the simple/delegate branch never sets it.
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  const occurrences = script.match(/SUBAGENT_ROUTER_SECRET=/g) ?? [];
+  expect(occurrences).toHaveLength(1); // never duplicated into the simple/delegate branch
+
+  // The same guard text also opens the (unrelated) hook.sh-selection branch earlier in the
+  // file; lastIndexOf targets the later, env -i-selection branch this fix actually added.
+  const guardIndex = script.lastIndexOf('if [ "$MODE" = "handler" ] && [ "$FRESHNESS_HOOK" = "production" ]; then');
+  const elseIndex = script.indexOf("\nelse\n", guardIndex);
+  const secretIndex = script.indexOf("SUBAGENT_ROUTER_SECRET=");
+  expect(guardIndex).toBeGreaterThan(-1);
+  expect(elseIndex).toBeGreaterThan(guardIndex);
+  expect(secretIndex).toBeGreaterThan(guardIndex);
+  expect(secretIndex).toBeLessThan(elseIndex); // inside the handler+production branch, not after it
 });
 
 test("launcher refuses an unknown mode before touching the filesystem", () => {
