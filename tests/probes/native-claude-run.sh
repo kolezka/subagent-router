@@ -3,6 +3,7 @@
 # Strict env allowlist via `env -i`: no inherited ANTHROPIC_API_KEY, no CCR vars,
 # no provider credentials. Loopback base URL + fake token only.
 # Usage: native-claude-run.sh <simple|delegate|handler|next-turn|resume|nested>
+# Set PROBE_CLAUDE_BIN to pin which client binary a run uses.
 set -uo pipefail
 
 MODE="${1:-simple}"
@@ -10,6 +11,15 @@ case "$MODE" in
   simple|delegate|handler|next-turn|resume|nested) ;;
   *) echo "FAIL: unknown mode '$MODE' (expected simple, delegate, handler, next-turn, resume, or nested)" >&2; exit 2 ;;
 esac
+
+# Pin one binary. The default path is a symlink the client updater repoints mid-run, so freeze
+# the canonical target now and run that exact file everywhere below.
+CLAUDE_BIN_SELECTED="${PROBE_CLAUDE_BIN:-/Users/me/.local/bin/claude}"
+[ -x "$CLAUDE_BIN_SELECTED" ] || { echo "FAIL: PROBE_CLAUDE_BIN is not executable: $CLAUDE_BIN_SELECTED" >&2; exit 2; }
+# Relative and bare names resolve against the caller cwd here, before any subshell cd, never via PATH.
+CLAUDE_BIN="$(/usr/bin/readlink -f "$CLAUDE_BIN_SELECTED" 2>/dev/null)"
+[ -n "$CLAUDE_BIN" ] && [ -x "$CLAUDE_BIN" ] || { echo "FAIL: could not resolve PROBE_CLAUDE_BIN to a canonical executable: $CLAUDE_BIN_SELECTED" >&2; exit 2; }
+
 # handler, next-turn, resume and nested share the same bun-driven fixture (native-claude-handler.ts)
 # and the same isolation setup. next-turn additionally forces each routed child to issue two upstream
 # requests (see PROBE_CHILD_READ_FILE below) and declares mode "next-turn" in the run manifest.
@@ -37,11 +47,13 @@ if is_handler_like; then
       HOME="$HOMEDIR" CLAUDE_CONFIG_DIR="$CFG" \
       DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
       ANTHROPIC_BASE_URL="http://127.0.0.1:1" ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
-      /Users/me/.local/bin/claude --version 2>/dev/null
+      "$CLAUDE_BIN" --version 2>/dev/null
   )"
   CLIENT_VERSION="$(printf '%s' "$VERSION_OUT" | /usr/bin/grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | /usr/bin/head -1)"
   [ -z "$CLIENT_VERSION" ] && { echo "FAIL: could not observe client version"; exit 1; }
   printf '%s\n' "$CLIENT_VERSION" > "$RUN/capture/client-version"
+  # The exact file this run executes, frozen above rather than resolved again here.
+  printf '%s\n' "$CLAUDE_BIN" > "$RUN/capture/client-binary"
   if [ "$MODE" = "next-turn" ]; then
     # Only next-turn forces the two-request-per-child flow: a file inside the CLI's own
     # sandboxed WORK dir that the fixture's forced tool_use (Read) points the real client's
@@ -250,7 +262,7 @@ if [ "$MODE" = "resume" ]; then
       ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" \
       ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
       ANTHROPIC_MODEL="probe-parent-model" \
-      "$TIMEOUT" 90 /Users/me/.local/bin/claude \
+      "$TIMEOUT" 90 "$CLAUDE_BIN" \
         -p "$PROMPT" --output-format json --session-id "$PROBE_SESSION_ID" \
       >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
   )
@@ -277,7 +289,7 @@ if [ "$MODE" = "resume" ]; then
       ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" \
       ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
       ANTHROPIC_MODEL="probe-parent-model" \
-      "$TIMEOUT" 90 /Users/me/.local/bin/claude \
+      "$TIMEOUT" 90 "$CLAUDE_BIN" \
         -c -p "$PROMPT2" --output-format json \
       >"$RUN/cli2-stdout.json" 2>"$RUN/cli2-stderr.txt"
   )
@@ -303,7 +315,7 @@ if is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then
       ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
       ANTHROPIC_MODEL="probe-parent-model" \
       SUBAGENT_ROUTER_SECRET="${PROBE_ROUTER_SECRET:-}" \
-      "$TIMEOUT" 90 /Users/me/.local/bin/claude \
+      "$TIMEOUT" 90 "$CLAUDE_BIN" \
         -p "$PROMPT" --output-format json \
       >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
   )
@@ -321,7 +333,7 @@ else
       ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" \
       ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
       ANTHROPIC_MODEL="probe-parent-model" \
-      "$TIMEOUT" 90 /Users/me/.local/bin/claude \
+      "$TIMEOUT" 90 "$CLAUDE_BIN" \
         -p "$PROMPT" --output-format json \
       >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
   )

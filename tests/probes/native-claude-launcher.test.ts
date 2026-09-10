@@ -12,8 +12,11 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   realpathSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +32,17 @@ const fixtureRoot = mkdtempSync(join(tmpdir(), "native-claude-launcher-fixture-"
 const fixtureProbesDir = join(fixtureRoot, "tests", "probes");
 const fixtureHome = join(fixtureRoot, "outer-home");
 const fakeClaudePath = join(fixtureRoot, "fake-claude");
+// Second test double, used only to prove PROBE_CLAUDE_BIN actually redirects which binary runs.
+const fakeClaude2Path = join(fixtureRoot, "fake-claude-2");
+// A same-named decoy on PATH: a bare PROBE_CLAUDE_BIN must never reach it.
+const decoyBinDir = join(fixtureRoot, "decoy-bin");
+const decoyClaudePath = join(decoyBinDir, "fake-claude-2");
+// A symlink standing in for the real installed one the client updater repoints.
+const pinnedLinkPath = join(fixtureRoot, "pinned-claude-link");
+// Seam dir holding a fake `timeout`, which runs between the launcher fixing its argv and exec.
+const seamBinDir = join(fixtureRoot, "seam-bin");
+const notExecutablePath = join(fixtureRoot, "not-executable-client");
+const failingReadlinkPath = join(fixtureRoot, "fake-readlink-always-fails");
 const launcherCopyPath = join(fixtureProbesDir, "native-claude-run.sh");
 
 beforeAll(() => {
@@ -40,6 +54,7 @@ beforeAll(() => {
     [
       "#!/bin/bash",
       "# Test double, never a real client.",
+      'printf "FAKE_CLAUDE_1=1\\n"',
       'printf "FAKE_CLAUDE_CWD=%s\\n" "$(pwd -P)"',
       'printf "FAKE_CLAUDE_HOME=%s\\n" "$HOME"',
       'printf "FAKE_CLAUDE_CFG=%s\\n" "$CLAUDE_CONFIG_DIR"',
@@ -51,6 +66,43 @@ beforeAll(() => {
     ].join("\n"),
   );
   chmodSync(fakeClaudePath, 0o755);
+
+  writeFileSync(
+    fakeClaude2Path,
+    [
+      "#!/bin/bash",
+      "# Second test double, never a real client.",
+      'printf "FAKE_CLAUDE_2=1\\n"',
+      `exit ${FAKE_EXIT_CODE}`,
+      "",
+    ].join("\n"),
+  );
+  chmodSync(fakeClaude2Path, 0o755);
+
+  mkdirSync(decoyBinDir, { recursive: true });
+  writeFileSync(decoyClaudePath, ['#!/bin/bash', 'printf "FAKE_CLAUDE_DECOY=1\\n"', `exit ${FAKE_EXIT_CODE}`, ''].join('\n'));
+  chmodSync(decoyClaudePath, 0o755);
+
+  writeFileSync(notExecutablePath, "#!/bin/bash\nexit 0\n");
+  chmodSync(notExecutablePath, 0o644); // exists, but not executable
+
+  writeFileSync(failingReadlinkPath, ['#!/bin/bash', '# Canonicalization always fails here.', 'exit 1', ''].join('\n'));
+  chmodSync(failingReadlinkPath, 0o755);
+
+  // Fires between the launcher choosing its argv and exec: repoints the symlink, then runs
+  // whatever it was handed. A launcher that kept the symlink path lands on the new target.
+  mkdirSync(seamBinDir, { recursive: true });
+  writeFileSync(
+    join(seamBinDir, "timeout"),
+    [
+      "#!/bin/bash",
+      `/bin/ln -sf ${fakeClaude2Path} ${pinnedLinkPath}`,
+      "shift", // drop the duration argument
+      'exec "$@"',
+      "",
+    ].join("\n"),
+  );
+  chmodSync(join(seamBinDir, "timeout"), 0o755);
 
   // Self-contained (only node:http/fs/path); safe to copy standalone.
   writeFileSync(join(fixtureProbesDir, "native-claude-gateway.mjs"), readFileSync(REAL_GATEWAY_PATH, "utf8"));
@@ -73,23 +125,42 @@ afterAll(() => {
 
 // Explicit allowlist: PATH (to find node/python3/timeout) + fixture HOME only.
 // No BASH_ENV, no NODE_OPTIONS, no credentials, no spread of process.env.
-function outerEnv(): Record<string, string> {
+// `extra` adds only what a test explicitly names (e.g. PROBE_CLAUDE_BIN); the base
+// allowlist below is unchanged.
+function outerEnv(extra: Record<string, string> = {}): Record<string, string> {
   return {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     HOME: fixtureHome,
+    ...extra,
   };
 }
 
-function runCopy(mode: string) {
+function runCopy(mode: string, extraEnv: Record<string, string> = {}) {
   const result = spawnSync("/bin/bash", [launcherCopyPath, mode], {
     cwd: fixtureRoot,
-    env: outerEnv(),
+    env: outerEnv(extraEnv),
     timeout: 20000,
     encoding: "utf8",
   });
   if (result.error) throw result.error;
   const runMatch = (result.stdout ?? "").match(/^=== RUN mode=\S+ port=\d+ run=(\S+)/m);
   return { result, runDir: runMatch?.[1] };
+}
+
+// Same fixture root, so a variant computes the same ROOT and .runs as the copy it came from.
+function launcherVariant(basename: string, transform: (source: string) => string): string {
+  const variantPath = join(fixtureProbesDir, basename);
+  const source = readFileSync(launcherCopyPath, "utf8");
+  const patched = transform(source);
+  expect(patched).not.toBe(source); // the seam must actually have been substituted
+  writeFileSync(variantPath, patched);
+  chmodSync(variantPath, 0o755);
+  return variantPath;
+}
+
+function runsSnapshot(): string[] {
+  const runsDir = join(fixtureProbesDir, ".runs");
+  return existsSync(runsDir) ? readdirSync(runsDir) : [];
 }
 
 test("launcher runs the client from WORK and propagates its real exit code (mode=delegate)", () => {
@@ -296,4 +367,125 @@ test("launcher refuses an unknown mode before touching the filesystem", () => {
   expect(after.length).toBe(before.length); // no new run dir at all
   expect(result.status).not.toBe(0);
   expect(result.stderr).toMatch(/unknown mode/i);
+});
+
+test("PROBE_CLAUDE_BIN redirects which client binary the launcher runs (mode=delegate)", () => {
+  // The point of the pin: a run must target a chosen binary, not whatever the
+  // /Users/me/.local/bin/claude symlink (repointed by the client's own updater) happens to be.
+  const { result, runDir } = runCopy("delegate", { PROBE_CLAUDE_BIN: fakeClaude2Path });
+  expect(runDir).toBeTruthy();
+
+  const clientStdout = readFileSync(join(runDir!, "cli-stdout.json"), "utf8");
+  expect(clientStdout).toContain("FAKE_CLAUDE_2=1"); // the pinned binary ran
+  expect(clientStdout).not.toContain("FAKE_CLAUDE_1=1"); // the default one did not
+  expect(result.status).toBe(FAKE_EXIT_CODE);
+});
+
+test("launcher rejects a missing PROBE_CLAUDE_BIN with exit 2 and no run dir", () => {
+  const before = runsSnapshot();
+  const { result, runDir } = runCopy("delegate", { PROBE_CLAUDE_BIN: join(fixtureRoot, "no-such-client") });
+
+  expect(runDir).toBeUndefined(); // never reached the "=== RUN" line
+  expect(result.stdout ?? "").not.toContain("=== RUN");
+  expect(result.status).toBe(2);
+  expect(result.stderr ?? "").toMatch(/not executable/i);
+  expect(runsSnapshot()).toEqual(before); // nothing created on disk
+});
+
+test("launcher rejects a present-but-not-executable PROBE_CLAUDE_BIN with exit 2 and no run dir", () => {
+  const before = runsSnapshot();
+  const { result, runDir } = runCopy("delegate", { PROBE_CLAUDE_BIN: notExecutablePath });
+
+  expect(runDir).toBeUndefined();
+  expect(result.status).toBe(2);
+  expect(result.stderr ?? "").toMatch(/not executable/i);
+  expect(runsSnapshot()).toEqual(before);
+});
+
+test("every client invocation goes through $CLAUDE_BIN, resolved once before the first of them", () => {
+  // The literal must stay present exactly once: the hermetic fixture above swaps it for a fake
+  // client by plain text substitution, so zero occurrences would silently break isolation and
+  // more than one would leave an un-pinned invocation behind.
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  expect(script).toContain('CLAUDE_BIN_SELECTED="${PROBE_CLAUDE_BIN:-/Users/me/.local/bin/claude}"');
+  expect(script.split(REAL_CLIENT_PATH).length - 1).toBe(1);
+
+  // One --version observe plus four `env -i` invocations (handler+production, default, and the
+  // two resume invocations).
+  const invocations = script.match(/"\$CLAUDE_BIN" (\\|--version)/g) ?? [];
+  expect(invocations).toHaveLength(5);
+
+  // Resolved exactly once, before any invocation, so a symlink moving later cannot change targets.
+  expect(script.match(/\/usr\/bin\/readlink -f/g) ?? []).toHaveLength(1);
+  const resolveIndex = script.indexOf("/usr/bin/readlink -f");
+  expect(resolveIndex).toBeGreaterThan(-1);
+  expect(resolveIndex).toBeLessThan(script.indexOf('"$CLAUDE_BIN" --version'));
+  expect(resolveIndex).toBeLessThan(script.indexOf('"$TIMEOUT" 90 "$CLAUDE_BIN"'));
+
+  // The recorded evidence is that same frozen path, never a second resolution.
+  expect(script).toContain('printf \'%s\\n\' "$CLAUDE_BIN" > "$RUN/capture/client-binary"');
+});
+
+test("a relative PROBE_CLAUDE_BIN resolves against the caller cwd, not the client's work dir", () => {
+  // The client runs after a `cd` into the run's work dir, so an unresolved relative path would
+  // exec nothing there.
+  const { result, runDir } = runCopy("delegate", { PROBE_CLAUDE_BIN: "./fake-claude-2" });
+  expect(runDir).toBeTruthy();
+
+  const clientStdout = readFileSync(join(runDir!, "cli-stdout.json"), "utf8");
+  expect(clientStdout).toContain("FAKE_CLAUDE_2=1");
+  expect(result.status).toBe(FAKE_EXIT_CODE);
+});
+
+test("a bare PROBE_CLAUDE_BIN resolves against the caller cwd, never a same-named binary on PATH", () => {
+  const { result, runDir } = runCopy("delegate", {
+    PROBE_CLAUDE_BIN: "fake-claude-2",
+    PATH: `${decoyBinDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+  });
+  expect(runDir).toBeTruthy();
+
+  const clientStdout = readFileSync(join(runDir!, "cli-stdout.json"), "utf8");
+  expect(clientStdout).toContain("FAKE_CLAUDE_2=1"); // the one next to the caller
+  expect(clientStdout).not.toContain("FAKE_CLAUDE_DECOY=1"); // never the PATH hit
+  expect(result.status).toBe(FAKE_EXIT_CODE);
+});
+
+test("a PROBE_CLAUDE_BIN symlink repointed mid-run still runs the target chosen at selection", () => {
+  if (existsSync(pinnedLinkPath)) unlinkSync(pinnedLinkPath);
+  symlinkSync(fakeClaudePath, pinnedLinkPath); // starts on client 1
+
+  const { result, runDir } = runCopy("delegate", {
+    PROBE_CLAUDE_BIN: pinnedLinkPath,
+    PATH: `${seamBinDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+  });
+  expect(runDir).toBeTruthy();
+
+  // Positive control: the seam really did repoint the link before the client was exec'd, so a
+  // launcher that re-resolved at exec time would have landed on client 2.
+  expect(readlinkSync(pinnedLinkPath)).toBe(fakeClaude2Path);
+
+  const clientStdout = readFileSync(join(runDir!, "cli-stdout.json"), "utf8");
+  expect(clientStdout).toContain("FAKE_CLAUDE_1=1");
+  expect(clientStdout).not.toContain("FAKE_CLAUDE_2=1");
+  expect(result.status).toBe(FAKE_EXIT_CODE);
+});
+
+test("launcher exits 2 without running any client when canonicalization fails", () => {
+  // Seam lives only in this disposable variant; the real readlink is never touched.
+  const variant = launcherVariant("native-claude-run-readlink-fails.sh", (source) =>
+    source.split("/usr/bin/readlink").join(failingReadlinkPath),
+  );
+  const before = runsSnapshot();
+
+  const result = spawnSync("/bin/bash", [variant, "delegate"], {
+    cwd: fixtureRoot,
+    env: outerEnv(),
+    timeout: 20000,
+    encoding: "utf8",
+  });
+
+  expect(result.status).toBe(2); // never the fake client's exit code
+  expect(result.stdout ?? "").not.toContain("=== RUN");
+  expect(result.stderr ?? "").toMatch(/could not resolve/i);
+  expect(runsSnapshot()).toEqual(before);
 });
