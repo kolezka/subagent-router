@@ -70,6 +70,13 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   routingu (`missing-selection`); nagłówek `x-claude-code-parent-agent-id` nadal niezmierzony.
   Dodano fiksturę `claude-code-2.1.268.json` z każdą sondą `pending`; fikstura 2.1.267 bez zmian.
   To nie jest promocja wsparcia; szczegóły w [transport/GAPS.md](transport/GAPS.md).
+- 2026-09-11: drugi zmierzony układ promptu rodzica, `after-native-context-v2` (trzy bloki
+  tekstowe: instrukcje operatora, scaffold kontekstu, prompt delegacji), plus sonda `M3-A`
+  zaliczona dla 2.1.268 w przebiegu `handler-yXSP4o` (oba dzieci zroutowane na
+  `gateway/fast-worker` i `gateway/smart-worker`, bloki 0 i 1 przekazane bez zmian). Fikstura
+  `claude-code-2.1.268.json` ma teraz `probes."M3-A": "passed"`, ale nadal nie deklaruje pola
+  `parentPromptPosition`, więc produkcyjnie slot pozostaje zamknięty; szczegóły w
+  [transport/GAPS.md](transport/GAPS.md).
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 

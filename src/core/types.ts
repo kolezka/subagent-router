@@ -194,7 +194,7 @@ export interface FreshDelegationReceipt {
 
 export type ConsumeFreshDelegation = (agentId: string) => FreshDelegationReceipt | undefined;
 
-export type ParentPromptPosition = 'first-text' | 'after-native-context-v1';
+export type ParentPromptPosition = 'first-text' | 'after-native-context-v1' | 'after-native-context-v2';
 
 export interface CapabilityProfile {
   client: ClientId;
@@ -208,9 +208,12 @@ export interface CapabilityProfile {
    * Where the parent-authored channel-A marker line is read from in the first user message.
    * Absent or 'first-text': the first line of the first text block (legacy D2 position 2).
    * 'after-native-context-v1': additionally, the first line of text block 1 when block 0 is a
-   * recognized native context scaffold (measured on Claude Code 2.1.266). The alternate slot is
-   * only honoured together with a passed 'M3-A' probe and an exact request-to-profile version
-   * match; it never applies to signed adapter markers.
+   * recognized native context scaffold (measured on Claude Code 2.1.266).
+   * 'after-native-context-v2': additionally, the first line of text block 2 when block 0 is the
+   * recognized operator-instructions block and block 1 that same context scaffold (measured on
+   * Claude Code 2.1.268). Each alternate slot is only honoured together with a passed 'M3-A'
+   * probe and an exact request-to-profile version match, matches only its own block count, and
+   * never applies to signed adapter markers.
    */
   parentPromptPosition?: ParentPromptPosition;
   diagnostics?: readonly string[];

@@ -49,6 +49,7 @@ if is_handler_like; then
     PROBE_CHILD_READ_FILE="$WORK/probe-child-read.txt"
     printf 'probe-child-read-notice\n' > "$PROBE_CHILD_READ_FILE"
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
+      PROBE_LAYOUT="${PROBE_LAYOUT:-}" \
       PROBE_CHILD_READ_FILE="$PROBE_CHILD_READ_FILE" \
       bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
   elif [ "$MODE" = "resume" ]; then
@@ -57,6 +58,7 @@ if is_handler_like; then
     # No PROBE_CHILD_READ_FILE: the two requests per child come from TWO separate invocations,
     # never a forced tool_use within one.
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
+      PROBE_LAYOUT="${PROBE_LAYOUT:-}" \
       PROBE_RESUME=1 \
       bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
   elif [ "$MODE" = "nested" ]; then
@@ -67,6 +69,7 @@ if is_handler_like; then
     # PROBE_CHILD_READ_FILE: the second request comes from executing the nested Agent tool, not a
     # forced Read.
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
+      PROBE_LAYOUT="${PROBE_LAYOUT:-}" \
       PROBE_NESTED_AGENT="native-probe-alpha" \
       bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
   else
@@ -75,6 +78,7 @@ if is_handler_like; then
     # exercised end to end against a real native client. Byte-identical to before
     # next-turn mode existed: no PROBE_CHILD_READ_FILE, one request per child.
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
+      PROBE_LAYOUT="${PROBE_LAYOUT:-}" \
       bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
   fi
 else

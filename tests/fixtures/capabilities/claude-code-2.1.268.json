@@ -13,7 +13,8 @@
     "M3-B2": "pending",
     "M4": "pending",
     "M10": "pending",
-    "M10-freshness": "pending"
+    "M10-freshness": "pending",
+    "M3-A": "passed"
   },
   "lifecycle": {
     "next-turn": "pending",
@@ -21,5 +22,8 @@
     "compaction": "pending",
     "nested": "pending",
     "parallel": "pending"
-  }
+  },
+  "diagnostics": [
+    "measured:M3-A=passed;run=handler-yXSP4o;at=2026-09-10T22:40:27.895Z"
+  ]
 }

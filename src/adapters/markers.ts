@@ -217,6 +217,47 @@ export function isNativeContextScaffoldV1(text: string): boolean {
   return sections > 0;
 }
 
+// Native instructions block, layout v2, as measured on Claude Code 2.1.268: the client moves its
+// own context scaffold down to text block 1 and puts the operator's instruction files into block
+// 0 as exactly ONE complete <system-reminder> section, leaving the parent's delegation prompt in
+// block 2. Only the boundaries are pinned: the wrapper lines, the instructions lead-in and at
+// least one "# name" header inside. The lead-in is matched as a PREFIX because the real client
+// continues that same line with further sentences. Nothing may precede the opener or follow the
+// closer except blank lines, the section never nests, and there is never more than one of them.
+// Format recognition of a public wrapper, not authentication; the trust model of channel A is
+// unchanged.
+const NATIVE_INSTRUCTIONS_LEAD_IN = 'Codebase and user instructions are shown below.';
+
+export function isNativeInstructionsBlockV2(text: string): boolean {
+  const lines = text.split('\n');
+  let index = 0;
+  while (index < lines.length && lines[index] === '') index += 1;
+  if (lines[index] !== NATIVE_CONTEXT_OPEN) return false;
+  const leadIn = lines[index + 1];
+  if (leadIn === undefined || !leadIn.startsWith(NATIVE_INSTRUCTIONS_LEAD_IN)) return false;
+  index += 2;
+
+  let headers = 0;
+  let closed = false;
+  for (; index < lines.length; index += 1) {
+    const line = lines[index] as string;
+    if (line === NATIVE_CONTEXT_CLOSE) {
+      closed = true;
+      index += 1;
+      break;
+    }
+    if (line.includes(NATIVE_CONTEXT_OPEN) || line.includes(NATIVE_CONTEXT_CLOSE)) return false;
+    if (NATIVE_CONTEXT_HEADER.test(line)) headers += 1;
+  }
+  if (!closed || headers === 0) return false;
+
+  // Exactly one section: past the closer only blank lines are part of the grammar.
+  for (; index < lines.length; index += 1) {
+    if (lines[index] !== '') return false;
+  }
+  return true;
+}
+
 function firstAuthorizedUserMessage(messages: unknown): { message: Record<string, unknown>; index: number } | undefined {
   if (!Array.isArray(messages)) return undefined;
   for (let i = 0; i < messages.length; i += 1) {
@@ -390,6 +431,39 @@ export async function extractMarkers(
             const target = strippedMessages[userHit.index];
             const targetContent = typeof target === 'object' && target !== null ? (target as Record<string, unknown>).content : undefined;
             const targetPayload = Array.isArray(targetContent) ? targetContent[1] : undefined;
+            if (isTextBlock(targetPayload)) (targetPayload as { text: string }).text = stripFirstLine(payloadBlock.text);
+          }
+        }
+      }
+    }
+
+    // Alternate parent-only slot, layout v2: exactly the measured three-text-block envelope --
+    // block 0 the recognized operator-instructions block, block 1 the same recognized context
+    // scaffold v1 pins, marker on the first line of block 2. Every other rule is v1's: the legacy
+    // slot keeps precedence, blocks 0 and 1 are forwarded untouched, and signed adapter markers
+    // are never honoured here regardless of adapterMarkerPosition. Each layout matches only its
+    // own block count, so a v1 profile never reads a three-block message and a v2 profile never
+    // reads a two-block one.
+    if (!legacyLineWasMarker && parentPromptPosition === 'after-native-context-v2' && Array.isArray(content) && content.length === 3) {
+      const [instructionsBlock, contextBlock, payloadBlock] = content;
+      if (
+        isTextBlock(instructionsBlock) &&
+        isTextBlock(contextBlock) &&
+        isTextBlock(payloadBlock) &&
+        isNativeInstructionsBlockV2(instructionsBlock.text) &&
+        isNativeContextScaffoldV1(contextBlock.text)
+      ) {
+        const parsed = parseMarker(firstLine(payloadBlock.text));
+        if (parsed === 'invalid') {
+          if (markerError === undefined) markerError = 'invalid-marker';
+        } else if (parsed !== null && parsed.kind === 'parent') {
+          explicitAliases.push(parsed.alias);
+          accepted += 1;
+          const strippedMessages = stripped.messages;
+          if (Array.isArray(strippedMessages)) {
+            const target = strippedMessages[userHit.index];
+            const targetContent = typeof target === 'object' && target !== null ? (target as Record<string, unknown>).content : undefined;
+            const targetPayload = Array.isArray(targetContent) ? targetContent[2] : undefined;
             if (isTextBlock(targetPayload)) (targetPayload as { text: string }).text = stripFirstLine(payloadBlock.text);
           }
         }

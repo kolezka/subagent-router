@@ -8,7 +8,7 @@
 // "everything genuine" shape.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { nativeContextBlockV1, nativeLayoutUserMessage } from './native-layout';
+import { nativeContextBlockV1, nativeInstructionsBlockV2 } from './native-layout';
 
 export function syntheticMarkerLine(alias: string): string {
   return `<subagent-router v="1" model="${alias}"/>`;
@@ -20,6 +20,13 @@ export function syntheticMarkerLine(alias: string): string {
 export const DEFAULT_SCAFFOLD_OVERRIDDEN_PATHS: readonly string[] = ['status', 'probes.M10', 'probes.M3-A', 'lifecycle.*', 'parentPromptPosition'];
 
 export interface SyntheticRunCaptureOptions {
+  // Which measured parent-prompt layout the capture carries. 'v1' (default) writes the two
+  // text block envelope [context scaffold, delegation prompt] and a profile declaring
+  // 'after-native-context-v1'. 'v2' writes the three block envelope [operator instructions,
+  // context scaffold, delegation prompt] and a profile declaring 'after-native-context-v2'.
+  // profilePatch still wins over the profile side, so a capture can deliberately be given the
+  // wrong layout's profile.
+  layout?: 'v1' | 'v2';
   // Client version carried by the profile, the client-version file and (unless userAgentVersion
   // overrides it) the pre-handler request's user-agent header. Default '2.1.266'.
   clientVersion?: string;
@@ -38,7 +45,8 @@ export interface SyntheticRunCaptureOptions {
   // true: mutates block 0 on the upstream (post) request only, so it no longer byte-matches
   // the pre-handler block 0.
   mutateBlock0Upstream?: boolean;
-  // true: block 0 is plain text that does not satisfy isNativeContextScaffoldV1.
+  // true: block 0 is plain text that satisfies neither isNativeContextScaffoldV1 (v1) nor
+  // isNativeInstructionsBlockV2 (v2).
   useNonScaffoldBlock0?: boolean;
   // true: block 1 carries no marker line at all on either side of the pair.
   omitMarkerOnBlock1?: boolean;
@@ -57,6 +65,7 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 }
 
 export async function writeSyntheticRunCapture(runDir: string, options: SyntheticRunCaptureOptions = {}): Promise<void> {
+  const layout = options.layout ?? 'v1';
   const clientVersion = options.clientVersion ?? '2.1.266';
   const alias = options.alias ?? 'fast';
   const agentId = options.agentId ?? 'agent-synthetic-1';
@@ -74,7 +83,7 @@ export async function writeSyntheticRunCapture(runDir: string, options: Syntheti
     adapterMarkerPosition: 'unknown',
     probes: { M10: 'passed', 'M3-A': 'passed' },
     lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' },
-    parentPromptPosition: 'after-native-context-v1',
+    parentPromptPosition: layout === 'v2' ? 'after-native-context-v2' : 'after-native-context-v1',
     ...options.profilePatch,
   };
   await writeJson(join(captureDir, '001-profile.json'), profile);
@@ -88,25 +97,37 @@ export async function writeSyntheticRunCapture(runDir: string, options: Syntheti
 
   if (options.includePair === false) return;
 
-  const block0 = options.useNonScaffoldBlock0 === true ? 'plain non-scaffold prefix text, no system-reminder wrapper' : nativeContextBlockV1();
+  const NON_MATCHING = 'plain non-scaffold prefix text, no system-reminder wrapper';
+  // The prefix blocks the client owns, in order, ahead of the delegation prompt: v1 carries only
+  // the context scaffold, v2 carries the operator instructions then that same scaffold.
+  const prefixBlocks =
+    layout === 'v2'
+      ? [options.useNonScaffoldBlock0 === true ? NON_MATCHING : nativeInstructionsBlockV2(), nativeContextBlockV1()]
+      : [options.useNonScaffoldBlock0 === true ? NON_MATCHING : nativeContextBlockV1()];
   const promptLine = 'do the synthetic probe task';
-  const preBlock1 = options.omitMarkerOnBlock1 === true ? promptLine : `${syntheticMarkerLine(alias)}\n${promptLine}`;
-  const postBlock1 = options.leaveMarkerUpstream === true ? preBlock1 : promptLine;
-  const postBlock0 = options.mutateBlock0Upstream === true ? `${block0}\nMUTATED-BETWEEN-PRE-AND-POST` : block0;
+  const prePayload = options.omitMarkerOnBlock1 === true ? promptLine : `${syntheticMarkerLine(alias)}\n${promptLine}`;
+  const postPayload = options.leaveMarkerUpstream === true ? prePayload : promptLine;
+  const postPrefixBlocks =
+    options.mutateBlock0Upstream === true ? [`${prefixBlocks[0] as string}\nMUTATED-BETWEEN-PRE-AND-POST`, ...prefixBlocks.slice(1)] : prefixBlocks;
+
+  const userMessage = (prefix: readonly string[], payload: string): Record<string, unknown> => ({
+    role: 'user',
+    content: [...prefix.map((text) => ({ type: 'text', text })), { type: 'text', text: payload }],
+  });
 
   const userAgentVersion = options.userAgentVersion ?? clientVersion;
   const preHeaders: Record<string, string> = {
     'user-agent': `claude-cli/${userAgentVersion} (external, sdk-cli)`,
     'x-claude-code-agent-id': agentId,
   };
-  const preBody = { model: 'probe-parent-model', messages: [nativeLayoutUserMessage(preBlock1, block0)] };
+  const preBody = { model: 'probe-parent-model', messages: [userMessage(prefixBlocks, prePayload)] };
   await writeJson(join(captureDir, '002-pre-handler.json'), { url: '/v1/messages', headers: preHeaders, body: preBody });
 
   const postHeaders: Record<string, string> = {
     'user-agent': 'stainless-node/1',
     'x-claude-code-agent-id': agentId,
   };
-  const postBody = { model: 'gateway/fast-worker', messages: [nativeLayoutUserMessage(postBlock1, postBlock0)] };
+  const postBody = { model: 'gateway/fast-worker', messages: [userMessage(postPrefixBlocks, postPayload)] };
   await writeJson(join(captureDir, '003-post-handler-upstream.json'), { url: 'http://127.0.0.1:1/v1/messages', headers: postHeaders, body: postBody });
 
   if (options.includeHookRecord !== false) {

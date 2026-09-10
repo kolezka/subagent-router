@@ -130,4 +130,22 @@ describe('capabilities: parentPromptPosition (channel-A layout amendment)', () =
     expect(profile.parentPromptPosition).toBe('after-native-context-v1');
     expect(profile.probes['M3-A']).toBe('passed');
   });
+
+  test('zmierzona wartość after-native-context-v2 jest ładowana dosłownie, a nieznany wariant nadal odrzucany', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(join(tmpdir(), 'capabilities-layout-v2-'));
+    const base = {
+      client: 'claude-code', status: 'pending', correlation: false, correlationEntropy: 'pending', fork: false,
+      adapterMarkerPosition: 'unknown',
+      probes: { 'M3-A': 'passed' },
+      lifecycle: { 'next-turn': 'pending', resume: 'pending', compaction: 'pending', nested: 'pending', parallel: 'pending' },
+    };
+    writeFileSync(join(dir, 'claude-code-9.2.0.json'), JSON.stringify({ ...base, version: '9.2.0', parentPromptPosition: 'after-native-context-v2' }));
+    const profile = await loadCapabilityProfile('claude-code', '9.2.0', dir);
+    expect(profile.parentPromptPosition).toBe('after-native-context-v2');
+
+    writeFileSync(join(dir, 'claude-code-9.2.1.json'), JSON.stringify({ ...base, version: '9.2.1', parentPromptPosition: 'after-native-context-v3' }));
+    await expect(loadCapabilityProfile('claude-code', '9.2.1', dir)).rejects.toMatchObject({ code: 'capability-fixture-invalid-schema' });
+  });
 });

@@ -6,7 +6,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { observedClaudeClientVersion } from '../../src/adapters/claude-code';
-import { isNativeContextScaffoldV1, parseMarker } from '../../src/adapters/markers';
+import { isNativeContextScaffoldV1, isNativeInstructionsBlockV2, parseMarker } from '../../src/adapters/markers';
 import { loadCapabilityProfile } from '../../src/adapters/capabilities';
 import { RouterError } from '../../src/core/errors';
 import type { ClientId, ProbeResult } from '../../src/core/types';
@@ -193,16 +193,36 @@ function firstUserMessage(body: Record<string, unknown>): Record<string, unknown
   return undefined;
 }
 
-// Exactly the measured two-text-block envelope: block 0 the native context, block 1 the
-// delegation prompt. Anything else (missing message, wrong block count, non-text blocks) means
-// this pair simply does not carry the alternate-layout shape and every boolean below is false.
-function twoTextBlocks(message: Record<string, unknown> | undefined): [string, string] | undefined {
+// Which measured envelope the run's own profile declares. An unknown or missing value keeps the
+// v1 rules, exactly as this extractor behaved before it was layout-aware.
+type M3ALayout = 'v1' | 'v2';
+
+function layoutOfProfile(profileRaw: Record<string, unknown>): M3ALayout {
+  return profileRaw.parentPromptPosition === 'after-native-context-v2' ? 'v2' : 'v1';
+}
+
+function expectedBlockCount(layout: M3ALayout): number {
+  return layout === 'v2' ? 3 : 2;
+}
+
+// Splits the first user message into the client-owned prefix blocks and the parent's delegation
+// prompt, for the DECLARED layout only: v1 is exactly two text blocks [context scaffold, prompt],
+// v2 exactly three [operator instructions, context scaffold, prompt]. undefined means the message
+// does not carry that envelope at all (missing message, wrong block count, a non-text block) --
+// which is an absence of the claim, not evidence against it, and is reported separately as a
+// layout mismatch rather than folded into the per-pair booleans.
+function layoutBlocks(message: Record<string, unknown> | undefined, layout: M3ALayout): { prefix: string[]; payload: string } | undefined {
   if (message === undefined) return undefined;
   const content = message.content;
-  if (!Array.isArray(content) || content.length !== 2) return undefined;
-  const [first, second] = content;
-  if (!isTextBlock(first) || !isTextBlock(second)) return undefined;
-  return [first.text, second.text];
+  const expected = expectedBlockCount(layout);
+  if (!Array.isArray(content) || content.length !== expected) return undefined;
+  if (!content.every((block) => isTextBlock(block))) return undefined;
+  const texts = (content as Array<{ text: string }>).map((block) => block.text);
+  return { prefix: texts.slice(0, expected - 1), payload: texts[expected - 1] as string };
+}
+
+function pairCarriesLayoutEnvelope(pair: CapturedPair, layout: M3ALayout): boolean {
+  return layoutBlocks(firstUserMessage(pair.pre.body), layout) !== undefined && layoutBlocks(firstUserMessage(pair.post.body), layout) !== undefined;
 }
 
 function firstLine(text: string): string {
@@ -215,21 +235,32 @@ function stripFirstLine(text: string): string {
   return idx === -1 ? '' : text.slice(idx + 1);
 }
 
-function evaluatePair(pair: CapturedPair, profileVersion: string, hookAgentIds: ReadonlySet<string>): M3APairEvidence {
-  const preBlocks = twoTextBlocks(firstUserMessage(pair.pre.body));
-  const postBlocks = twoTextBlocks(firstUserMessage(pair.post.body));
+// The six booleans keep their v1 names under both layouts, but two of them widen under v2:
+// `block0ByteIdentical` means blocks 0 AND 1 (every client-owned prefix block) survived byte for
+// byte, and `block0MatchesScaffold` means block 0 matches the operator-instructions grammar AND
+// block 1 matches the context-scaffold grammar. `markerOnBlock1Line1` and
+// `markerStrippedUpstream` read the delegation prompt, which is block 1 under v1 and block 2
+// under v2.
+function evaluatePair(pair: CapturedPair, profileVersion: string, hookAgentIds: ReadonlySet<string>, layout: M3ALayout): M3APairEvidence {
+  const pre = layoutBlocks(firstUserMessage(pair.pre.body), layout);
+  const post = layoutBlocks(firstUserMessage(pair.post.body), layout);
 
-  const block0ByteIdentical = preBlocks !== undefined && postBlocks !== undefined && preBlocks[0] === postBlocks[0];
-  const block0MatchesScaffold = preBlocks !== undefined && isNativeContextScaffoldV1(preBlocks[0]);
+  const block0ByteIdentical =
+    pre !== undefined && post !== undefined && pre.prefix.length === post.prefix.length && pre.prefix.every((text, i) => text === post.prefix[i]);
+  const block0MatchesScaffold =
+    pre !== undefined &&
+    (layout === 'v2'
+      ? isNativeInstructionsBlockV2(pre.prefix[0] as string) && isNativeContextScaffoldV1(pre.prefix[1] as string)
+      : isNativeContextScaffoldV1(pre.prefix[0] as string));
 
-  const parsedPreMarker = preBlocks !== undefined ? parseMarker(firstLine(preBlocks[1])) : null;
+  const parsedPreMarker = pre !== undefined ? parseMarker(firstLine(pre.payload)) : null;
   const markerOnBlock1Line1 = parsedPreMarker !== null && parsedPreMarker !== 'invalid' && parsedPreMarker.kind === 'parent';
 
   let markerStrippedUpstream = false;
-  if (preBlocks !== undefined && postBlocks !== undefined) {
-    const postParsed = parseMarker(firstLine(postBlocks[1]));
+  if (pre !== undefined && post !== undefined) {
+    const postParsed = parseMarker(firstLine(post.payload));
     const noMarkerLeft = postParsed === null;
-    const restMatches = postBlocks[1] === stripFirstLine(preBlocks[1]);
+    const restMatches = post.payload === stripFirstLine(pre.payload);
     markerStrippedUpstream = noMarkerLeft && restMatches;
   }
 
@@ -312,6 +343,11 @@ export interface M3AExtraction {
   // selects the real fixture in the first place, so a mismatch there fails the fixture load
   // itself rather than showing up as an undeclared-divergence diagnostic.
   scaffoldDeclared: boolean;
+  // The envelope the profile's declared layout requires (v1: exactly two text blocks; v2: exactly
+  // three) was present in every child pair, on both sides of the pair. False means this run does
+  // not carry the shape the profile claims at all -- a v2 capture judged with a v1 profile, or the
+  // reverse -- so nothing about that claim was measured here: 'pending', never 'failed'.
+  layoutEnvelopeMatched: boolean;
   profileVersion: string;
   diagnostics: readonly string[];
 }
@@ -323,10 +359,19 @@ export async function extractM3AEvidence(capture: RunCapture, fixturesDir: strin
   const profileClient = capture.profileRaw.client; // validated string by readRunCapture
   const profileVersion = capture.profileRaw.version as string;
 
+  const layout = layoutOfProfile(capture.profileRaw);
   const childPairs = capture.pairs.filter((pair) => pair.agentId !== undefined);
-  const pairs = childPairs.map((pair) => evaluatePair(pair, profileVersion, capture.hookAgentIds));
+  const pairs = childPairs.map((pair) => evaluatePair(pair, profileVersion, capture.hookAgentIds, layout));
   if (childPairs.length === 0) {
     diagnostics.push('m3a-no-child-pairs: no channel-A child request/response pairs (a pre/post pair whose x-claude-code-agent-id header is present) found in this run capture');
+  }
+
+  const mismatched = childPairs.filter((pair) => !pairCarriesLayoutEnvelope(pair, layout));
+  const layoutEnvelopeMatched = mismatched.length === 0;
+  if (mismatched.length > 0) {
+    diagnostics.push(
+      `m3a-layout-envelope-mismatch: ${mismatched.length} of ${childPairs.length} child pairs do not carry the ${expectedBlockCount(layout)}-text-block envelope required by the layout this profile declares (${JSON.stringify(capture.profileRaw.parentPromptPosition)}); this run measures nothing about that layout's claim`,
+    );
   }
 
   let scaffoldDeclared = false;
@@ -357,20 +402,23 @@ export async function extractM3AEvidence(capture: RunCapture, fixturesDir: strin
     }
   }
 
-  return { pairs, scaffoldDeclared, profileVersion, diagnostics };
+  return { pairs, scaffoldDeclared, layoutEnvelopeMatched, profileVersion, diagnostics };
 }
 
 /**
  * Judges M3-A from extracted evidence. Order matters: no child pairs is always 'pending'
  * (nothing was measured), regardless of scaffold state; an undeclared or missing scaffold is
  * always 'pending' (the trial cannot be trusted as evidence, but nothing has been proven false
- * either); only once both of those clear does any pair boolean get to determine 'failed' vs
- * 'passed'. Aggregate counts (pair counts, diagnostics counts) never by themselves produce
- * 'passed' -- only per-pair booleans, ANDed together, do.
+ * either); a capture that does not carry the declared layout's envelope at all is likewise always
+ * 'pending' (the run measured a different shape than the profile claims, which falsifies nothing);
+ * only once all three of those clear does any pair boolean get to determine 'failed' vs 'passed'.
+ * Aggregate counts (pair counts, diagnostics counts) never by themselves produce 'passed' -- only
+ * per-pair booleans, ANDed together, do.
  */
 export function judgeM3A(evidence: M3AExtraction): ProbeResult {
   if (evidence.pairs.length === 0) return 'pending';
   if (!evidence.scaffoldDeclared) return 'pending';
+  if (!evidence.layoutEnvelopeMatched) return 'pending';
   const allTrue = evidence.pairs.every(
     (pair) =>
       pair.block0ByteIdentical &&

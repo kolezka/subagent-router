@@ -240,8 +240,31 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   2.1.267) sends that header on a grandchild request is still unmeasured, because no grandchild
   was ever spawned. A new all-pending `claude-code-2.1.268.json` fixture is added so the next run
   starts from a real fixture; nothing in it or in the 2.1.267 fixture changed by hand. Next: pin
-  the launcher to an explicit versioned binary so a run can target 2.1.267 deliberately, rerun
-  `nested` there, and treat the 2.1.268 three-block layout as a new M3-A measurement (a
-  `parentPromptPosition` value for that layout, RED first) before any 2.1.268 probe can pass.
+  the launcher to an explicit versioned binary so a run can target 2.1.267 deliberately and rerun
+  `nested` there. The 2.1.268 three-block layout has since been measured as its own M3-A run; see
+  the `after-native-context-v2` bullet below.
+
+- **`after-native-context-v2`: the 2.1.268 three-block layout is measured and `M3-A` is `passed`
+  for that version, but the slot stays shut in production because no fixture declares the
+  layout.** [verified] `tests/probes/.runs/handler-yXSP4o` (2026-09-11, real `claude` 2.1.268,
+  `/Users/me/.local/bin/claude` confirmed pointing at `versions/2.1.268` immediately before the
+  run, `PROBE_LAYOUT=v2 PROBE_PROFILE_BASE=real PROBE_PHASES_EXERCISED=parallel
+  tests/probes/native-claude-run.sh handler`), judged by `tests/probes/judge-run.ts`:
+  `m3a.result` `passed`, `pairCount` 2, all six per-pair booleans true on both pairs, zero
+  diagnostics. Both children carried the three text block envelope; block 2's first line was the
+  `model="fast"` marker for one child and `model="smart"` for the other; the forwarded upstream
+  models were `gateway/fast-worker` and `gateway/smart-worker`; blocks 0 and 1 were byte identical
+  from pre-handler to upstream on both pairs and the marker line was gone from block 2 upstream;
+  the parent decoded `PARENT_FINAL_OK`. A new `after-native-context-v2` position, an
+  `isNativeInstructionsBlockV2` grammar for block 0, and a layout-aware `evidence-m3a.ts` back it;
+  a capture judged with the other layout's rules now returns `pending`, never `passed`.
+  `claude-code-2.1.268.json` was narrowed to `probes."M3-A": "passed"` through
+  `writeCapabilityFixture` only, run id recorded in its `diagnostics` line, nothing edited by hand.
+  What remains: the writer never emits `parentPromptPosition`, so that fixture still carries no
+  layout field and production keeps falling back to the legacy slot with `422 missing-selection`.
+  Opening the slot needs a deliberate `"parentPromptPosition": "after-native-context-v2"` in
+  `tests/fixtures/capabilities/claude-code-2.1.268.json`, either as an operator edit or as a writer
+  extension that can emit that field. Every other 2.1.268 probe and all five lifecycle phases stay
+  `pending`; `after-native-context-v1` is untouched and still `pending` for 2.1.266 and 2.1.267.
 
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

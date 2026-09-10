@@ -16,7 +16,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { loadCapabilityProfile } from '../../src/adapters/capabilities';
-import type { CapabilityProfile, FetchLike } from '../../src/core/types';
+import type { CapabilityProfile, FetchLike, ParentPromptPosition } from '../../src/core/types';
 import { createHandler } from '../../src/transport/handler';
 import { configFixture, snapshotFixture } from '../support/fixtures';
 import { hashNonce } from './evidence-freshness';
@@ -96,17 +96,21 @@ export const SYNTHETIC_PROFILE: CapabilityProfile = {
   lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' },
 };
 
+// The layout both profile builders below declare unless the caller names another one. Stays v1
+// so every existing run is byte-identical to before the v2 layout existed.
+const DEFAULT_LAYOUT_POSITION: ParentPromptPosition = 'after-native-context-v1';
+
 // Stage 2a layout amendment: the real 2.1.266 client puts its own context into text block 0
 // and the delegation prompt into block 1, so the legacy first-text slot never sees the marker.
 // This variant opens the measured alternate slot for ONE exact client version, the one the
 // launcher actually observed via `claude --version` and passed in. 'M3-A' here is synthetic
 // scaffolding so the handler trial can run at all; a real M3-A pass is what that trial is
 // meant to produce, never something this fixture asserts.
-export function syntheticLayoutProfile(observedClientVersion: string): CapabilityProfile {
+export function syntheticLayoutProfile(observedClientVersion: string, layout: ParentPromptPosition = DEFAULT_LAYOUT_POSITION): CapabilityProfile {
   return {
     ...SYNTHETIC_PROFILE,
     version: observedClientVersion,
-    parentPromptPosition: 'after-native-context-v1',
+    parentPromptPosition: layout,
     probes: { ...SYNTHETIC_PROFILE.probes, 'M3-A': 'passed' },
   };
 }
@@ -119,13 +123,13 @@ export function syntheticLayoutProfile(observedClientVersion: string): Capabilit
 // a run using this profile makes a judgeable claim (the fixture it diverges from is real, not a
 // measurement-only stand-in) while still declaring every path it overrode via
 // SCAFFOLD_OVERRIDDEN_PATHS below. Opt-in via PROBE_PROFILE_BASE=real; never the default.
-export function realLayoutProfile(realFixture: CapabilityProfile): CapabilityProfile {
+export function realLayoutProfile(realFixture: CapabilityProfile, layout: ParentPromptPosition = DEFAULT_LAYOUT_POSITION): CapabilityProfile {
   return {
     ...realFixture,
     status: 'supported',
     probes: { ...realFixture.probes, M10: 'passed', 'M3-A': 'passed' },
     lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' },
-    parentPromptPosition: 'after-native-context-v1',
+    parentPromptPosition: layout,
   };
 }
 
@@ -623,10 +627,14 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   // SYNTHETIC_PROFILE, so a run using it produces a judgeable M3-A claim (extractM3AEvidence can
   // load and diff against a real fixture). Absent (the default), behavior is byte-identical to
   // before this variable existed.
+  // Opt-in: PROBE_LAYOUT=v2 makes the injected profile declare the three-text-block layout
+  // measured on Claude Code 2.1.268 instead of the two-block v1 layout. Absent, empty or any
+  // other value means v1, so behavior is byte-identical to before this variable existed.
+  const layoutPosition: ParentPromptPosition = process.env.PROBE_LAYOUT === 'v2' ? 'after-native-context-v2' : 'after-native-context-v1';
   const profile =
     process.env.PROBE_PROFILE_BASE === 'real'
-      ? realLayoutProfile(await loadCapabilityProfile('claude-code', observedClientVersion, `${import.meta.dir}/../fixtures/capabilities`))
-      : syntheticLayoutProfile(observedClientVersion);
+      ? realLayoutProfile(await loadCapabilityProfile('claude-code', observedClientVersion, `${import.meta.dir}/../fixtures/capabilities`), layoutPosition)
+      : syntheticLayoutProfile(observedClientVersion, layoutPosition);
   rec('profile', profile);
   // Sibling to NNN-profile.json, same sequence number, written directly (not through rec()) so
   // it never consumes a seq number of its own and shifts every later capture file's numbering.

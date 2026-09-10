@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { extractMarkers, parseMarker, signRoleMarker } from '../../src/adapters/markers';
-import { NATIVE_CONTEXT_LEAD_IN, nativeContextBlockV1, nativeLayoutUserMessage } from '../support/native-layout';
+import {
+  NATIVE_CONTEXT_LEAD_IN,
+  NATIVE_INSTRUCTIONS_LEAD_IN,
+  nativeContextBlockV1,
+  nativeInstructionsBlockV2,
+  nativeLayoutUserMessage,
+  nativeLayoutV2UserMessage,
+} from '../support/native-layout';
 
 const SECRET = 'test-secret';
 
@@ -248,5 +255,143 @@ describe('extractMarkers: after-native-context-v1, review findings', () => {
     expect(result.explicitAliases).toEqual([]);
     expect(result.ignored).toBe(1);
     expect((result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[0]?.text).toBe(PAYLOAD);
+  });
+});
+
+describe('extractMarkers: parent marker after the measured native prefix, layout v2 (after-native-context-v2)', () => {
+  const PAYLOAD = '<subagent-router v="1" model="fast"/>\nZbadaj repo.';
+
+  function v2(messages: unknown[]): Record<string, unknown> {
+    return body([], messages);
+  }
+
+  test('actual measured 2.1.268 layout: marker on the first line of block 2 is accepted, blocks 0 and 1 are forwarded byte for byte', async () => {
+    const input = v2([nativeLayoutV2UserMessage(PAYLOAD)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2');
+    expect(result.explicitAliases).toEqual(['fast']);
+    expect(result.ignored).toBe(0);
+    expect(result.markerError).toBeUndefined();
+    const content = (result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content;
+    expect(content?.[0]?.text).toBe(nativeInstructionsBlockV2());
+    expect(content?.[1]?.text).toBe(nativeContextBlockV1());
+    expect(content?.[2]?.text).toBe('Zbadaj repo.');
+  });
+
+  test('the lead-in is matched as a prefix: the real client continues that line with more prose', async () => {
+    const longLeadIn = nativeInstructionsBlockV2().replace(
+      `${NATIVE_INSTRUCTIONS_LEAD_IN} Be sure to adhere to these instructions.`,
+      `${NATIVE_INSTRUCTIONS_LEAD_IN} Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior.`,
+    );
+    const input = v2([nativeLayoutV2UserMessage(PAYLOAD, longLeadIn)]);
+    expect((await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2')).explicitAliases).toEqual(['fast']);
+  });
+
+  test.each([
+    ['missing instructions lead-in', nativeInstructionsBlockV2().replace(`${NATIVE_INSTRUCTIONS_LEAD_IN} Be sure to adhere to these instructions.`, 'Some other opening sentence.')],
+    ['the v1 scaffold grammar instead of the instructions grammar', nativeContextBlockV1()],
+    ['unclosed wrapper', nativeInstructionsBlockV2().replace('</system-reminder>', '')],
+    ['no wrapper at all', `${NATIVE_INSTRUCTIONS_LEAD_IN}\n# claudeMd\n`],
+    ['text before the opener', `preface\n${nativeInstructionsBlockV2()}`],
+    ['text after the closer', `${nativeInstructionsBlockV2()}\ntrailing prose`],
+    ['nested opener', nativeInstructionsBlockV2(['<system-reminder>'])],
+    ['two sections', `${nativeInstructionsBlockV2()}\n${nativeInstructionsBlockV2()}`],
+    ['no context header line', `<system-reminder>\n${NATIVE_INSTRUCTIONS_LEAD_IN} more\nno headers here\n</system-reminder>`],
+    ['empty block', ''],
+  ])('malformed block 0 (%s) fails closed: no selection', async (_label, instructions) => {
+    const input = v2([nativeLayoutV2UserMessage(PAYLOAD, instructions)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.markerError).toBeUndefined();
+    expect(result.ignored).toBe(1);
+  });
+
+  test('block 1 that is not a recognized v1 scaffold fails closed: no selection', async () => {
+    const notScaffold = 'plain prose, no system-reminder wrapper at all';
+    const input = v2([nativeLayoutV2UserMessage(PAYLOAD, nativeInstructionsBlockV2(), notScaffold)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.ignored).toBe(1);
+  });
+
+  test('block 1 carrying the instructions grammar instead of the scaffold grammar fails closed', async () => {
+    const input = v2([nativeLayoutV2UserMessage(PAYLOAD, nativeInstructionsBlockV2(), nativeInstructionsBlockV2())]);
+    expect((await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2')).explicitAliases).toEqual([]);
+  });
+
+  test('block counts other than three are an unmeasured layout: no selection', async () => {
+    const two = v2([{ role: 'user', content: [{ type: 'text', text: nativeInstructionsBlockV2() }, { type: 'text', text: PAYLOAD }] }]);
+    expect((await extractMarkers(two, 'agent-1', SECRET, 'unknown', 'after-native-context-v2')).explicitAliases).toEqual([]);
+    const four = v2([{ role: 'user', content: [{ type: 'text', text: nativeInstructionsBlockV2() }, { type: 'text', text: nativeContextBlockV1() }, { type: 'text', text: PAYLOAD }, { type: 'text', text: 'czwarty' }] }]);
+    expect((await extractMarkers(four, 'agent-1', SECRET, 'unknown', 'after-native-context-v2')).explicitAliases).toEqual([]);
+    const withImage = v2([{ role: 'user', content: [{ type: 'text', text: nativeInstructionsBlockV2() }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } }, { type: 'text', text: PAYLOAD }] }]);
+    expect((await extractMarkers(withImage, 'agent-1', SECRET, 'unknown', 'after-native-context-v2')).explicitAliases).toEqual([]);
+  });
+
+  test('the v2 profile never accepts the v1 two-block shape: it falls back to legacy and selects nothing', async () => {
+    const input = v2([nativeLayoutUserMessage(PAYLOAD)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.ignored).toBe(1);
+  });
+
+  test('the v1 profile never accepts the three-block shape', async () => {
+    const input = v2([nativeLayoutV2UserMessage(PAYLOAD)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v1');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.ignored).toBe(1);
+  });
+
+  test('marker on the second line of block 2 is ignored, never scanned', async () => {
+    const input = v2([nativeLayoutV2UserMessage('Zbadaj repo.\n<subagent-router v="1" model="fast"/>')]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.ignored).toBe(1);
+  });
+
+  test('marker inside block 0 is ignored and block 0 is still forwarded byte for byte', async () => {
+    const poisoned = nativeInstructionsBlockV2(['<subagent-router v="1" model="fast"/>']);
+    const input = v2([nativeLayoutV2UserMessage('Zbadaj repo.', poisoned)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.ignored).toBe(1);
+    expect((result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[0]?.text).toBe(poisoned);
+  });
+
+  test('marker inside block 1 is ignored and block 1 is still forwarded byte for byte', async () => {
+    const poisoned = nativeContextBlockV1(['<subagent-router v="1" model="fast"/>']);
+    const input = v2([nativeLayoutV2UserMessage('Zbadaj repo.', nativeInstructionsBlockV2(), poisoned)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2');
+    expect(result.explicitAliases).toEqual([]);
+    expect(result.ignored).toBe(1);
+    expect((result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[1]?.text).toBe(poisoned);
+  });
+
+  test('signed adapter marker on the first line of block 2 is never honoured, even with a first-user profile', async () => {
+    const token = await signRoleMarker(SECRET, 'reviewer', 'agent-1');
+    const input = v2([nativeLayoutV2UserMessage(`<subagent-router v="1" role="reviewer" agent="agent-1" token="${token}"/>\nZadanie`)]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'first-user', 'after-native-context-v2');
+    expect(result.roleFromAdapter).toBeUndefined();
+    expect(result.markerError).toBeUndefined();
+    expect(result.ignored).toBe(1);
+    expect((result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[2]?.text.startsWith('<subagent-router')).toBe(true);
+  });
+
+  test('malformed marker grammar on the first line of block 2 is invalid-marker, same as in every other slot', async () => {
+    const input = v2([nativeLayoutV2UserMessage('<subagent-router v="9" model="fast"/>\nZadanie')]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2');
+    expect(result.markerError).toBe('invalid-marker');
+    expect(result.explicitAliases).toEqual([]);
+  });
+
+  test('a first user message carrying tool_result blocks is never a delegation prompt in the v2 slot either', async () => {
+    const input = v2([{ role: 'user', content: [{ type: 'text', text: nativeInstructionsBlockV2() }, { type: 'text', text: nativeContextBlockV1() }, { type: 'tool_result', tool_use_id: 't', content: PAYLOAD }] }]);
+    expect((await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2')).explicitAliases).toEqual([]);
+  });
+
+  test('legacy first-line marker in block 0 keeps precedence when the v2 position is enabled', async () => {
+    const input = v2([{ role: 'user', content: [{ type: 'text', text: PAYLOAD }, { type: 'text', text: nativeContextBlockV1() }, { type: 'text', text: 'trzeci' }] }]);
+    const result = await extractMarkers(input, 'agent-1', SECRET, 'unknown', 'after-native-context-v2');
+    expect(result.explicitAliases).toEqual(['fast']);
+    expect((result.stripped.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[0]?.text).toBe('Zbadaj repo.');
   });
 });

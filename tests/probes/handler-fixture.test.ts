@@ -667,3 +667,32 @@ describe('realLayoutProfile (stage 2a real-base variant, PROBE_PROFILE_BASE=real
     expect(profile.lifecycle).toEqual({ 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' });
   });
 });
+
+describe('layout v2 profile variant (PROBE_LAYOUT=v2)', () => {
+  test('both profile builders take the layout position and default to v1 when it is omitted', async () => {
+    const realFixture = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
+
+    expect(syntheticLayoutProfile('2.1.268').parentPromptPosition).toBe('after-native-context-v1');
+    expect(realLayoutProfile(realFixture).parentPromptPosition).toBe('after-native-context-v1');
+
+    expect(syntheticLayoutProfile('2.1.268', 'after-native-context-v2').parentPromptPosition).toBe('after-native-context-v2');
+    expect(realLayoutProfile(realFixture, 'after-native-context-v2').parentPromptPosition).toBe('after-native-context-v2');
+  });
+
+  test('the v2 variant still overrides exactly what the scaffold manifest declares, so a v2 run stays judgeable', async () => {
+    const realFixture = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
+    const profile = realLayoutProfile(realFixture, 'after-native-context-v2');
+
+    // The manifest must still name parentPromptPosition: it is the path the v2 override diverges on.
+    expect(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS).toContain('parentPromptPosition');
+
+    const diverged = diffCapturedAgainstReal(profile as unknown as Record<string, unknown>, realFixture as unknown as Record<string, unknown>);
+    const declared = new Set(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS);
+    expect(diverged).toContain('parentPromptPosition');
+    expect(diverged.filter((path) => !pathIsDeclared(path, declared))).toEqual([]);
+
+    // Everything the v2 override does not touch still comes straight from the real fixture.
+    expect(profile.adapterMarkerPosition).toBe(realFixture.adapterMarkerPosition);
+    expect(profile.correlation).toBe(realFixture.correlation);
+  });
+});
