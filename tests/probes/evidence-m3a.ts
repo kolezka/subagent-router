@@ -270,7 +270,7 @@ function flatten(value: unknown, prefix: string, out: Map<string, unknown>): voi
 // profile only ever set probes.M10 and probes['M3-A']) is not a claim the captured profile makes
 // and is not counted as a divergence -- the scaffold's job is to declare what it OVERRODE, not to
 // re-assert every field the real fixture happens to also carry.
-function diffCapturedAgainstReal(captured: Record<string, unknown>, real: Record<string, unknown>): string[] {
+export function diffCapturedAgainstReal(captured: Record<string, unknown>, real: Record<string, unknown>): string[] {
   const capturedFlat = new Map<string, unknown>();
   flatten(captured, '', capturedFlat);
   const realFlat = new Map<string, unknown>();

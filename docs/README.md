@@ -28,6 +28,19 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   przegląd historycznych artefaktów parent/child dla Claude Code 2.1.263. To jest przegląd
   zapisanych danych, nie nowy pomiar natywny ani promocja wsparcia; M1, M3/M3-B2, M4, M10 i
   freshness pozostają niepotwierdzone.
+- Pierwszy realny pomiar `M3-A` (2026-09-10, realny klient `claude` 2.1.267, przebieg
+  `tests/probes/.runs/handler-yYv981`, osądzony przez `tests/probes/judge-run.ts`): `judgeM3A`
+  zwrócił `passed` dla obu przechwyconych par kanału A. Zadeklarowana w manifeście przebiegu faza
+  `parallel` osądzona została jednak jako `pending`
+  (`parallel-requires-interleaved-sequence-numbers` -- przy dokładnie jednym żądaniu na agenta ten
+  test nie może odróżnić realnego przeplotu od sekwencyjnego wywołania). Do
+  [../tests/fixtures/capabilities/claude-code-2.1.267.json](../tests/fixtures/capabilities/claude-code-2.1.267.json)
+  (nowa fikstura tej wersji, skopiowana z 2.1.266 z każdą sondą `pending`) `fixture-writer.ts`
+  dopisał wyłącznie `M3-A: passed` z wpisem `diagnostics` wskazującym przebieg; `status`, `M10`,
+  wszystkie fazy lifecycle i pozostałe sondy pozostają `pending`. `M10-freshness` zmierzył się jako
+  `pending` z zerowymi licznikami rejestracji, zgodnie
+  z przewidywaniem w [transport/GAPS.md](transport/GAPS.md). To nie jest promocja wsparcia; szczegóły
+  w [transport/GAPS.md](transport/GAPS.md).
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 

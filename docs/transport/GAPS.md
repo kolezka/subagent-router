@@ -40,7 +40,7 @@ See [../measurements/claude-code-2.1.263-partial.md](../measurements/claude-code
 for a review of historical parent/child model artifacts. It is not a new native run and closes
 none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
 
-- **M3-A has an extractor and judge, but no real pass.** [verified] direct read of
+- **M3-A has an extractor and judge; the only real pass so far is for 2.1.267 (next bullet).** [verified] direct read of
   [../../tests/probes/evidence-m3a.ts](../../tests/probes/evidence-m3a.ts): `readRunCapture` +
   `extractM3AEvidence` + `judgeM3A` turn a native-claude-handler.ts run capture into a
   pending/failed/passed verdict, refusing to pass on an undeclared scaffold override or a
@@ -49,8 +49,31 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   `NNN-profile-scaffold.json`, so it judges `pending` by construction; the earlier synthetic
   handler trial referenced above cannot and does not count as an M3-A pass. `M3-A` in
   [../../tests/fixtures/capabilities/claude-code-2.1.266.json](../../tests/fixtures/capabilities/claude-code-2.1.266.json)
-  stays `pending` until a future approved loopback run, scaffolded and declared, judges `passed`
-  and is narrowed in via `tests/probes/fixture-writer.ts`.
+  stays `pending` -- this run never touched that fixture -- until a future approved loopback run
+  against that exact version, scaffolded and declared, judges `passed` and is narrowed in via
+  `tests/probes/fixture-writer.ts`.
+- **First real M3-A pass exists, but was not narrowed into any fixture.** [verified] direct read
+  of `tests/probes/.runs/handler-yYv981` (2026-09-10, real `claude` 2.1.267, `native-claude-run.sh
+  handler` with `PROBE_PROFILE_BASE=real`, judged with `tests/probes/judge-run.ts`): the injected
+  profile is based on the real (then all-pending) `claude-code-2.1.267.json` fixture via
+  `loadCapabilityProfile`, with exactly `status`, `probes.M10`, `probes.M3-A`, `lifecycle.*` and
+  `parentPromptPosition` overridden (`realLayoutProfile` in
+  [../../tests/probes/native-claude-handler.ts](../../tests/probes/native-claude-handler.ts)).
+  `judgeM3A` returned `passed` for both captured channel-A pairs (all six per-pair booleans true:
+  `block0ByteIdentical`, `block0MatchesScaffold`, `markerOnBlock1Line1`, `markerStrippedUpstream`,
+  `versionMatchesProfile`, `agentIdMatchesHook`). The run's own manifest declared `parallel`
+  (`PROBE_PHASES_EXERCISED=parallel`), but `judgeLifecyclePhase('parallel')` judged `pending`
+  (`parallel-requires-interleaved-sequence-numbers`): with exactly one routed request per agent,
+  the merged sequence has only the strict-minimum one agent-to-agent transition, which
+  `isSequenceInterleaved` in
+  [../../tests/probes/evidence-m10.ts](../../tests/probes/evidence-m10.ts) can never distinguish
+  from a purely sequential dispatch -- a genuine limitation of that check for single-request-per-
+  agent runs, not evidence the real client dispatched sequentially. M3-A and `parallel` are
+  independent probes, so `fixture-writer.ts` narrowed exactly one key into
+  [../../tests/fixtures/capabilities/claude-code-2.1.267.json](../../tests/fixtures/capabilities/claude-code-2.1.267.json):
+  `probes.M3-A: passed`, with a `diagnostics` entry naming run `handler-yYv981`. `status`, `M10`,
+  every lifecycle phase and every other probe stay `pending`, so the alternate slot is still closed
+  in production until M10 and the lifecycle phases are measured for this version.
 
 - **M10 lifecycle-phase and M10-freshness judges exist, but no real pass is recorded.**
   [verified] direct read of
@@ -66,17 +89,23 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   nothing in the current saved runs or fixtures ever exercises real lifecycle transitions, so
   every phase and `M10-freshness` in
   [../../tests/fixtures/capabilities/claude-code-2.1.266.json](../../tests/fixtures/capabilities/claude-code-2.1.266.json)
-  stay `pending`.
-- **The production freshness hook can be wired into the handler-mode fixture, but was never run.**
+  stay `pending`. `tests/probes/.runs/handler-yYv981` (see above) is the first run whose manifest
+  declares a phase at all (`parallel`), and it still judged `pending` there (see above); every
+  other phase stayed `pending` too (`*-not-declared`, since the manifest names only `parallel`).
+- **The production freshness hook has now been run once, exactly as predicted.**
   `tests/probes/native-claude-handler.ts` records instance-fetch/delegation-register/consume/replay
   capture files when `PROBE_FRESHNESS_HOOK=production` is set (gated inside the existing
   `RUN_NATIVE_PROBES` block only), and `tests/probes/native-claude-run.sh`'s handler mode can
   swap its static fake `hook.sh` for a wrapper that runs the real published `claude-hook`
-  entrypoint against the run's own front server. Neither this worktree nor any session working
-  in it may set `RUN_NATIVE_PROBES` or run the real `claude` binary, so this path has never
-  actually executed: `src/transport/claude-hook.ts`'s own bootstrap still always resolves
-  `freshDelegation: false` (see above), so even a real run of this wiring would record zero
-  successful registrations today. This is wiring for a future measurement, not a measurement
-  itself.
+  entrypoint against the run's own front server. [verified] `tests/probes/.runs/handler-yYv981`
+  (2026-09-10) ran this wiring under the operator-scoped authorization for this worktree
+  (`native-claude-run.sh handler` via `tests/probes/native-claude-run.sh`, never a direct
+  `RUN_NATIVE_PROBES` invocation outside that script). It confirms the prediction exactly:
+  `src/transport/claude-hook.ts`'s own bootstrap still always resolves `freshDelegation: false`,
+  so the run recorded zero instance-fetch, delegation-register, delegation-consume and
+  delegation-replay files (all four counts 0; `judgeM10Freshness` returned `pending` with
+  `freshness-no-records`). This closes the "never run" half of the gap; the underlying bootstrap
+  limitation it confirmed is unchanged and still requires a real `resolveTrustedStart` producer
+  before `M10-freshness` can ever measure past `pending`.
 
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

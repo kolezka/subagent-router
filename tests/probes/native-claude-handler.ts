@@ -15,6 +15,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import { loadCapabilityProfile } from '../../src/adapters/capabilities';
 import type { CapabilityProfile, FetchLike } from '../../src/core/types';
 import { createHandler } from '../../src/transport/handler';
 import { configFixture, snapshotFixture } from '../support/fixtures';
@@ -110,12 +111,31 @@ export function syntheticLayoutProfile(observedClientVersion: string): Capabilit
   };
 }
 
-// The scaffold manifest for syntheticLayoutProfile(): exactly the dotted paths its spread
-// actually overrides relative to the real claude-code-<version>.json fixture -- status, the two
-// probes it sets (M10, M3-A), all five lifecycle phases (via the wildcard), and the alternate-
-// layout position flag. Consumed by tests/probes/evidence-m3a.ts's extractM3AEvidence: a run
-// capture without this manifest (or with one that omits a path that actually diverges) can never
-// judge M3-A past 'pending', however clean its request/response pairs look.
+// Real-base variant of syntheticLayoutProfile(): applies exactly the SAME channel-A overrides
+// (status, M10, M3-A, all five lifecycle phases, parentPromptPosition) on top of a REAL measured
+// claude-code-<version>.json fixture instead of the wholly-synthetic SYNTHETIC_PROFILE. Every
+// field this does NOT explicitly override -- M1, M2, M3, M3-B2, M4, M10-freshness, correlation,
+// correlationEntropy, fork, adapterMarkerPosition -- carries over from `realFixture` untouched, so
+// a run using this profile makes a judgeable claim (the fixture it diverges from is real, not a
+// measurement-only stand-in) while still declaring every path it overrode via
+// SCAFFOLD_OVERRIDDEN_PATHS below. Opt-in via PROBE_PROFILE_BASE=real; never the default.
+export function realLayoutProfile(realFixture: CapabilityProfile): CapabilityProfile {
+  return {
+    ...realFixture,
+    status: 'supported',
+    probes: { ...realFixture.probes, M10: 'passed', 'M3-A': 'passed' },
+    lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' },
+    parentPromptPosition: 'after-native-context-v1',
+  };
+}
+
+// The scaffold manifest for BOTH syntheticLayoutProfile() and realLayoutProfile(): exactly the
+// dotted paths each one's spread actually overrides relative to the real
+// claude-code-<version>.json fixture -- status, the two probes they set (M10, M3-A), all five
+// lifecycle phases (via the wildcard), and the alternate-layout position flag. Consumed by
+// tests/probes/evidence-m3a.ts's extractM3AEvidence: a run capture without this manifest (or with
+// one that omits a path that actually diverges) can never judge M3-A past 'pending', however clean
+// its request/response pairs look.
 export const SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS: readonly string[] = ['status', 'probes.M10', 'probes.M3-A', 'lifecycle.*', 'parentPromptPosition'];
 
 export interface RecordedUpstreamRequest {
@@ -389,7 +409,15 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   if (observedClientVersion === undefined || !/^\d+\.\d+\.\d+$/.test(observedClientVersion)) {
     throw new Error('PROBE_CLIENT_VERSION must carry the observed client version (x.y.z)');
   }
-  const profile = syntheticLayoutProfile(observedClientVersion);
+  // Opt-in: PROBE_PROFILE_BASE=real bases the injected profile on the REAL measured
+  // claude-code-<version>.json fixture (via loadCapabilityProfile) instead of the wholly-synthetic
+  // SYNTHETIC_PROFILE, so a run using it produces a judgeable M3-A claim (extractM3AEvidence can
+  // load and diff against a real fixture). Absent (the default), behavior is byte-identical to
+  // before this variable existed.
+  const profile =
+    process.env.PROBE_PROFILE_BASE === 'real'
+      ? realLayoutProfile(await loadCapabilityProfile('claude-code', observedClientVersion, `${import.meta.dir}/../fixtures/capabilities`))
+      : syntheticLayoutProfile(observedClientVersion);
   rec('profile', profile);
   // Sibling to NNN-profile.json, same sequence number, written directly (not through rec()) so
   // it never consumes a seq number of its own and shifts every later capture file's numbering.

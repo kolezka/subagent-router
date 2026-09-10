@@ -7,17 +7,31 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { loadCapabilityProfile } from '../../src/adapters/capabilities';
 import {
   AGENT_TOOL_NAME,
   CHANNEL_A_AGENTS,
   PARENT_CLIENT_MODEL,
+  SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS,
   buildChildRequest,
   buildParentRequest,
   createHandlerFixture,
   markerLine,
+  realLayoutProfile,
   syntheticLayoutProfile,
 } from './native-claude-handler';
+import { diffCapturedAgainstReal } from './evidence-m3a';
 import { nativeContextBlockV1, nativeLayoutUserMessage } from '../support/native-layout';
+
+const CAPABILITIES_FIXTURES = join(import.meta.dir, '..', 'fixtures', 'capabilities');
+
+function pathIsDeclared(path: string, declared: ReadonlySet<string>): boolean {
+  if (declared.has(path)) return true;
+  for (const entry of declared) {
+    if (entry.endsWith('.*') && path.startsWith(entry.slice(0, -1))) return true;
+  }
+  return false;
+}
 
 function jsonRequest(path: string, body: unknown): Request {
   return new Request(`http://router.local${path}`, {
@@ -331,5 +345,44 @@ describe('channel-A handler fixture: measured native context layout (stage 2a am
     const res = await bound.handler(req);
     expect(res.status).toBe(422);
     expect(bound.seen).toHaveLength(0);
+  });
+});
+
+describe('realLayoutProfile (stage 2a real-base variant, PROBE_PROFILE_BASE=real)', () => {
+  test('diverges from the real fixture on exactly the declared scaffold paths, everything else carried over untouched', async () => {
+    const realFixture = await loadCapabilityProfile('claude-code', '2.1.266', CAPABILITIES_FIXTURES);
+    const profile = realLayoutProfile(realFixture);
+
+    const diverged = diffCapturedAgainstReal(profile as unknown as Record<string, unknown>, realFixture as unknown as Record<string, unknown>);
+    const declared = new Set(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS);
+    const undeclared = diverged.filter((path) => !pathIsDeclared(path, declared));
+
+    expect(undeclared).toEqual([]); // no divergence the manifest fails to cover
+    expect(diverged.length).toBeGreaterThan(0); // and it must genuinely diverge on something, not vacuously pass
+
+    // Everything NOT explicitly overridden by realLayoutProfile must come straight from the
+    // real fixture: client, correlation-related fields, adapterMarkerPosition, and every probe
+    // the real fixture declares besides the two this variant sets (M10, M3-A).
+    expect(profile.client).toBe(realFixture.client);
+    expect(profile.version).toBe(realFixture.version);
+    expect(profile.correlation).toBe(realFixture.correlation);
+    expect(profile.correlationEntropy).toBe(realFixture.correlationEntropy);
+    expect(profile.fork).toBe(realFixture.fork);
+    expect(profile.adapterMarkerPosition).toBe(realFixture.adapterMarkerPosition);
+    for (const [name, result] of Object.entries(realFixture.probes)) {
+      if (name === 'M10' || name === 'M3-A') continue;
+      expect(profile.probes[name]).toBe(result);
+    }
+  });
+
+  test('overrides exactly what SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS declares', async () => {
+    const realFixture = await loadCapabilityProfile('claude-code', '2.1.267', CAPABILITIES_FIXTURES);
+    const profile = realLayoutProfile(realFixture);
+
+    expect(profile.status).toBe('supported');
+    expect(profile.probes.M10).toBe('passed');
+    expect(profile.probes['M3-A']).toBe('passed');
+    expect(profile.parentPromptPosition).toBe('after-native-context-v1');
+    expect(profile.lifecycle).toEqual({ 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' });
   });
 });
