@@ -108,4 +108,48 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   limitation it confirmed is unchanged and still requires a real `resolveTrustedStart` producer
   before `M10-freshness` can ever measure past `pending`.
 
+- **`next-turn` and `parallel` now have a real pass, from a run designed to give each child two
+  requests.** [verified] direct read of `tests/probes/.runs/next-turn-jFdsmI` (2026-09-10, real
+  `claude` 2.1.267, `native-claude-run.sh next-turn` with `PROBE_PROFILE_BASE=real
+  PROBE_FRESHNESS_HOOK=production PROBE_PHASES_EXERCISED=parallel,next-turn`, judged with
+  `tests/probes/judge-run.ts`): `next-turn` mode (added alongside `handler` mode in
+  `tests/probes/native-claude-run.sh` and `tests/probes/native-claude-handler.ts`) grants each
+  probe child agent the `Read` tool and points `createHandlerFixture`'s new opt-in
+  `childReadFilePath` option at a file the launcher creates in the CLI's own sandboxed WORK
+  directory; a routed child's first request is now answered with a forced `tool_use` for `Read`
+  instead of the immediate echo, so the real client executes it for real and sends a genuine
+  second request carrying the resulting `tool_result` before it gets the echo. `handler` mode
+  itself is unchanged (`childReadFilePath` absent, one request per child, exactly as before).
+  Both channel-A agents made exactly two forwarded requests each in this run, to a stable
+  upstream model on both (no drift), and the two agents' requests interleaved by sequence number
+  (`native-probe-beta`, `native-probe-alpha`, `native-probe-beta`, `native-probe-alpha`) -- the
+  exact condition `isSequenceInterleaved` in
+  [../../tests/probes/evidence-m10.ts](../../tests/probes/evidence-m10.ts) requires, and which the
+  prior `handler-yYv981` run (one request per agent) could not produce. `judgeLifecyclePhase`
+  returned `passed` for both `parallel` and `next-turn` (the run manifest's declared `mode`
+  matched `next-turn`); `judgeM3A` also returned `passed` on this same run (4 channel-A pairs, all
+  six per-pair booleans true), reconfirming the 2.1.267 M3-A pass on genuinely different traffic.
+  `tests/probes/fixture-writer.ts` narrowed exactly `lifecycle.parallel: passed` and
+  `lifecycle["next-turn"]: passed` into
+  [../../tests/fixtures/capabilities/claude-code-2.1.267.json](../../tests/fixtures/capabilities/claude-code-2.1.267.json),
+  with one `diagnostics` entry per key naming run `next-turn-jFdsmI`. `status`, `M10`,
+  `M10-freshness` and the three remaining lifecycle phases (`resume`, `compaction`, `nested`) stay
+  `pending` -- this run never declared or exercised them -- so the alternate slot stays closed in
+  production until M10 itself and the remaining phases are measured for this version.
+- **M10-freshness confirmed pending again on the next-turn run, same root cause as before, not a
+  new gap.** [verified] direct read of `tests/probes/.runs/next-turn-jFdsmI/capture`: zero
+  instance-fetch/delegation-register/delegation-consume/delegation-replay files were recorded
+  despite `PROBE_FRESHNESS_HOOK=production`; `judgeM10Freshness` returned `pending` with
+  `freshness-no-records`, identical in shape to `handler-yYv981` (see above) -- the same
+  `src/transport/claude-hook.ts` bootstrap limitation (`resolveTrustedStart` always returns
+  `freshDelegation: false`) reconfirmed on a second, independent real-client run, now including
+  one where every child made two requests. **What M10 (the probe itself, not the lifecycle
+  phases) still needs**: a real `resolveTrustedStart` producer in the production bootstrap that
+  can actually issue a fresh-delegation envelope before a child's first request, so
+  `native-claude-handler.ts`'s existing production-hook wiring
+  (`instance-fetch`/`delegation-register`/`delegation-consume`/`delegation-replay` capture,
+  already exercised twice now with zero records both times) has something real to register and
+  consume. Until that producer exists, no run through this probe -- `handler` or `next-turn` --
+  can move `M10-freshness` past `pending`, regardless of how many requests a child makes.
+
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

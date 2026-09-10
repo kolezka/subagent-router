@@ -166,13 +166,41 @@ test("SUBAGENT_ROUTER_SECRET is assigned exactly once, and only inside the handl
 
   // The same guard text also opens the (unrelated) hook.sh-selection branch earlier in the
   // file; lastIndexOf targets the later, env -i-selection branch this fix actually added.
-  const guardIndex = script.lastIndexOf('if [ "$MODE" = "handler" ] && [ "$FRESHNESS_HOOK" = "production" ]; then');
+  const guardIndex = script.lastIndexOf('if is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then');
   const elseIndex = script.indexOf("\nelse\n", guardIndex);
   const secretIndex = script.indexOf("SUBAGENT_ROUTER_SECRET=");
   expect(guardIndex).toBeGreaterThan(-1);
   expect(elseIndex).toBeGreaterThan(guardIndex);
   expect(secretIndex).toBeGreaterThan(guardIndex);
   expect(secretIndex).toBeLessThan(elseIndex); // inside the handler+production branch, not after it
+});
+
+test("next-turn mode is accepted at mode validation (fails later at fake-client version observation, same as handler mode would)", () => {
+  // next-turn shares handler mode's is_handler_like branch, which needs a real `claude --version`
+  // to observe the client version before it can start the bun fixture. This fixture's fake
+  // client understands no flags and prints no version, so the run fails there -- never at mode
+  // validation. That is enough to prove the case statement accepts "next-turn" without needing a
+  // real claude binary or bun in this harness (mirrors why handler mode itself is never run
+  // end-to-end here either; see the structural tests below).
+  const { result } = runCopy("next-turn");
+  expect(result.stderr ?? "").not.toMatch(/unknown mode/i);
+  expect(result.stdout ?? "").toContain("FAIL: could not observe client version");
+});
+
+test("next-turn mode's structural additions are present and scoped to next-turn, never handler", () => {
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  expect(script).toContain("simple|delegate|handler|next-turn");
+  expect(script).toContain("is_handler_like");
+  expect(script).toContain("PROBE_CHILD_READ_FILE");
+  expect(script).toContain('CHILD_TOOLS_LINE="[Read]"');
+  expect(script).toContain('ALLOW_JSON=\'["Agent", "Read"]\'');
+
+  // The two mode-specific additions are gated on the literal mode, never on is_handler_like:
+  // handler mode itself must still get tools: [] and no Read in the allow list.
+  const toolsGuardIndex = script.indexOf('if [ "$MODE" = "next-turn" ]; then\n  CHILD_TOOLS_LINE="[Read]"');
+  const allowGuardIndex = script.indexOf('if [ "$MODE" = "next-turn" ]; then\n  ALLOW_JSON=');
+  expect(toolsGuardIndex).toBeGreaterThan(-1);
+  expect(allowGuardIndex).toBeGreaterThan(-1);
 });
 
 test("launcher refuses an unknown mode before touching the filesystem", () => {

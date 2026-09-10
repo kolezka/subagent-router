@@ -305,6 +305,100 @@ describe('channel-A handler fixture', () => {
   });
 });
 
+describe('channel-A handler fixture: forced two-request child flow (childReadFilePath, opt-in)', () => {
+  function jsonRequestWithHeaders(path: string, body: unknown, headers: Record<string, string>): Request {
+    return new Request(`http://router.local${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+  }
+
+  // Real Anthropic-shaped child continuation turn: the original marker-bearing user message,
+  // then the assistant's forced tool_use, then the user's tool_result for it. Mirrors what a
+  // real client sends after executing a tool the fixture told it to call.
+  function childContinuationRequest(alias: string, taskPrompt: string, toolUseId: string, resultText: string): Record<string, unknown> {
+    const base = buildChildRequest(alias, taskPrompt) as { messages: unknown[] };
+    return {
+      ...base,
+      messages: [
+        ...base.messages,
+        { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: { file_path: '/tmp/probe-child-read-fixture.txt' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: [{ type: 'text', text: resultText }] }] },
+      ],
+    };
+  }
+
+  test('the default (no childReadFilePath) keeps one request per child, immediate echo -- unchanged from before this option existed', async () => {
+    const { handler, seen } = await createHandlerFixture();
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const res = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agent.alias, 'task'), { 'x-claude-code-agent-id': 'agent-default' }));
+    const events = await decodeSse(res);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(0);
+    expect(textOf(events)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+    expect(seen).toHaveLength(1);
+  });
+
+  test('a routed child gets a tool_use for Read on its first request, and the real echo only after answering it with a matching tool_result -- two forwarded requests, one stable upstream model, keyed by agent id', async () => {
+    const { handler, seen } = await createHandlerFixture({ childReadFilePath: '/tmp/probe-child-read-fixture.txt' });
+    const agent = CHANNEL_A_AGENTS[1]!;
+    const agentId = 'agent-forced-two-request';
+
+    const firstRes = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agent.alias, 'task'), { 'x-claude-code-agent-id': agentId }));
+    expect(firstRes.status).toBe(200);
+    const firstEvents = await decodeSse(firstRes);
+    const firstToolUses = reassembleToolUseBlocks(firstEvents);
+    expect(firstToolUses).toHaveLength(1); // first reply is a tool_use, never the echo directly
+    expect(firstToolUses[0]?.name).toBe('Read');
+    expect(firstToolUses[0]?.input.file_path).toBe('/tmp/probe-child-read-fixture.txt');
+    expect(stopReasonOf(firstEvents)).toBe('tool_use');
+
+    const secondRes = await handler(
+      jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agent.alias, 'task', firstToolUses[0]!.id, 'file contents'), { 'x-claude-code-agent-id': agentId }),
+    );
+    expect(secondRes.status).toBe(200);
+    const secondEvents = await decodeSse(secondRes);
+    expect(reassembleToolUseBlocks(secondEvents)).toHaveLength(0); // no third round; the loop ends here
+    expect(stopReasonOf(secondEvents)).toBe('end_turn');
+    expect(textOf(secondEvents)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`); // real echo, only on the second request
+
+    expect(seen).toHaveLength(2); // two requests actually forwarded upstream, not one
+    expect(seen[0]?.body.model).toBe(agent.upstreamModel);
+    expect(seen[1]?.body.model).toBe(agent.upstreamModel); // stable upstream model across both requests, no drift
+  });
+
+  test('a tool_result for a foreign or stale tool_use id is treated as a fresh first request, never a shortcut to the echo', async () => {
+    const { handler, seen } = await createHandlerFixture({ childReadFilePath: '/tmp/probe-child-read-fixture.txt' });
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const agentId = 'agent-wrong-tool-result';
+
+    await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agent.alias, 'task'), { 'x-claude-code-agent-id': agentId }));
+    const res = await handler(
+      jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agent.alias, 'task', 'toolu_totally_unrelated', 'file contents'), { 'x-claude-code-agent-id': agentId }),
+    );
+    const events = await decodeSse(res);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(1); // re-issues a tool_use, does not fall through to the echo
+    expect(seen).toHaveLength(2);
+    expect(seen.every((r) => r.body.model === agent.upstreamModel)).toBe(true);
+  });
+
+  test('two different agent ids are tracked independently: one answering its tool_use never unlocks the echo for the other', async () => {
+    const { handler } = await createHandlerFixture({ childReadFilePath: '/tmp/probe-child-read-fixture.txt' });
+    const [agentAlpha, agentBeta] = CHANNEL_A_AGENTS;
+
+    const alphaFirst = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agentAlpha!.alias, 'task-a'), { 'x-claude-code-agent-id': 'agent-alpha' }));
+    const alphaToolUseId = reassembleToolUseBlocks(await decodeSse(alphaFirst))[0]!.id;
+
+    // Beta answers ALPHA's tool_use id under its OWN agent id header -- must not be accepted.
+    const betaWithAlphasId = await handler(
+      jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agentBeta!.alias, 'task-b', alphaToolUseId, 'file contents'), { 'x-claude-code-agent-id': 'agent-beta' }),
+    );
+    const betaEvents = await decodeSse(betaWithAlphasId);
+    expect(reassembleToolUseBlocks(betaEvents)).toHaveLength(1); // beta gets its OWN fresh tool_use, not the echo
+    expect(textOf(betaEvents)).not.toBe(`CHILD_SAW_MODEL=${agentBeta!.upstreamModel}`);
+  });
+});
+
 describe('channel-A handler fixture: measured native context layout (stage 2a amendment)', () => {
   const OBSERVED_VERSION = '9.9.9'; // synthetic; the launcher passes the real observed one
 

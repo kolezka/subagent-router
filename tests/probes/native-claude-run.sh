@@ -7,9 +7,14 @@ set -uo pipefail
 
 MODE="${1:-simple}"
 case "$MODE" in
-  simple|delegate|handler) ;;
-  *) echo "FAIL: unknown mode '$MODE' (expected simple, delegate, or handler)" >&2; exit 2 ;;
+  simple|delegate|handler|next-turn) ;;
+  *) echo "FAIL: unknown mode '$MODE' (expected simple, delegate, handler, or next-turn)" >&2; exit 2 ;;
 esac
+# handler and next-turn share the same bun-driven fixture (native-claude-handler.ts) and the
+# same isolation setup. next-turn additionally forces each routed child to issue two upstream
+# requests (see PROBE_CHILD_READ_FILE below) and declares mode "next-turn" in the run manifest;
+# handler mode stays exactly as before.
+is_handler_like() { [ "$MODE" = "handler" ] || [ "$MODE" = "next-turn" ]; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 mkdir -p "$ROOT/tests/probes/.runs" || exit 1
 RUN="$(mktemp -d "$ROOT/tests/probes/.runs/$MODE-XXXXXX")" || exit 1
@@ -18,7 +23,7 @@ CFG="$RUN/config"
 WORK="$RUN/work"
 mkdir -p "$HOMEDIR" "$CFG" "$WORK" "$RUN/capture"
 
-if [ "$MODE" = "handler" ]; then
+if is_handler_like; then
   # The handler binds its alternate marker slot to the exact client version it is told
   # about, so observe that version first, from the same isolated environment the real
   # run below uses. No network: --version answers locally.
@@ -33,11 +38,23 @@ if [ "$MODE" = "handler" ]; then
   CLIENT_VERSION="$(printf '%s' "$VERSION_OUT" | /usr/bin/grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | /usr/bin/head -1)"
   [ -z "$CLIENT_VERSION" ] && { echo "FAIL: could not observe client version"; exit 1; }
   printf '%s\n' "$CLIENT_VERSION" > "$RUN/capture/client-version"
-  # Real production createHandler + scripted mock upstream (Bun), not the plain
-  # Node gateway: this is how channel A (the parent's explicit model= marker) gets
-  # exercised end to end against a real native client.
-  PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
-    bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
+  if [ "$MODE" = "next-turn" ]; then
+    # Only next-turn forces the two-request-per-child flow: a file inside the CLI's own
+    # sandboxed WORK dir that the fixture's forced tool_use (Read) points the real client's
+    # Read tool at, so the second request is a genuine tool_result round trip, not a fake one.
+    PROBE_CHILD_READ_FILE="$WORK/probe-child-read.txt"
+    printf 'probe-child-read-notice\n' > "$PROBE_CHILD_READ_FILE"
+    PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
+      PROBE_CHILD_READ_FILE="$PROBE_CHILD_READ_FILE" \
+      bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
+  else
+    # Real production createHandler + scripted mock upstream (Bun), not the plain
+    # Node gateway: this is how channel A (the parent's explicit model= marker) gets
+    # exercised end to end against a real native client. Byte-identical to before
+    # next-turn mode existed: no PROBE_CHILD_READ_FILE, one request per child.
+    PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
+      bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
+  fi
 else
   PROBE_OUT="$RUN/capture" PROBE_MODE="$MODE" \
     node "$ROOT/tests/probes/native-claude-gateway.mjs" >"$RUN/gateway.log" 2>&1 &
@@ -51,10 +68,16 @@ PORT="$(cat "$RUN/capture/port" 2>/dev/null)"
 
 # Minimal config so the CLI treats this as an onboarded, trusted, non-interactive workspace.
 # Narrow allow-list ONLY for the Task tool in this throwaway config. The permission
-# system stays ON; child agents declare `tools: []` so they can execute nothing.
-cat >"$CFG/settings.json" <<'JSON'
+# system stays ON; child agents declare `tools: []` so they can execute nothing, except
+# next-turn mode which adds the harmless `Read` tool (see PROBE_CHILD_READ_FILE above).
+if [ "$MODE" = "next-turn" ]; then
+  ALLOW_JSON='["Agent", "Read"]'
+else
+  ALLOW_JSON='["Agent"]'
+fi
+cat >"$CFG/settings.json" <<JSON
 { "includeCoAuthoredBy": false,
-  "permissions": { "allow": ["Agent"], "deny": ["Bash", "Write", "Edit", "WebFetch"] } }
+  "permissions": { "allow": $ALLOW_JSON, "deny": ["Bash", "Write", "Edit", "WebFetch"] } }
 JSON
 cat >"$HOMEDIR/.claude.json" <<JSON
 { "hasCompletedOnboarding": true, "bypassPermissionsModeAccepted": true,
@@ -64,12 +87,19 @@ JSON
 
 # Two child agents with DIFFERENT models + explicit marker, per the routing question.
 mkdir -p "$CFG/agents"
-if [ "$MODE" = "handler" ]; then
+if is_handler_like; then
   # Channel A selects the model via the first-line marker, not agent frontmatter:
   # both fixture agents must inherit so the marker is what's actually being tested.
   AGENT_PAIRS="alpha:inherit beta:inherit"
 else
   AGENT_PAIRS="alpha:haiku beta:sonnet"
+fi
+# next-turn's forced tool_use needs an actual tool the child is allowed to call; handler mode
+# (and simple/delegate) keep tools: [] exactly as before -- their children can execute nothing.
+if [ "$MODE" = "next-turn" ]; then
+  CHILD_TOOLS_LINE="[Read]"
+else
+  CHILD_TOOLS_LINE="[]"
 fi
 for pair in $AGENT_PAIRS; do
   name="native-probe-${pair%%:*}"; model="${pair##*:}"
@@ -78,7 +108,7 @@ for pair in $AGENT_PAIRS; do
 name: $name
 description: Local probe agent $name
 model: $model
-tools: []
+tools: $CHILD_TOOLS_LINE
 ---
 Reply with exactly: DONE-$name
 MD
@@ -86,12 +116,12 @@ done
 
 # SubagentStart hook: capture whatever payload the CLI actually delivers.
 # Default (fake): a static script that echoes a canned marker, never a real measurement.
-# Opt-in production hook (handler mode only, PROBE_FRESHNESS_HOOK=production): tee the raw
-# event to the same capture file the fake hook writes, then feed it to the REAL published
+# Opt-in production hook (handler or next-turn mode, PROBE_FRESHNESS_HOOK=production): tee the
+# raw event to the same capture file the fake hook writes, then feed it to the REAL published
 # claude-hook entrypoint (src/transport/claude-hook.ts) pointed at THIS run's own front
 # server, so M10-freshness measures the real hook, never a stand-in.
 FRESHNESS_HOOK="${PROBE_FRESHNESS_HOOK:-fake}"
-if [ "$MODE" = "handler" ] && [ "$FRESHNESS_HOOK" = "production" ]; then
+if is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then
   cat >"$RUN/router-config.json" <<JSON
 { "version": 1,
   "modelSource": { "sourceId": "native-probe-gateway", "baseUrlEnv": "SUBAGENT_ROUTER_UNUSED_MODELS_URL", "endpointPath": "/v1/models", "headersEnv": [], "timeoutMs": 10000, "fetchLimit": 1000, "staleAfterSeconds": 86400 },
@@ -128,11 +158,12 @@ PY
 
 # Run declaration: which lifecycle phases this run means to exercise (never inferred, always
 # explicit -- see tests/probes/evidence-m10.ts's readRunManifest). native-claude-run.sh's own
-# scenarios (simple/delegate/handler) never exercise next-turn/resume/compaction/nested/parallel
-# on purpose, so this defaults to declaring nothing; an operator driving a real lifecycle
+# scenarios (simple/delegate) never exercise next-turn/resume/compaction/nested/parallel on
+# purpose, so this defaults to declaring nothing; an operator driving a real lifecycle
 # transition sets PROBE_PHASES_EXERCISED (comma-separated) before invoking this script. Only
-# handler mode writes NNN-profile.json etc. at all, so only handler mode gets a manifest.
-if [ "$MODE" = "handler" ]; then
+# handler-like (handler, next-turn) modes write NNN-profile.json etc. at all, so only they get
+# a manifest; the manifest's own "mode" field is whichever of the two was actually invoked.
+if is_handler_like; then
   PHASES_JSON="$(printf '%s' "${PROBE_PHASES_EXERCISED:-}" | python3 -c 'import json,sys
 s = sys.stdin.read().strip()
 print(json.dumps([p for p in s.split(",") if p]))')"
@@ -146,14 +177,15 @@ TIMEOUT="$(command -v timeout || command -v gtimeout)"
 PROMPT="${PROBE_PROMPT:-Say PARENT_ROUNDTRIP_OK}"
 echo "=== RUN mode=$MODE port=$PORT run=$RUN"
 # PWD alone does not change the client's working directory.
-# SUBAGENT_ROUTER_SECRET is only ever added to the client's env for handler mode with the
-# production freshness hook (the only path that needs it, to sign a FreshDelegationEnvelope
-# proof). simple and delegate mode must stay byte-identical to before this var existed: it may
-# not appear in their env -i invocation, not even set to an empty value. A bash array would be
-# the tidy way to add one conditional assignment, but /bin/bash on this machine is 3.2.57, where
-# "${ARR[@]}" on a never-populated array throws "unbound variable" under `set -u` -- confirmed
-# empirically, not assumed -- so this uses a duplicated branch instead of an array trick.
-if [ "$MODE" = "handler" ] && [ "$FRESHNESS_HOOK" = "production" ]; then
+# SUBAGENT_ROUTER_SECRET is only ever added to the client's env for handler or next-turn mode
+# with the production freshness hook (the only path that needs it, to sign a
+# FreshDelegationEnvelope proof). simple and delegate mode must stay byte-identical to before
+# this var existed: it may not appear in their env -i invocation, not even set to an empty
+# value. A bash array would be the tidy way to add one conditional assignment, but /bin/bash on
+# this machine is 3.2.57, where "${ARR[@]}" on a never-populated array throws "unbound variable"
+# under `set -u` -- confirmed empirically, not assumed -- so this uses a duplicated branch
+# instead of an array trick.
+if is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then
   (
     cd "$WORK" || exit 1
     env -i \

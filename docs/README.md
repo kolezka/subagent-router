@@ -41,6 +41,22 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   `pending` z zerowymi licznikami rejestracji, zgodnie
   z przewidywaniem w [transport/GAPS.md](transport/GAPS.md). To nie jest promocja wsparcia; szczegóły
   w [transport/GAPS.md](transport/GAPS.md).
+- Pierwszy realny pomiar faz `parallel` i `next-turn` (2026-09-10, realny klient `claude` 2.1.267,
+  nowy tryb uruchomieniowy `next-turn` w `tests/probes/native-claude-run.sh`, przebieg
+  `tests/probes/.runs/next-turn-jFdsmI`, osądzony przez `tests/probes/judge-run.ts`): tryb
+  `next-turn` nadaje obu agentom-sondom narzędzie `Read` i wymusza na każdym dziecku drugie
+  żądanie (wymuszony `tool_use` zamiast natychmiastowego echa na pierwszym żądaniu, prawdziwy
+  `tool_result` dopiero uruchamia echo), dzięki czemu oba agenty wykonały po dwa przesłane dalej
+  żądania każdy, na stabilnym modelu docelowym (bez dryfu), a ich żądania faktycznie się
+  przeplotły w kolejności sekwencji. `judgeLifecyclePhase` zwrócił `passed` zarówno dla `parallel`,
+  jak i dla `next-turn` (tryb w manifeście przebiegu zgodny z `next-turn`); `judgeM3A` również
+  zwrócił `passed` na tym samym przebiegu. `fixture-writer.ts` dopisał wyłącznie
+  `lifecycle.parallel: passed` i `lifecycle["next-turn"]: passed` do
+  [../tests/fixtures/capabilities/claude-code-2.1.267.json](../tests/fixtures/capabilities/claude-code-2.1.267.json);
+  `status`, `M10`, `M10-freshness` oraz pozostałe trzy fazy (`resume`, `compaction`, `nested`)
+  nadal `pending`. `M10-freshness` ponownie zmierzył się jako `pending` z zerowymi licznikami
+  rejestracji -- ten sam, już udokumentowany brak w bootstrapie, nie nowy problem. To nie jest
+  promocja wsparcia; szczegóły w [transport/GAPS.md](transport/GAPS.md).
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 

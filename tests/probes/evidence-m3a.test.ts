@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { extractM3AEvidence, judgeM3A, readRunCapture } from './evidence-m3a';
+import { diffCapturedAgainstReal, extractM3AEvidence, judgeM3A, readRunCapture } from './evidence-m3a';
 import { writeSyntheticRunCapture } from '../support/native-run-capture';
 
 const FIXTURES = join(import.meta.dir, '..', 'fixtures', 'capabilities');
@@ -77,6 +77,28 @@ describe('evidence-m3a: readRunCapture + extractM3AEvidence + judgeM3A', () => {
     expect(evidence.scaffoldDeclared).toBe(false);
     expect(evidence.diagnostics.some((d) => d.includes('parentPromptPosition'))).toBe(true);
     expect(judgeM3A(evidence)).toBe('pending');
+  });
+
+  test('diagnostics-provenance-never-counts-as-divergence', async () => {
+    // After the writer narrows one probe it appends a diagnostics line to the real fixture; a
+    // later run of the same version carries the pre-narrowing copy. Provenance must not block
+    // every later measurement of that version.
+    const captured: Record<string, unknown> = {
+      client: 'claude-code',
+      version: '2.1.267',
+      status: 'pending',
+      probes: { 'M3-A': 'passed' },
+      parentPromptPosition: 'after-native-context-v1',
+      diagnostics: ['measured:M3-A=passed;run=earlier-run;at=2026-09-10T00:00:00.000Z'],
+    };
+    const realNow: Record<string, unknown> = {
+      ...captured,
+      parentPromptPosition: 'first-text',
+      diagnostics: [...(captured.diagnostics as string[]), 'measured:lifecycle.parallel=passed;run=later-run;at=2026-09-10T01:00:00.000Z'],
+    };
+    const diverged = diffCapturedAgainstReal(captured, realNow);
+    expect(diverged).toContain('parentPromptPosition');
+    expect(diverged).not.toContain('diagnostics');
   });
 
   test('pending-when-no-child-pairs', async () => {

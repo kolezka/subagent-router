@@ -155,6 +155,17 @@ export interface HandlerFixtureOptions {
   onUpstreamRequest?: (record: RecordedUpstreamRequest) => void;
   // Exact profile injected into createHandler. Defaults to the legacy-slot SYNTHETIC_PROFILE.
   profile?: CapabilityProfile;
+  // Opt-in: when set, a routed child's FIRST request is answered with a tool_use for the
+  // harmless `Read` tool (input file_path = this path) instead of the immediate echo, forcing
+  // the real CLI to make a SECOND request once it has executed that tool and can reply with a
+  // tool_result. Only the SECOND request (carrying a tool_result for the id this fixture itself
+  // issued) gets the real echo. Absent (the default), behavior is byte-identical to before this
+  // option existed: one request, immediate echo -- every existing hermetic test relies on that.
+  // Real native-claude-run.sh runs pass a path inside the CLI's own sandboxed WORK directory that
+  // the launcher actually created, since the real client's own Read tool executes for real
+  // against it; hermetic tests never execute a real Read tool (they drive `handler` directly), so
+  // any string works for them.
+  childReadFilePath?: string;
 }
 
 export interface HandlerFixture {
@@ -166,6 +177,10 @@ const KNOWN_UPSTREAM_MODELS = new Set<string>(CHANNEL_A_AGENTS.map((a) => a.upst
 
 interface PendingToolUse {
   upstreamModel: string;
+}
+
+interface PendingChildToolUse {
+  toolUseId: string;
 }
 
 function sseFrom(events: ReadonlyArray<readonly [string, Record<string, unknown>]>): string {
@@ -207,6 +222,24 @@ function agentToolUseSse(model: unknown, pendingToolUses: Map<string, PendingToo
   events.push(['message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 20 } }]);
   events.push(['message_stop', { type: 'message_stop' }]);
   return sseFrom(events);
+}
+
+// Scripts a real Anthropic tool-use response for the harmless `Read` tool, streamed the same
+// single-chunk way agentToolUseSse streams its Agent tool_use blocks. Forces the real CLI to make
+// a SECOND request for this same child once it has actually executed Read and can reply with a
+// tool_result -- the only way to make a child issue two upstream requests (a text reply with
+// stop_reason 'end_turn' would end the child's turn after just one).
+function childToolUseSse(model: unknown, toolUseId: string, filePath: string): string {
+  const id = `msg_probe_${Math.random().toString(36).slice(2, 10)}`;
+  const input = { file_path: filePath };
+  return sseFrom([
+    ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 8, output_tokens: 1 } } }],
+    ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: toolUseId, name: 'Read', input: {} } }],
+    ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } }],
+    ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+    ['message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 10 } }],
+    ['message_stop', { type: 'message_stop' }],
+  ]);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -299,6 +332,7 @@ function parentFinalText(body: Record<string, unknown>, pendingToolUses: Map<str
 export async function createHandlerFixture(options: HandlerFixtureOptions = {}): Promise<HandlerFixture> {
   const seen: RecordedUpstreamRequest[] = [];
   const pendingToolUses = new Map<string, PendingToolUse>();
+  const pendingChildToolUseByAgent = new Map<string, PendingChildToolUse>();
 
   const upstreamFetch: FetchLike = async (request) => {
     const raw = await request.text();
@@ -327,7 +361,28 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
     // see this request, so that block can never be the signal here.
     const isRoutedChild = typeof body.model === 'string' && KNOWN_UPSTREAM_MODELS.has(body.model);
     if (isRoutedChild) {
-      return new Response(textSse(body.model, `CHILD_SAW_MODEL=${String(body.model)}`), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      const childEcho = () => new Response(textSse(body.model, `CHILD_SAW_MODEL=${String(body.model)}`), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      // Default (childReadFilePath absent): unchanged from before this option existed -- one
+      // request, immediate echo. Every existing hermetic test relies on exactly this.
+      if (options.childReadFilePath === undefined) return childEcho();
+
+      // Opt-in second-request flow, keyed by x-claude-code-agent-id (never by request order or
+      // count): the FIRST request from this agent gets a tool_use forcing a real second request;
+      // only a SECOND request carrying a tool_result for the id this fixture itself issued gets
+      // the echo. Anything else (no header, or a tool_result for a stale/foreign id) is treated
+      // as a fresh first request, never a way to skip straight to the echo.
+      const agentId = record.headers['x-claude-code-agent-id'];
+      const pendingChildToolUse = agentId !== undefined ? pendingChildToolUseByAgent.get(agentId) : undefined;
+      if (pendingChildToolUse !== undefined) {
+        const answered = extractToolResults(body).some((result) => result.toolUseId === pendingChildToolUse.toolUseId);
+        if (answered) {
+          pendingChildToolUseByAgent.delete(agentId as string);
+          return childEcho();
+        }
+      }
+      const toolUseId = `toolu_child_${agentId ?? 'unknown'}_${Math.random().toString(36).slice(2, 8)}`;
+      if (agentId !== undefined) pendingChildToolUseByAgent.set(agentId, { toolUseId });
+      return new Response(childToolUseSse(body.model, toolUseId, options.childReadFilePath), { status: 200, headers: { 'content-type': 'text/event-stream' } });
     }
 
     // A parent turn that already carries its children's tool_results must end
@@ -438,6 +493,13 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   const registeredEnvelopeByAgent = new Map<string, Record<string, unknown>>();
   const consumeInferredForAgent = new Set<string>();
 
+  // Opt-in (the launcher's next-turn mode only, empty/unset for handler mode): forces every
+  // routed child to make a second upstream request. Empty string is treated the same as unset
+  // (native-claude-run.sh always passes this env var for the shared handler/next-turn dispatch
+  // branch, blank for handler mode, so a blank value is never a deliberate request for the
+  // two-request behavior).
+  const childReadFilePath = process.env.PROBE_CHILD_READ_FILE || undefined;
+
   const { handler } = await createHandlerFixture({
     onUpstreamRequest: (record) => {
       rec('post-handler-upstream', record);
@@ -465,6 +527,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
       }
     },
     profile,
+    ...(childReadFilePath !== undefined ? { childReadFilePath } : {}),
   });
   liveHandler = handler;
 

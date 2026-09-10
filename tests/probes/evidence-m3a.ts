@@ -279,6 +279,9 @@ export function diffCapturedAgainstReal(captured: Record<string, unknown>, real:
   const diverged: string[] = [];
   for (const [path, value] of capturedFlat) {
     if (path === 'client' || path === 'version') continue; // never a declarable override; checked separately by construction below.
+    // Provenance only: the writer appends a diagnostics line per narrowed key, so a run captured
+    // before a later narrowing legitimately carries a shorter list. It states no capability.
+    if (path === 'diagnostics') continue;
     if (JSON.stringify(value) !== JSON.stringify(realFlat.get(path))) diverged.push(path);
   }
   return diverged;
