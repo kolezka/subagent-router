@@ -187,5 +187,61 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   exits with its own code instead of being masked by the second; `resume` refuses
   `PROBE_FRESHNESS_HOOK=production` up front because its two `env -i` invocations carry no
   `SUBAGENT_ROUTER_SECRET`.
+- **`compaction` lifecycle measured: print mode never compacted under any controllable knob, so
+  the phase stays `pending` (honest, not faked).** [verified] direct read of three read-only probe
+  runs against the real `claude` 2.1.267 binary (`tests/probes/.runs/compaction-probe-8A67hu`,
+  `compaction-probe-mTVmOA`, `compaction-probe-YoOZas`, 2026-09-10, a throwaway
+  `next-turn`-shaped driver in `tests/probes/redcheck-tmp/` that was removed after these runs): the
+  driver copied `native-claude-run.sh` `next-turn` mode (same `env -i` allowlist, isolated
+  HOME/CLAUDE_CONFIG_DIR, the bun handler fixture with `PROBE_CHILD_READ_FILE` so each child makes
+  two requests, fake auth token, loopback base URL) and added exactly one compaction knob to the
+  client env per run: `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200` (run `8A67hu`),
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000` (run `mTVmOA`), and
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000` plus `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1` (run `YoOZas`).
+  Every run exited 0 and the CLI still decoded `PARENT_FINAL_OK` (each child made exactly two
+  routed requests, no drift), but not one pre-handler request body, post-handler upstream body, or
+  isolated transcript line (`config/projects/*/**/*.jsonl`) contained the `compact_boundary`
+  substring: marker count 0 across all three runs. `judgeLifecyclePhase('compaction')` returned
+  `pending` with `compaction-requires-observed-compact-boundary`, as expected. The
+  `DISABLE_AUTO_COMPACT` knob was not tried (it disables, not enables). `compaction` stays
+  `pending` in `tests/fixtures/capabilities/claude-code-2.1.267.json` until either a client
+  version emits a `compact_boundary` marker under a controllable setting, or the judge gains a
+  compaction-specific signal other than a later request carrying that marker (an operator
+  decision, RED first, not made here).
+- **`nested` lifecycle: the probe mode exists, but the only real run so far hit a client
+  auto-update to 2.1.268 and could not route any child, so the phase stays `pending` for 2.1.267
+  (unmeasured) and 2.1.268 (fail-closed).** [verified] direct read of
+  `tests/probes/.runs/nested-PogPYc` (2026-09-10, `PROBE_PROFILE_BASE=real
+  PROBE_PHASES_EXERCISED=nested tests/probes/native-claude-run.sh nested`): a new `nested`
+  launcher mode grants exactly `native-probe-alpha` the `Agent` tool (beta and every other mode
+  keep their tools line) and the fixture opt-in `PROBE_NESTED_AGENT=native-probe-alpha`
+  (`nestedDelegatingAgent` in `native-claude-handler.ts`) answers alpha's first routed request with
+  one scripted Agent `tool_use` delegating to beta (id `toolu_nested_0`, keyed by
+  `x-claude-code-agent-id`), so a grandchild request can be measured for
+  `x-claude-code-parent-agent-id`; alpha's second request carrying that `tool_result` gets the
+  echo. Hermetic coverage: judge tests for the `nested` branch (pass with the header naming
+  another routed child, pending without it, pending when undeclared, failed on drift), four
+  fixture tests, two launcher tests. The run itself observed `claude --version` 2.1.268: the
+  `/Users/me/.local/bin/claude` symlink had been repointed from 2.1.267 to 2.1.268 by the client's
+  own updater earlier that evening (the launcher sets `DISABLE_AUTOUPDATER=1` only for its own
+  isolated invocations; the operator's interactive sessions are not covered). No
+  `claude-code-2.1.268.json` fixture existed, so `loadCapabilityProfile` returned the synthetic
+  newer-version profile (`capability-newer-version-unmeasured`, every probe `pending`), the scaffold
+  then overrode it for the run, and the handler bound the alternate slot to version 2.1.268. Both
+  children still got `422 missing-selection`, the parent decoded `PARENT_MISMATCH`, and the capture
+  holds two child pre-handler requests but zero child upstream requests: under 2.1.268 a child's
+  first user message carries THREE text blocks (block 0: the operator's instruction files wrapped
+  in `<system-reminder>`, block 1: the dated context scaffold that 2.1.267 put in block 0, block 2:
+  the delegation prompt with the channel-A marker on its first line). The alternate slot requires
+  exactly two blocks with the scaffold in block 0, so it correctly fell back to the legacy slot,
+  which never sees the marker. This is the fail-closed behaviour the spec requires, not a probe
+  defect, and it means the 2.1.267 M3-A pass does not carry over. `judgeLifecyclePhase('nested')`
+  returned `pending` with `nested-requires-observed-parent-agent-id-header`; whether 2.1.268 (or
+  2.1.267) sends that header on a grandchild request is still unmeasured, because no grandchild
+  was ever spawned. A new all-pending `claude-code-2.1.268.json` fixture is added so the next run
+  starts from a real fixture; nothing in it or in the 2.1.267 fixture changed by hand. Next: pin
+  the launcher to an explicit versioned binary so a run can target 2.1.267 deliberately, rerun
+  `nested` there, and treat the 2.1.268 three-block layout as a new M3-A measurement (a
+  `parentPromptPosition` value for that layout, RED first) before any 2.1.268 probe can pass.
 
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

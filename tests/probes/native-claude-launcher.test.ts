@@ -250,6 +250,40 @@ test("resume mode rejects PROBE_FRESHNESS_HOOK=production inside the resume bloc
   expect(rejectIndex).toBeLessThan(script.lastIndexOf('if is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then'));
 });
 
+test("nested mode is accepted at mode validation (fails later at fake-client version observation, same as handler mode would)", () => {
+  // nested shares handler mode's is_handler_like branch, which needs a real `claude --version`
+  // to observe the client version before it can start the bun fixture. This fixture's fake
+  // client understands no flags and prints no version, so the run fails there -- never at mode
+  // validation. That is enough to prove the case statement accepts "nested" without needing a
+  // real claude binary or bun in this harness (mirrors the next-turn and resume tests above).
+  const { result } = runCopy("nested");
+  expect(result.stderr ?? "").not.toMatch(/unknown mode/i);
+  expect(result.stdout ?? "").toContain("FAIL: could not observe client version");
+});
+
+test("nested mode's structural additions are present and scoped to nested, never handler, next-turn, or resume", () => {
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  expect(script).toContain("simple|delegate|handler|next-turn|resume|nested");
+  expect(script).toContain("PROBE_NESTED_AGENT"); // handler-fixture opt-in for the one-shot nested delegation
+
+  // The nested dispatch branch (PROBE_NESTED_AGENT wiring) must be gated on the literal mode.
+  const nestedDispatchGuard = script.lastIndexOf('elif [ "$MODE" = "nested" ]; then');
+  expect(nestedDispatchGuard).toBeGreaterThan(-1);
+  expect(script.indexOf('PROBE_NESTED_AGENT="native-probe-alpha"')).toBeGreaterThan(nestedDispatchGuard);
+
+  // The per-agent tools override: exactly native-probe-alpha gets [Agent], gated on the literal
+  // mode AND the agent name, so beta (and handler/next-turn/resume) keep tools: [].
+  const toolsOverrideGuard = script.indexOf('if [ "$MODE" = "nested" ] && [ "$name" = "native-probe-alpha" ]; then');
+  expect(toolsOverrideGuard).toBeGreaterThan(-1);
+  expect(script.indexOf('AGENT_TOOLS_LINE="[Agent]"')).toBeGreaterThan(toolsOverrideGuard);
+
+  // The [Agent] grant must never leak into the shared handler/next-turn/resume tools line: the
+  // only place it is assigned is inside the nested gate (the override guard above), so the
+  // shared CHILD_TOOLS_LINE stays "[Read]" (next-turn) or "[]" (everything else).
+  const agentGrantCount = script.match(/AGENT_TOOLS_LINE="\[Agent\]"/g) ?? [];
+  expect(agentGrantCount).toHaveLength(1);
+});
+
 test("launcher refuses an unknown mode before touching the filesystem", () => {
   const runsDir = join(fixtureProbesDir, ".runs");
   const before = existsSync(runsDir) ? readdirSync(runsDir) : [];

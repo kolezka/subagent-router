@@ -544,6 +544,91 @@ describe('channel-A handler fixture: resume re-delegation (resumeReDelegate, opt
   });
 });
 
+describe('channel-A handler fixture: nested delegation (nestedDelegatingAgent, opt-in)', () => {
+  function jsonRequestWithHeaders(path: string, body: unknown, headers: Record<string, string>): Request {
+    return new Request(`http://router.local${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+  }
+
+  // Real Anthropic-shaped child continuation turn for a nested Agent delegation: the original
+  // marker-bearing user message, then the assistant's forced Agent tool_use (the nested
+  // delegation), then the user's tool_result for it. Mirrors what a real client sends after
+  // executing the nested delegation the fixture told it to perform.
+  function nestedContinuationRequest(alias: string, taskPrompt: string, toolUseId: string, resultText: string): Record<string, unknown> {
+    const base = buildChildRequest(alias, taskPrompt) as { messages: unknown[] };
+    return {
+      ...base,
+      messages: [
+        ...base.messages,
+        { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: AGENT_TOOL_NAME, input: { subagent_type: CHANNEL_A_AGENTS[1]!.name } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: [{ type: 'text', text: resultText }] }] },
+      ],
+    };
+  }
+
+  test("with nestedDelegatingAgent set, the delegating child's first request gets exactly one Agent tool_use to beta with the smart marker and stop_reason tool_use", async () => {
+    const { handler } = await createHandlerFixture({ nestedDelegatingAgent: 'native-probe-alpha' });
+    const delegating = CHANNEL_A_AGENTS[0]!; // alpha routes to gateway/fast-worker, the one that delegates
+    const target = CHANNEL_A_AGENTS[1]!; // beta routes to gateway/smart-worker, the nested target
+
+    const res = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(delegating.alias, 'task'), { 'x-claude-code-agent-id': 'agent-alpha' }));
+    expect(res.status).toBe(200);
+    const events = await decodeSse(res);
+    const toolUses = reassembleToolUseBlocks(events);
+    expect(toolUses).toHaveLength(1); // exactly ONE nested delegation, never two
+    expect(toolUses[0]?.name).toBe(AGENT_TOOL_NAME);
+    expect(toolUses[0]?.input.subagent_type).toBe(target.name);
+    const prompt = toolUses[0]?.input.prompt as string;
+    expect(prompt.split('\n')[0]).toBe(markerLine(target.alias)); // smart marker selects beta
+    expect(stopReasonOf(events)).toBe('tool_use');
+  });
+
+  test("the delegating child's second request carrying the matching tool_result gets the echo", async () => {
+    const { handler, seen } = await createHandlerFixture({ nestedDelegatingAgent: 'native-probe-alpha' });
+    const delegating = CHANNEL_A_AGENTS[0]!;
+    const agentId = 'agent-alpha';
+
+    const firstRes = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(delegating.alias, 'task'), { 'x-claude-code-agent-id': agentId }));
+    const toolUseId = reassembleToolUseBlocks(await decodeSse(firstRes))[0]!.id;
+    expect(toolUseId).toBe('toolu_nested_0'); // deterministic id, keyed to the delegating child
+
+    const secondRes = await handler(
+      jsonRequestWithHeaders('/v1/messages', nestedContinuationRequest(delegating.alias, 'task', toolUseId, 'nested result'), { 'x-claude-code-agent-id': agentId }),
+    );
+    const secondEvents = await decodeSse(secondRes);
+    expect(reassembleToolUseBlocks(secondEvents)).toHaveLength(0); // no third round; the loop ends here
+    expect(stopReasonOf(secondEvents)).toBe('end_turn');
+    expect(textOf(secondEvents)).toBe(`CHILD_SAW_MODEL=${delegating.upstreamModel}`); // real echo, only on the second request
+
+    expect(seen).toHaveLength(2); // two requests actually forwarded upstream, not one
+    expect(seen[0]?.body.model).toBe(delegating.upstreamModel);
+    expect(seen[1]?.body.model).toBe(delegating.upstreamModel); // stable upstream model, no drift
+  });
+
+  test('a request from the other child gets the plain echo even with nestedDelegatingAgent set', async () => {
+    const { handler } = await createHandlerFixture({ nestedDelegatingAgent: 'native-probe-alpha' });
+    const other = CHANNEL_A_AGENTS[1]!; // beta, NOT the delegating agent
+
+    const res = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(other.alias, 'task'), { 'x-claude-code-agent-id': 'agent-beta' }));
+    const events = await decodeSse(res);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(0); // plain echo, no nested delegation
+    expect(textOf(events)).toBe(`CHILD_SAW_MODEL=${other.upstreamModel}`);
+  });
+
+  test('without nestedDelegatingAgent, behaviour is byte-identical (the child gets the immediate echo)', async () => {
+    const { handler } = await createHandlerFixture();
+    const delegating = CHANNEL_A_AGENTS[0]!;
+
+    const res = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(delegating.alias, 'task'), { 'x-claude-code-agent-id': 'agent-alpha' }));
+    const events = await decodeSse(res);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(0); // one request, immediate echo, exactly as before this option existed
+    expect(textOf(events)).toBe(`CHILD_SAW_MODEL=${delegating.upstreamModel}`);
+  });
+});
+
 describe('realLayoutProfile (stage 2a real-base variant, PROBE_PROFILE_BASE=real)', () => {
   test('diverges from the real fixture on exactly the declared scaffold paths, everything else carried over untouched', async () => {
     const realFixture = await loadCapabilityProfile('claude-code', '2.1.266', CAPABILITIES_FIXTURES);

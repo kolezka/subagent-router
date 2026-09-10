@@ -2,21 +2,23 @@
 # Drive the REAL installed `claude` CLI against the local mock gateway only.
 # Strict env allowlist via `env -i`: no inherited ANTHROPIC_API_KEY, no CCR vars,
 # no provider credentials. Loopback base URL + fake token only.
-# Usage: native-claude-run.sh <simple|delegate|handler|next-turn|resume>
+# Usage: native-claude-run.sh <simple|delegate|handler|next-turn|resume|nested>
 set -uo pipefail
 
 MODE="${1:-simple}"
 case "$MODE" in
-  simple|delegate|handler|next-turn|resume) ;;
-  *) echo "FAIL: unknown mode '$MODE' (expected simple, delegate, handler, next-turn, or resume)" >&2; exit 2 ;;
+  simple|delegate|handler|next-turn|resume|nested) ;;
+  *) echo "FAIL: unknown mode '$MODE' (expected simple, delegate, handler, next-turn, resume, or nested)" >&2; exit 2 ;;
 esac
-# handler, next-turn and resume share the same bun-driven fixture (native-claude-handler.ts) and
-# the same isolation setup. next-turn additionally forces each routed child to issue two upstream
+# handler, next-turn, resume and nested share the same bun-driven fixture (native-claude-handler.ts)
+# and the same isolation setup. next-turn additionally forces each routed child to issue two upstream
 # requests (see PROBE_CHILD_READ_FILE below) and declares mode "next-turn" in the run manifest.
 # resume runs TWO sequential CLI invocations against the same session (PROBE_RESUME below) and
-# declares mode "resume"; handler mode stays exactly as before (one invocation, one request per
-# child).
-is_handler_like() { [ "$MODE" = "handler" ] || [ "$MODE" = "next-turn" ] || [ "$MODE" = "resume" ]; }
+# declares mode "resume". nested lets exactly ONE child (native-probe-alpha) delegate to the other
+# (PROBE_NESTED_AGENT below) so a grandchild request can be measured for
+# x-claude-code-parent-agent-id; handler mode stays exactly as before (one invocation, one request
+# per child).
+is_handler_like() { [ "$MODE" = "handler" ] || [ "$MODE" = "next-turn" ] || [ "$MODE" = "resume" ] || [ "$MODE" = "nested" ]; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 mkdir -p "$ROOT/tests/probes/.runs" || exit 1
 RUN="$(mktemp -d "$ROOT/tests/probes/.runs/$MODE-XXXXXX")" || exit 1
@@ -56,6 +58,16 @@ if is_handler_like; then
     # never a forced tool_use within one.
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
       PROBE_RESUME=1 \
+      bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
+  elif [ "$MODE" = "nested" ]; then
+    # nested is handler-like but enables the fixture's nested-delegation opt-in: exactly one child
+    # (native-probe-alpha) is answered with a forced Agent tool_use delegating to the other child
+    # (native-probe-beta) on its first request, so a grandchild request is produced whose
+    # x-claude-code-parent-agent-id header (if the client sends one) can be measured. No
+    # PROBE_CHILD_READ_FILE: the second request comes from executing the nested Agent tool, not a
+    # forced Read.
+    PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
+      PROBE_NESTED_AGENT="native-probe-alpha" \
       bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
   else
     # Real production createHandler + scripted mock upstream (Bun), not the plain
@@ -106,6 +118,8 @@ else
 fi
 # next-turn's forced tool_use needs an actual tool the child is allowed to call; handler mode
 # (and simple/delegate) keep tools: [] exactly as before -- their children can execute nothing.
+# nested additionally grants ONLY native-probe-alpha the Agent tool (the one delegating child), so
+# it can issue a grandchild request; beta and every other mode keep their existing tools line.
 if [ "$MODE" = "next-turn" ]; then
   CHILD_TOOLS_LINE="[Read]"
 else
@@ -113,12 +127,17 @@ else
 fi
 for pair in $AGENT_PAIRS; do
   name="native-probe-${pair%%:*}"; model="${pair##*:}"
+  if [ "$MODE" = "nested" ] && [ "$name" = "native-probe-alpha" ]; then
+    AGENT_TOOLS_LINE="[Agent]"
+  else
+    AGENT_TOOLS_LINE="$CHILD_TOOLS_LINE"
+  fi
   cat >"$CFG/agents/$name.md" <<MD
 ---
 name: $name
 description: Local probe agent $name
 model: $model
-tools: $CHILD_TOOLS_LINE
+tools: $AGENT_TOOLS_LINE
 ---
 Reply with exactly: DONE-$name
 MD

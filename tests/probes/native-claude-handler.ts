@@ -175,6 +175,16 @@ export interface HandlerFixtureOptions {
   // child reuses its x-claude-code-agent-id across the boundary is the real client's behavior to
   // prove, never something this fixture synthesizes.
   resumeReDelegate?: boolean;
+  // Opt-in (the launcher's `nested` mode only): names the ONE child agent that is allowed to
+  // delegate. When set, the FIRST routed request from that child (identified by its forwarded
+  // model landing on that agent's own upstream model, keyed by x-claude-code-agent-id, never by
+  // request order) is answered with a scripted Agent tool_use delegating exactly once to the
+  // OTHER channel-A agent (the grandchild), instead of the immediate echo. The delegating child's
+  // SECOND request, carrying the tool_result for the nested id this fixture issued, gets the
+  // normal echo. Absent (the default), behavior is byte-identical to before this option existed.
+  // Never fakes the header: whether the grandchild request carries x-claude-code-parent-agent-id
+  // is the real client's behavior to prove, never something this fixture synthesizes.
+  nestedDelegatingAgent?: string;
 }
 
 export interface HandlerFixture {
@@ -246,6 +256,30 @@ function childToolUseSse(model: unknown, toolUseId: string, filePath: string): s
   return sseFrom([
     ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 8, output_tokens: 1 } } }],
     ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: toolUseId, name: 'Read', input: {} } }],
+    ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } }],
+    ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+    ['message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 10 } }],
+    ['message_stop', { type: 'message_stop' }],
+  ]);
+}
+
+// Scripts exactly ONE Agent tool_use for the nested delegation: the delegating child is told to
+// delegate to `targetAgent` (the grandchild), with a first-line marker selecting that agent's
+// alias. Same single-chunk streaming shape as agentToolUseSse/childToolUseSse. Forces the real
+// delegating child to execute the Agent tool and send a SECOND request once it can reply with a
+// tool_result, and -- the thing being measured -- whether that grandchild request carries
+// x-claude-code-parent-agent-id naming the delegating child.
+function nestedAgentToolUseSse(model: unknown, toolUseId: string, targetAgent: (typeof CHANNEL_A_AGENTS)[number]): string {
+  const id = `msg_probe_${Math.random().toString(36).slice(2, 10)}`;
+  const input = {
+    description: `nested probe ${targetAgent.name}`,
+    prompt: `${markerLine(targetAgent.alias)}\ndo the nested ${targetAgent.name} task`,
+    subagent_type: targetAgent.name,
+    run_in_background: false,
+  };
+  return sseFrom([
+    ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 8, output_tokens: 1 } } }],
+    ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: toolUseId, name: AGENT_TOOL_NAME, input: {} } }],
     ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } }],
     ['content_block_stop', { type: 'content_block_stop', index: 0 }],
     ['message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 10 } }],
@@ -396,6 +430,10 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
   const seen: RecordedUpstreamRequest[] = [];
   const pendingToolUses = new Map<string, PendingToolUse>();
   const pendingChildToolUseByAgent = new Map<string, PendingChildToolUse>();
+  // Nested-delegation state, keyed by x-claude-code-agent-id (never by request order): the
+  // deterministic tool_use id this fixture issued to the delegating child on its first request,
+  // so only a SECOND request from that SAME agent carrying the matching tool_result gets the echo.
+  const nestedToolUseByAgent = new Map<string, string>();
   // Tool_use ids whose parent final turn has already consumed them. A resumed invocation replays
   // the prior round's tool_results verbatim against the SAME handler process, so those ids arrive
   // again without being pending; that is the one signal that distinguishes a genuine resumed
@@ -436,6 +474,33 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
     const isRoutedChild = typeof body.model === 'string' && KNOWN_UPSTREAM_MODELS.has(body.model);
     if (isRoutedChild) {
       const childEcho = () => new Response(textSse(body.model, `CHILD_SAW_MODEL=${String(body.model)}`), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+
+      // Nested delegation (nestedDelegatingAgent set, the launcher's `nested` mode only): the
+      // FIRST routed request from the delegating child (matched by its forwarded model, keyed by
+      // x-claude-code-agent-id, never by request order) is answered with exactly ONE Agent
+      // tool_use delegating to the OTHER channel-A agent (the grandchild), instead of the echo.
+      // The delegating child's SECOND request carrying the matching tool_result gets the echo.
+      // Anything else falls back to the existing behaviour. Whether the grandchild request then
+      // carries x-claude-code-parent-agent-id is the real client's behavior, never synthesized
+      // here. Absent the option, this branch is never taken and the echo path is byte-identical.
+      const nestedDelegating = options.nestedDelegatingAgent !== undefined ? CHANNEL_A_AGENTS.find((a) => a.name === options.nestedDelegatingAgent) : undefined;
+      if (nestedDelegating !== undefined && body.model === nestedDelegating.upstreamModel) {
+        const agentId = record.headers['x-claude-code-agent-id'];
+        const pendingNested = agentId !== undefined ? nestedToolUseByAgent.get(agentId) : undefined;
+        if (pendingNested !== undefined) {
+          const answered = extractToolResults(body).some((result) => result.toolUseId === pendingNested);
+          if (answered) {
+            nestedToolUseByAgent.delete(agentId as string);
+            return childEcho();
+          }
+          return childEcho(); // a retry or foreign-result request: fall back to the existing echo
+        }
+        const toolUseId = 'toolu_nested_0';
+        if (agentId !== undefined) nestedToolUseByAgent.set(agentId, toolUseId);
+        const target = CHANNEL_A_AGENTS.find((a) => a.name !== nestedDelegating.name) ?? CHANNEL_A_AGENTS[1]!;
+        return new Response(nestedAgentToolUseSse(body.model, toolUseId, target), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }
+
       // Default (childReadFilePath absent): unchanged from before this option existed -- one
       // request, immediate echo. Every existing hermetic test relies on exactly this.
       if (options.childReadFilePath === undefined) return childEcho();
@@ -594,6 +659,11 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   // request shape. Empty/unset for every other mode.
   const resumeReDelegate = process.env.PROBE_RESUME === '1';
 
+  // Opt-in (the launcher's nested mode only): names the one child allowed to delegate. See
+  // HandlerFixtureOptions.nestedDelegatingAgent for why this must never be inferred from request
+  // shape. Empty/unset for every other mode.
+  const nestedDelegatingAgent = process.env.PROBE_NESTED_AGENT || undefined;
+
   const { handler } = await createHandlerFixture({
     onUpstreamRequest: (record) => {
       rec('post-handler-upstream', record);
@@ -623,6 +693,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
     profile,
     ...(childReadFilePath !== undefined ? { childReadFilePath } : {}),
     ...(resumeReDelegate ? { resumeReDelegate: true } : {}),
+    ...(nestedDelegatingAgent !== undefined ? { nestedDelegatingAgent } : {}),
   });
   liveHandler = handler;
 

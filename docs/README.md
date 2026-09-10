@@ -57,6 +57,19 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   nadal `pending`. `M10-freshness` ponownie zmierzył się jako `pending` z zerowymi licznikami
   rejestracji -- ten sam, już udokumentowany brak w bootstrapie, nie nowy problem. To nie jest
   promocja wsparcia; szczegóły w [transport/GAPS.md](transport/GAPS.md).
+- Fazy `resume`, `compaction` i `nested` zmierzone (2026-09-10, realny klient `claude` 2.1.267 dla
+  `resume` i `compaction`, 2.1.268 dla `nested`; przebiegi `tests/probes/.runs/resume-euk9s4`,
+  `compaction-probe-*` i `nested-PogPYc`, osądzone przez `tests/probes/judge-run.ts`): wszystkie
+  trzy pozostają `pending`, uczciwie. `resume` (dwa wywołania CLI, `--session-id` potem `-c`):
+  identyfikator sesji jest zachowany, ale klient nadaje dziecku nowy `x-claude-code-agent-id` przy
+  ponownej delegacji, więc żadne dziecko nie ma dwóch żądań przez granicę wznowienia. `compaction`:
+  tryb `-p` nie skompaktował rozmowy pod `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (200 i 1000) ani
+  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1`; zero znaczników `compact_boundary`. `nested`: przebieg trafił
+  na samoczynną aktualizację klienta do 2.1.268, w której pierwsza wiadomość dziecka ma trzy bloki
+  tekstowe zamiast dwóch, więc slot `after-native-context-v1` związany z wersją poprawnie odmówił
+  routingu (`missing-selection`); nagłówek `x-claude-code-parent-agent-id` nadal niezmierzony.
+  Dodano fiksturę `claude-code-2.1.268.json` z każdą sondą `pending`; fikstura 2.1.267 bez zmian.
+  To nie jest promocja wsparcia; szczegóły w [transport/GAPS.md](transport/GAPS.md).
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 

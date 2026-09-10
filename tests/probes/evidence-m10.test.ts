@@ -104,6 +104,63 @@ describe('judgeLifecyclePhase: next-turn', () => {
   });
 });
 
+describe('judgeLifecyclePhase: nested', () => {
+  // A nested pair: the grandchild's pre headers carry x-claude-code-parent-agent-id equal to
+  // another routed child's agent id (the delegating parent-child). Mirrors the synthetic pairs
+  // above, plus the one header the nested judge actually reads.
+  function nestedPair(seq: number, agentId: string, upstreamModel: string, parentAgentId?: string): CapturedPair {
+    const base = pair(seq, agentId, upstreamModel);
+    if (parentAgentId === undefined) return base;
+    return {
+      ...base,
+      pre: { ...base.pre, headers: { ...base.pre.headers, 'x-claude-code-parent-agent-id': parentAgentId } },
+    };
+  }
+
+  test('passes when a grandchild request names another routed agent as its parent, with no drift among the involved agents', () => {
+    const pairs: readonly CapturedPair[] = [
+      pair(1, 'agent-alpha', 'gateway/fast-worker'), // delegating parent-child
+      pair(2, 'agent-beta', 'gateway/smart-worker'), // beta as the parent's direct child
+      nestedPair(3, 'agent-beta-grandchild', 'gateway/smart-worker', 'agent-alpha'), // grandchild under alpha
+    ];
+    const evidence = extractLifecycleEvidence(runCapture(pairs));
+    const judgement = judgeLifecyclePhase('nested', evidence, manifest('nested', ['nested']));
+    expect(judgement.result).toBe('passed');
+  });
+
+  test('stays pending when the parent-agent-id header is absent, however many requests were captured', () => {
+    const evidence = extractLifecycleEvidence(runCapture(TWO_AGENTS_TWO_REQUESTS_INTERLEAVED));
+    const judgement = judgeLifecyclePhase('nested', evidence, manifest('nested', ['nested']));
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toBe(
+      "nested-requires-observed-parent-agent-id-header: no captured request carried x-claude-code-parent-agent-id equal to another routed child's agent id",
+    );
+  });
+
+  test('stays pending when the run never declares nested as exercised, even when a nested pair is present', () => {
+    const pairs: readonly CapturedPair[] = [
+      pair(1, 'agent-alpha', 'gateway/fast-worker'),
+      nestedPair(2, 'agent-beta-grandchild', 'gateway/smart-worker', 'agent-alpha'),
+    ];
+    const evidence = extractLifecycleEvidence(runCapture(pairs));
+    const judgement = judgeLifecyclePhase('nested', evidence, manifest('nested', []));
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toBe('nested-not-declared: the run manifest does not declare nested as an exercised phase');
+  });
+
+  test('fails on upstream drift among the involved agents', () => {
+    const pairs: readonly CapturedPair[] = [
+      pair(1, 'agent-alpha', 'gateway/fast-worker'),
+      pair(2, 'agent-alpha', 'gateway/DIFFERENT-worker'), // the delegating parent-child drifts
+      nestedPair(3, 'agent-beta-grandchild', 'gateway/smart-worker', 'agent-alpha'),
+    ];
+    const evidence = extractLifecycleEvidence(runCapture(pairs));
+    const judgement = judgeLifecyclePhase('nested', evidence, manifest('nested', ['nested']));
+    expect(judgement.result).toBe('failed');
+    expect(judgement.diagnostic).toContain('nested-upstream-model-drifted');
+  });
+});
+
 describe('judgeLifecyclePhase: resume', () => {
   test('passes under mode resume when an agent has two forwarded requests', () => {
     const evidence = extractLifecycleEvidence(runCapture(TWO_AGENTS_TWO_REQUESTS_INTERLEAVED));
