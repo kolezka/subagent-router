@@ -69,29 +69,44 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   na samoczynną aktualizację klienta do 2.1.268, w której pierwsza wiadomość dziecka ma trzy bloki
   tekstowe zamiast dwóch, więc slot `after-native-context-v1` związany z wersją poprawnie odmówił
   routingu (`missing-selection`). At that checkpoint `x-claude-code-parent-agent-id` had not been
-  observed on any run; it stays unmeasured for 2.1.268.
+  observed on any run; that clause is historical, the header was later observed on 2.1.267 and, on
+  2026-09-11, on 2.1.268.
   Dodano fiksturę `claude-code-2.1.268.json` z każdą sondą `pending`; fikstura 2.1.267 bez zmian.
   To nie jest promocja wsparcia; szczegóły w [transport/GAPS.md](transport/GAPS.md).
 - 2026-09-11: drugi zmierzony układ promptu rodzica, `after-native-context-v2` (trzy bloki
   tekstowe: instrukcje operatora, scaffold kontekstu, prompt delegacji), plus sonda `M3-A`
   zaliczona dla 2.1.268 w przebiegu `handler-yXSP4o` (oba dzieci zroutowane na
   `gateway/fast-worker` i `gateway/smart-worker`, bloki 0 i 1 przekazane bez zmian). Fikstura
-  `claude-code-2.1.268.json` ma teraz `probes."M3-A": "passed"`, ale nadal nie deklaruje pola
-  `parentPromptPosition`, więc produkcyjnie slot pozostaje zamknięty; szczegóły w
+  `claude-code-2.1.268.json` ma teraz `probes."M3-A": "passed"`. The clause that it does not declare
+  `parentPromptPosition` is historical, true only until 2026-09-11; see the 2.1.268 lifecycle entry
+  below. Szczegóły w
   [transport/GAPS.md](transport/GAPS.md).
 - 2026-09-11: the `nested` lifecycle phase is measured and `passed` for 2.1.267 on a version-pinned
   run (`tests/probes/.runs/nested-gBXfBh`, launcher using the canonical versioned path for 2.1.267,
   judged by `tests/probes/judge-run.ts`). The parent decoded `PARENT_FINAL_OK` and the run produced
   a real grandchild whose request carried `x-claude-code-parent-agent-id` matching another observed
-  child id; this run newly observes that header, superseding the earlier runs where it was absent,
-  and it stays unmeasured for 2.1.268. `fixture-writer.ts` narrowed exactly `lifecycle.nested:
-  passed` into
+  child id; this run newly observes that header, superseding the earlier runs where it was absent.
+  The clause that it stays unmeasured for 2.1.268 is historical; see the entry below.
+  `fixture-writer.ts` narrowed exactly `lifecycle.nested: passed` into
   [../tests/fixtures/capabilities/claude-code-2.1.267.json](../tests/fixtures/capabilities/claude-code-2.1.267.json)
   with one `diagnostics` entry naming the run, and nothing was edited by hand. `status` stays
   `pending`, every probe other than the already-passing `M3-A` stays `pending` (`M10` and
   `M10-freshness` included), the `resume` and `compaction` phases stay `pending`, and
   `parentPromptPosition` is untouched, so this is not a support promotion. Full capture detail lives
   in [transport/GAPS.md](transport/GAPS.md).
+- 2026-09-11: three pinned runs against real `claude` 2.1.268
+  (`tests/probes/.runs/next-turn-UJqWfM`, `nested-uxI3hK`, `resume-D30trq`, judged by
+  `tests/probes/judge-run.ts`) measured `lifecycle["next-turn"]`, `lifecycle.parallel` and
+  `lifecycle.nested` as `passed` and reconfirmed `M3-A` as `passed` on all three.
+  `writeCapabilityFixture` narrowed exactly those three lifecycle keys into
+  [../tests/fixtures/capabilities/claude-code-2.1.268.json](../tests/fixtures/capabilities/claude-code-2.1.268.json),
+  and `"parentPromptPosition": "after-native-context-v2"` was added there by hand under explicit
+  operator approval, because the writer never emits that field. `lifecycle.resume` stays `pending`
+  (the client issues a fresh child id on re-delegation) and `lifecycle.compaction` is UNMEASURED for
+  this version: no run declared or exercised it. `status`, `M10`, `M10-freshness` and every probe
+  other than the already-passing `M3-A` stay `pending`, so this is not a support promotion, and the
+  production `claude-marker` gate still refuses 2.1.268 child requests at the `status` check. Full
+  capture detail in [transport/GAPS.md](transport/GAPS.md).
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 

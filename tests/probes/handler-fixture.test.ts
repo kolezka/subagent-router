@@ -8,6 +8,7 @@ import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadCapabilityProfile } from '../../src/adapters/capabilities';
+import type { CapabilityProfile } from '../../src/core/types';
 import {
   AGENT_TOOL_NAME,
   CHANNEL_A_AGENTS,
@@ -679,20 +680,70 @@ describe('layout v2 profile variant (PROBE_LAYOUT=v2)', () => {
     expect(realLayoutProfile(realFixture, 'after-native-context-v2').parentPromptPosition).toBe('after-native-context-v2');
   });
 
-  test('the v2 variant still overrides exactly what the scaffold manifest declares, so a v2 run stays judgeable', async () => {
-    const realFixture = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
-    const profile = realLayoutProfile(realFixture, 'after-native-context-v2');
+  // Declaring a path in the scaffold manifest and diverging on it are different claims: the override
+  // always SETS parentPromptPosition, so the manifest must always name it, while the divergence only
+  // shows up when the base did not already carry that value. A real fixture declaring v2 is a
+  // recording, not a regression, so the contract runs over every base shape, on in-memory copies.
+  function assertLayoutContract(label: string, base: CapabilityProfile, profile: CapabilityProfile): void {
+    const declared = new Set(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS);
 
-    // The manifest must still name parentPromptPosition: it is the path the v2 override diverges on.
+    // The override always declares v2, whatever the base said. The label rides along in the
+    // compared object so a failure names which base variant broke.
+    expect({ base: label, declared: profile.parentPromptPosition }).toEqual({ base: label, declared: 'after-native-context-v2' });
+
+    const diverged = diffCapturedAgainstReal(profile as unknown as Record<string, unknown>, base as unknown as Record<string, unknown>);
+
+    // Every path that actually differs is covered by the manifest, for every base. This is the
+    // property extractM3AEvidence relies on, and the one that must never regress.
+    expect(diverged.filter((path) => !pathIsDeclared(path, declared))).toEqual([]);
+    // Non-vacuous: status and probes.M10 always differ from a pending real fixture.
+    expect(diverged.length).toBeGreaterThan(0);
+
+    // And the layout path diverges exactly when the base did not already carry v2.
+    expect({ base: label, diverges: diverged.includes('parentPromptPosition') }).toEqual({
+      base: label,
+      diverges: base.parentPromptPosition !== 'after-native-context-v2',
+    });
+
+    // Everything the v2 override does not touch still comes straight from the base fixture.
+    expect(profile.adapterMarkerPosition).toBe(base.adapterMarkerPosition);
+    expect(profile.correlation).toBe(base.correlation);
+  }
+
+  test('the v2 variant still overrides exactly what the scaffold manifest declares, for every base layout value, so a v2 run stays judgeable', async () => {
+    const loaded = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
+    const { parentPromptPosition: _dropped, ...withoutLayout } = loaded;
+
+    const bases: ReadonlyArray<{ label: string; base: CapabilityProfile }> = [
+      { label: 'absent', base: withoutLayout as CapabilityProfile },
+      { label: 'after-native-context-v1', base: { ...withoutLayout, parentPromptPosition: 'after-native-context-v1' } as CapabilityProfile },
+      { label: 'after-native-context-v2', base: { ...withoutLayout, parentPromptPosition: 'after-native-context-v2' } as CapabilityProfile },
+    ];
+
+    // The manifest must name parentPromptPosition under every base: the override writes that field
+    // unconditionally, so it is always a path the scaffold is responsible for declaring.
     expect(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS).toContain('parentPromptPosition');
 
-    const diverged = diffCapturedAgainstReal(profile as unknown as Record<string, unknown>, realFixture as unknown as Record<string, unknown>);
-    const declared = new Set(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS);
-    expect(diverged).toContain('parentPromptPosition');
-    expect(diverged.filter((path) => !pathIsDeclared(path, declared))).toEqual([]);
+    for (const { label, base } of bases) {
+      assertLayoutContract(label, base, realLayoutProfile(base, 'after-native-context-v2'));
+    }
+  });
 
-    // Everything the v2 override does not touch still comes straight from the real fixture.
-    expect(profile.adapterMarkerPosition).toBe(realFixture.adapterMarkerPosition);
-    expect(profile.correlation).toBe(realFixture.correlation);
+  test('assertLayoutContract passes the real override and throws for a forgotten or a straying one', async () => {
+    const loaded = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
+    const { parentPromptPosition: _dropped, ...withoutLayout } = loaded;
+    const v1Base = { ...withoutLayout, parentPromptPosition: 'after-native-context-v1' } as CapabilityProfile;
+
+    // Positive control: the real override passes the very check the mutants must fail, so a helper
+    // that throws for everything cannot fake this test green.
+    expect(() => assertLayoutContract('real override', v1Base, realLayoutProfile(v1Base, 'after-native-context-v2'))).not.toThrow();
+
+    // Mutation 1: an override that never writes the field at all, keeping the base's v1 value.
+    const forgotten = { ...realLayoutProfile(v1Base, 'after-native-context-v2'), parentPromptPosition: v1Base.parentPromptPosition } as CapabilityProfile;
+    expect(() => assertLayoutContract('forgotten', v1Base, forgotten)).toThrow();
+
+    // Mutation 2: an override that writes an undeclared field instead.
+    const straying = { ...realLayoutProfile(v1Base, 'after-native-context-v2'), adapterMarkerPosition: 'system' } as CapabilityProfile;
+    expect(() => assertLayoutContract('straying', v1Base, straying)).toThrow();
   });
 });

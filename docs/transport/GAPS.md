@@ -40,7 +40,7 @@ See [../measurements/claude-code-2.1.263-partial.md](../measurements/claude-code
 for a review of historical parent/child model artifacts. It is not a new native run and closes
 none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
 
-- **M3-A has an extractor and judge; the only real pass so far is for 2.1.267 (next bullet).** [verified] direct read of
+- **M3-A has an extractor and judge; the first real pass is for 2.1.267 (next bullet), and 2.1.268 has since passed too (last two bullets).** [verified] direct read of
   [../../tests/probes/evidence-m3a.ts](../../tests/probes/evidence-m3a.ts): `readRunCapture` +
   `extractM3AEvidence` + `judgeM3A` turn a native-claude-handler.ts run capture into a
   pending/failed/passed verdict, refusing to pass on an undeclared scaffold override or a
@@ -241,8 +241,9 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   defect, and it means the 2.1.267 M3-A pass does not carry over. `judgeLifecyclePhase('nested')`
   returned `pending` with `nested-requires-observed-parent-agent-id-header`; as of this run neither
   2.1.268 nor 2.1.267 had been seen sending that header on a grandchild request, because no
-  grandchild was ever spawned. The pinned run in the next bullet has since observed it on 2.1.267;
-  for 2.1.268 it stays unmeasured. A new all-pending `claude-code-2.1.268.json` fixture is added so the next run
+  grandchild was ever spawned. The pinned run in the next bullet has since observed it on 2.1.267,
+  and the 2026-09-11 `nested-uxI3hK` run below has since observed it on 2.1.268, so the
+  "unmeasured for 2.1.268" reading of this bullet is historical. A new all-pending `claude-code-2.1.268.json` fixture is added so the next run
   starts from a real fixture; nothing in it or in the 2.1.267 fixture changed by hand. Next: pin
   the launcher to an explicit versioned binary so a run can target 2.1.267 deliberately and rerun
   `nested` there. The 2.1.268 three-block layout has since been measured as its own M3-A run; see
@@ -256,8 +257,9 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   `permission_denials`) and `subagent_stats` shows a real grandchild: `spawned` 3, `max_depth` 2,
   `spawned_by_subagents` 1. Exactly one of the four routed child requests carried
   `x-claude-code-parent-agent-id`, matching another observed child id; this run newly observes that
-  header, superseding the runs documented above where it was absent, and it stays unmeasured for
-  2.1.268. Upstream models held stable: alpha twice on `gateway/fast-worker`, each beta once on
+  header, superseding the runs documented above where it was absent. The clause that it stays
+  unmeasured for 2.1.268 is historical: `nested-uxI3hK` (2026-09-11, see the last bullet) observes
+  it there too. Upstream models held stable: alpha twice on `gateway/fast-worker`, each beta once on
   `gateway/smart-worker`, the parent on `probe-parent-model`. `lifecycle.nested` judged `passed` and
   `m3a.result` `passed` (`pairCount` 4, all six per-pair booleans true, zero diagnostics); a
   negative control removing the parent header from the in-memory evidence flipped nested back to
@@ -269,8 +271,8 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   the alternate slot stays closed in production.
 
 - **`after-native-context-v2`: the 2.1.268 three-block layout is measured and `M3-A` is `passed`
-  for that version, but the slot stays shut in production because no fixture declares the
-  layout.** [verified] `tests/probes/.runs/handler-yXSP4o` (2026-09-11, real `claude` 2.1.268,
+  for that version. The headline clause "no fixture declares the layout" held only until
+  2026-09-11 and is historical; see the closing paragraph of this bullet.** [verified] `tests/probes/.runs/handler-yXSP4o` (2026-09-11, real `claude` 2.1.268,
   `/Users/me/.local/bin/claude` confirmed pointing at `versions/2.1.268` immediately before the
   run, `PROBE_LAYOUT=v2 PROBE_PROFILE_BASE=real PROBE_PHASES_EXERCISED=parallel
   tests/probes/native-claude-run.sh handler`), judged by `tests/probes/judge-run.ts`:
@@ -284,11 +286,72 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   a capture judged with the other layout's rules now returns `pending`, never `passed`.
   `claude-code-2.1.268.json` was narrowed to `probes."M3-A": "passed"` through
   `writeCapabilityFixture` only, run id recorded in its `diagnostics` line, nothing edited by hand.
-  What remains: the writer never emits `parentPromptPosition`, so that fixture still carries no
-  layout field and production keeps falling back to the legacy slot with `422 missing-selection`.
-  Opening the slot needs a deliberate `"parentPromptPosition": "after-native-context-v2"` in
-  `tests/fixtures/capabilities/claude-code-2.1.268.json`, either as an operator edit or as a writer
-  extension that can emit that field. Every other 2.1.268 probe and all five lifecycle phases stay
-  `pending`; `after-native-context-v1` is untouched and still `pending` for 2.1.266 and 2.1.267.
+  Historical, true at the time of that run only: the writer never emits `parentPromptPosition`, so
+  the fixture then carried no layout field and production fell back to the legacy slot. That gap was
+  closed on 2026-09-11 by the operator-approved hand edit described in the next bullet;
+  `writeCapabilityFixture` still never emits the field, which is why the edit was manual.
+  `after-native-context-v1` is untouched and still undeclared for 2.1.266 and 2.1.267.
+
+- **2.1.268 lifecycle: `next-turn`, `parallel` and `nested` are `passed`; `resume` stays `pending`;
+  `compaction` is UNMEASURED for this version.** [verified] three real runs on 2026-09-11 against the
+  pinned binary `/Users/me/.local/share/claude/versions/2.1.268` (`PROBE_LAYOUT=v2
+  PROBE_PROFILE_BASE=real`), each judged by
+  [../../tests/probes/judge-run.ts](../../tests/probes/judge-run.ts); every captured client request
+  reports version 2.1.268.
+  - `tests/probes/.runs/next-turn-UJqWfM` (manifest mode `next-turn`, phases `parallel,next-turn`):
+    both phases judged `passed`. The parent decoded `PARENT_FINAL_OK` with `is_error: false`, empty
+    `permission_denials` and `subagent_stats` `spawned` 2 / `completed` 2; each child made exactly
+    two forwarded requests on a stable, distinct upstream model (`gateway/fast-worker` and
+    `gateway/smart-worker`) and the parent stayed on `probe-parent-model`.
+  - `tests/probes/.runs/nested-uxI3hK` (manifest mode `nested`, phase `nested`): `nested` judged
+    `passed`. `PARENT_FINAL_OK`, `is_error: false`, empty `permission_denials`, `subagent_stats`
+    `spawned` 3 / `max_depth` 2 / `spawned_by_subagents` 1. Alpha made two requests on a stable
+    `gateway/fast-worker`; the direct beta and the grandchild beta made one each on a stable
+    `gateway/smart-worker`; exactly one request carried `x-claude-code-parent-agent-id`, and it
+    matched a different observed child id, not its own. This is the first observation of that header
+    on 2.1.268.
+  - `tests/probes/.runs/resume-D30trq` (manifest mode `resume`, phase `resume`): `resume` stays
+    `pending` with `resume-insufficient-requests`. Both CLI invocations exited with
+    `PARENT_FINAL_OK` and `is_error: false` under the same session id
+    (`c0ffee00-0000-4000-8000-000000000000` echoed back twice), and each invocation delegated to two
+    fresh children, so four distinct child ids with exactly one routed request each. Same shape as
+    2.1.267's `resume-euk9s4`: the client keeps the session id and issues a new child id on
+    re-delegation. Neither the judge nor the phase criterion was changed and `resume` was not
+    narrowed.
+
+  `judgeM3A` returned `passed` on all three runs (`pairCount` 4, all six per-pair booleans 4 of 4,
+  zero diagnostics), reconfirming the 2.1.268 M3-A pass on three independent traffic shapes: the
+  client-owned prefix blocks survived byte for byte from pre-handler to upstream on every pair and
+  the parent's own messages were untouched. `M10-freshness` stays `pending` on all three
+  (`freshnessHook: fake`, zero instance-fetch/register/consume/replay records), the same bootstrap
+  limitation documented above. Two negative controls were run on disposable copies of the run
+  directories under a temp dir, never on the saved captures: clearing `phasesExercised` returns every
+  claimed phase to `pending` with `*-not-declared`, and deleting the single
+  `x-claude-code-parent-agent-id` header while leaving the manifest intact returns `nested` to
+  `pending` with `nested-requires-observed-parent-agent-id-header` while `M3-A` still judges
+  `passed`.
+
+  Recorded into
+  [../../tests/fixtures/capabilities/claude-code-2.1.268.json](../../tests/fixtures/capabilities/claude-code-2.1.268.json):
+  `writeCapabilityFixture` narrowed exactly `lifecycle.parallel: passed` and
+  `lifecycle["next-turn"]: passed` from `next-turn-UJqWfM`, and `lifecycle.nested: passed` from
+  `nested-uxI3hK`, one `diagnostics` entry per key naming its run, with `scaffoldDeclared` taken from
+  each run's own `extractM3AEvidence` output rather than asserted by the caller. Separately, and
+  under explicit operator approval, `"parentPromptPosition": "after-native-context-v2"` was added to
+  that fixture by hand, because `writeCapabilityFixture` only ever writes probes, lifecycle and
+  diagnostics. Nothing else in the fixture changed: the earlier `M3-A` diagnostics line is preserved
+  and `status` is still `pending`.
+
+  What is still blocked for 2.1.268: `status` stays `pending`, and `M1`, `M2`, `M3`, `M3-B2`, `M4`,
+  `M10` and `M10-freshness` stay `pending` (`M3-A` is excluded from that list because it already
+  `passed`). `lifecycle.resume` is `pending` for the measured reason above. `lifecycle.compaction` is
+  UNMEASURED for 2.1.268: no run in this set declared or exercised it, so its `pending` is an absence
+  of measurement, not an observed failed compaction. Production therefore still refuses every 2.1.268
+  child request: [verified] `assertCapability(profile, 'claude-marker', ...)` against the real fixture
+  throws `unsupported-path` at the first check, `capability profile claude-code 2.1.268 is pending,
+  not supported`, before lifecycle or `M10` are even consulted. Declaring the layout opened the
+  marker slot, not the path. The operator ruling of 2026-09-11 keeps the existing bar unchanged: with
+  the lifecycle phase unknown, `assertCapability` still requires all five phases `passed`, so
+  `resume` and `compaction` keep the path closed for 2.1.268 even once `status` and `M10` move.
 
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.
