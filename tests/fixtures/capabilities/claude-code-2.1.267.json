@@ -20,12 +20,13 @@
     "next-turn": "passed",
     "resume": "pending",
     "compaction": "pending",
-    "nested": "pending",
+    "nested": "passed",
     "parallel": "passed"
   },
   "diagnostics": [
     "measured:M3-A=passed;run=handler-yYv981;at=2026-09-10T00:32:10.790Z",
     "measured:lifecycle.parallel=passed;run=next-turn-jFdsmI;at=2026-09-10T00:55:53.847Z",
-    "measured:lifecycle.next-turn=passed;run=next-turn-jFdsmI;at=2026-09-10T00:55:53.847Z"
+    "measured:lifecycle.next-turn=passed;run=next-turn-jFdsmI;at=2026-09-10T00:55:53.847Z",
+    "measured:lifecycle.nested=passed;run=nested-gBXfBh;at=2026-09-10T23:50:34.496Z"
   ]
 }

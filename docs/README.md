@@ -59,15 +59,17 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   promocja wsparcia; szczegóły w [transport/GAPS.md](transport/GAPS.md).
 - Fazy `resume`, `compaction` i `nested` zmierzone (2026-09-10, realny klient `claude` 2.1.267 dla
   `resume` i `compaction`, 2.1.268 dla `nested`; przebiegi `tests/probes/.runs/resume-euk9s4`,
-  `compaction-probe-*` i `nested-PogPYc`, osądzone przez `tests/probes/judge-run.ts`): wszystkie
-  trzy pozostają `pending`, uczciwie. `resume` (dwa wywołania CLI, `--session-id` potem `-c`):
+  `compaction-probe-*` i `nested-PogPYc`, osądzone przez `tests/probes/judge-run.ts`).
+  At that checkpoint all three stayed `pending`, honestly; `nested` was measured later, on
+  2026-09-11, see the entry below. `resume` (dwa wywołania CLI, `--session-id` potem `-c`):
   identyfikator sesji jest zachowany, ale klient nadaje dziecku nowy `x-claude-code-agent-id` przy
   ponownej delegacji, więc żadne dziecko nie ma dwóch żądań przez granicę wznowienia. `compaction`:
   tryb `-p` nie skompaktował rozmowy pod `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (200 i 1000) ani
   `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1`; zero znaczników `compact_boundary`. `nested`: przebieg trafił
   na samoczynną aktualizację klienta do 2.1.268, w której pierwsza wiadomość dziecka ma trzy bloki
   tekstowe zamiast dwóch, więc slot `after-native-context-v1` związany z wersją poprawnie odmówił
-  routingu (`missing-selection`); nagłówek `x-claude-code-parent-agent-id` nadal niezmierzony.
+  routingu (`missing-selection`). At that checkpoint `x-claude-code-parent-agent-id` had not been
+  observed on any run; it stays unmeasured for 2.1.268.
   Dodano fiksturę `claude-code-2.1.268.json` z każdą sondą `pending`; fikstura 2.1.267 bez zmian.
   To nie jest promocja wsparcia; szczegóły w [transport/GAPS.md](transport/GAPS.md).
 - 2026-09-11: drugi zmierzony układ promptu rodzica, `after-native-context-v2` (trzy bloki
@@ -77,6 +79,19 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   `claude-code-2.1.268.json` ma teraz `probes."M3-A": "passed"`, ale nadal nie deklaruje pola
   `parentPromptPosition`, więc produkcyjnie slot pozostaje zamknięty; szczegóły w
   [transport/GAPS.md](transport/GAPS.md).
+- 2026-09-11: the `nested` lifecycle phase is measured and `passed` for 2.1.267 on a version-pinned
+  run (`tests/probes/.runs/nested-gBXfBh`, launcher using the canonical versioned path for 2.1.267,
+  judged by `tests/probes/judge-run.ts`). The parent decoded `PARENT_FINAL_OK` and the run produced
+  a real grandchild whose request carried `x-claude-code-parent-agent-id` matching another observed
+  child id; this run newly observes that header, superseding the earlier runs where it was absent,
+  and it stays unmeasured for 2.1.268. `fixture-writer.ts` narrowed exactly `lifecycle.nested:
+  passed` into
+  [../tests/fixtures/capabilities/claude-code-2.1.267.json](../tests/fixtures/capabilities/claude-code-2.1.267.json)
+  with one `diagnostics` entry naming the run, and nothing was edited by hand. `status` stays
+  `pending`, every probe other than the already-passing `M3-A` stays `pending` (`M10` and
+  `M10-freshness` included), the `resume` and `compaction` phases stay `pending`, and
+  `parentPromptPosition` is untouched, so this is not a support promotion. Full capture detail lives
+  in [transport/GAPS.md](transport/GAPS.md).
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 

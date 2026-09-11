@@ -71,9 +71,10 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   agent runs, not evidence the real client dispatched sequentially. M3-A and `parallel` are
   independent probes, so `fixture-writer.ts` narrowed exactly one key into
   [../../tests/fixtures/capabilities/claude-code-2.1.267.json](../../tests/fixtures/capabilities/claude-code-2.1.267.json):
-  `probes.M3-A: passed`, with a `diagnostics` entry naming run `handler-yYv981`. `status`, `M10`,
-  every lifecycle phase and every other probe stay `pending`, so the alternate slot is still closed
-  in production until M10 and the lifecycle phases are measured for this version.
+  `probes.M3-A: passed`, with a `diagnostics` entry naming run `handler-yYv981`. At that checkpoint
+  `status`, `M10`, every lifecycle phase and every other probe stayed `pending`, so the alternate
+  slot was still closed in production until M10 and the lifecycle phases are measured for this
+  version.
 
 - **M10 lifecycle-phase and M10-freshness judges exist, but no real pass is recorded.**
   [verified] direct read of
@@ -132,10 +133,10 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   `tests/probes/fixture-writer.ts` narrowed exactly `lifecycle.parallel: passed` and
   `lifecycle["next-turn"]: passed` into
   [../../tests/fixtures/capabilities/claude-code-2.1.267.json](../../tests/fixtures/capabilities/claude-code-2.1.267.json),
-  with one `diagnostics` entry per key naming run `next-turn-jFdsmI`. `status`, `M10`,
-  `M10-freshness` and the three remaining lifecycle phases (`resume`, `compaction`, `nested`) stay
-  `pending` -- this run never declared or exercised them -- so the alternate slot stays closed in
-  production until M10 itself and the remaining phases are measured for this version.
+  with one `diagnostics` entry per key naming run `next-turn-jFdsmI`. At that checkpoint `status`,
+  `M10`, `M10-freshness` and the three remaining lifecycle phases (`resume`, `compaction`, `nested`)
+  stayed `pending` -- this run never declared or exercised them -- so the alternate slot stayed
+  closed in production until M10 itself and the remaining phases are measured for this version.
 - **M10-freshness confirmed pending again on the next-turn run, same root cause as before, not a
   new gap.** [verified] direct read of `tests/probes/.runs/next-turn-jFdsmI/capture`: zero
   instance-fetch/delegation-register/delegation-consume/delegation-replay files were recorded
@@ -208,9 +209,11 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   version emits a `compact_boundary` marker under a controllable setting, or the judge gains a
   compaction-specific signal other than a later request carrying that marker (an operator
   decision, RED first, not made here).
-- **`nested` lifecycle: the probe mode exists, but the only real run so far hit a client
-  auto-update to 2.1.268 and could not route any child, so the phase stays `pending` for 2.1.267
-  (unmeasured) and 2.1.268 (fail-closed).** [verified] direct read of
+- **`nested` lifecycle, first attempt (2026-09-10, historical): the probe mode exists, but this
+  run hit a client auto-update to 2.1.268 and could not route any child, so it left the phase
+  `pending` for 2.1.267 (unmeasured) and 2.1.268 (fail-closed). The pinned 2.1.267 rerun in the
+  next bullet has since measured the phase; the 2.1.268 result below stands as measured.**
+  [verified] direct read of
   `tests/probes/.runs/nested-PogPYc` (2026-09-10, `PROBE_PROFILE_BASE=real
   PROBE_PHASES_EXERCISED=nested tests/probes/native-claude-run.sh nested`): a new `nested`
   launcher mode grants exactly `native-probe-alpha` the `Agent` tool (beta and every other mode
@@ -236,13 +239,34 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   exactly two blocks with the scaffold in block 0, so it correctly fell back to the legacy slot,
   which never sees the marker. This is the fail-closed behaviour the spec requires, not a probe
   defect, and it means the 2.1.267 M3-A pass does not carry over. `judgeLifecyclePhase('nested')`
-  returned `pending` with `nested-requires-observed-parent-agent-id-header`; whether 2.1.268 (or
-  2.1.267) sends that header on a grandchild request is still unmeasured, because no grandchild
-  was ever spawned. A new all-pending `claude-code-2.1.268.json` fixture is added so the next run
+  returned `pending` with `nested-requires-observed-parent-agent-id-header`; as of this run neither
+  2.1.268 nor 2.1.267 had been seen sending that header on a grandchild request, because no
+  grandchild was ever spawned. The pinned run in the next bullet has since observed it on 2.1.267;
+  for 2.1.268 it stays unmeasured. A new all-pending `claude-code-2.1.268.json` fixture is added so the next run
   starts from a real fixture; nothing in it or in the 2.1.267 fixture changed by hand. Next: pin
   the launcher to an explicit versioned binary so a run can target 2.1.267 deliberately and rerun
   `nested` there. The 2.1.268 three-block layout has since been measured as its own M3-A run; see
   the `after-native-context-v2` bullet below.
+
+- **`nested` lifecycle is `passed` for 2.1.267 on a version-pinned run.** [verified]
+  `tests/probes/.runs/nested-gBXfBh` (2026-09-11), judged by
+  [../../tests/probes/judge-run.ts](../../tests/probes/judge-run.ts); the launcher used the
+  canonical versioned path `/Users/me/.local/share/claude/versions/2.1.267` and every captured
+  client request reports 2.1.267. The parent decoded `PARENT_FINAL_OK` (`is_error: false`, empty
+  `permission_denials`) and `subagent_stats` shows a real grandchild: `spawned` 3, `max_depth` 2,
+  `spawned_by_subagents` 1. Exactly one of the four routed child requests carried
+  `x-claude-code-parent-agent-id`, matching another observed child id; this run newly observes that
+  header, superseding the runs documented above where it was absent, and it stays unmeasured for
+  2.1.268. Upstream models held stable: alpha twice on `gateway/fast-worker`, each beta once on
+  `gateway/smart-worker`, the parent on `probe-parent-model`. `lifecycle.nested` judged `passed` and
+  `m3a.result` `passed` (`pairCount` 4, all six per-pair booleans true, zero diagnostics); a
+  negative control removing the parent header from the in-memory evidence flipped nested back to
+  `pending` with `nested-requires-observed-parent-agent-id-header`, and the saved capture is
+  unmodified. `writeCapabilityFixture` narrowed exactly `lifecycle.nested: passed` into
+  [../../tests/fixtures/capabilities/claude-code-2.1.267.json](../../tests/fixtures/capabilities/claude-code-2.1.267.json)
+  with one `diagnostics` entry naming the run. Still `pending` for 2.1.267: `status`, `M1`-`M4`,
+  `M3-B2`, `M10`, `M10-freshness`, `resume`, `compaction`; `parentPromptPosition` is untouched, so
+  the alternate slot stays closed in production.
 
 - **`after-native-context-v2`: the 2.1.268 three-block layout is measured and `M3-A` is `passed`
   for that version, but the slot stays shut in production because no fixture declares the
