@@ -7,17 +7,32 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { loadCapabilityProfile } from '../../src/adapters/capabilities';
+import type { CapabilityProfile } from '../../src/core/types';
 import {
   AGENT_TOOL_NAME,
   CHANNEL_A_AGENTS,
   PARENT_CLIENT_MODEL,
+  SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS,
   buildChildRequest,
   buildParentRequest,
   createHandlerFixture,
   markerLine,
+  realLayoutProfile,
   syntheticLayoutProfile,
 } from './native-claude-handler';
+import { diffCapturedAgainstReal } from './evidence-m3a';
 import { nativeContextBlockV1, nativeLayoutUserMessage } from '../support/native-layout';
+
+const CAPABILITIES_FIXTURES = join(import.meta.dir, '..', 'fixtures', 'capabilities');
+
+function pathIsDeclared(path: string, declared: ReadonlySet<string>): boolean {
+  if (declared.has(path)) return true;
+  for (const entry of declared) {
+    if (entry.endsWith('.*') && path.startsWith(entry.slice(0, -1))) return true;
+  }
+  return false;
+}
 
 function jsonRequest(path: string, body: unknown): Request {
   return new Request(`http://router.local${path}`, {
@@ -291,6 +306,100 @@ describe('channel-A handler fixture', () => {
   });
 });
 
+describe('channel-A handler fixture: forced two-request child flow (childReadFilePath, opt-in)', () => {
+  function jsonRequestWithHeaders(path: string, body: unknown, headers: Record<string, string>): Request {
+    return new Request(`http://router.local${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+  }
+
+  // Real Anthropic-shaped child continuation turn: the original marker-bearing user message,
+  // then the assistant's forced tool_use, then the user's tool_result for it. Mirrors what a
+  // real client sends after executing a tool the fixture told it to call.
+  function childContinuationRequest(alias: string, taskPrompt: string, toolUseId: string, resultText: string): Record<string, unknown> {
+    const base = buildChildRequest(alias, taskPrompt) as { messages: unknown[] };
+    return {
+      ...base,
+      messages: [
+        ...base.messages,
+        { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: { file_path: '/tmp/probe-child-read-fixture.txt' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: [{ type: 'text', text: resultText }] }] },
+      ],
+    };
+  }
+
+  test('the default (no childReadFilePath) keeps one request per child, immediate echo -- unchanged from before this option existed', async () => {
+    const { handler, seen } = await createHandlerFixture();
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const res = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agent.alias, 'task'), { 'x-claude-code-agent-id': 'agent-default' }));
+    const events = await decodeSse(res);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(0);
+    expect(textOf(events)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+    expect(seen).toHaveLength(1);
+  });
+
+  test('a routed child gets a tool_use for Read on its first request, and the real echo only after answering it with a matching tool_result -- two forwarded requests, one stable upstream model, keyed by agent id', async () => {
+    const { handler, seen } = await createHandlerFixture({ childReadFilePath: '/tmp/probe-child-read-fixture.txt' });
+    const agent = CHANNEL_A_AGENTS[1]!;
+    const agentId = 'agent-forced-two-request';
+
+    const firstRes = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agent.alias, 'task'), { 'x-claude-code-agent-id': agentId }));
+    expect(firstRes.status).toBe(200);
+    const firstEvents = await decodeSse(firstRes);
+    const firstToolUses = reassembleToolUseBlocks(firstEvents);
+    expect(firstToolUses).toHaveLength(1); // first reply is a tool_use, never the echo directly
+    expect(firstToolUses[0]?.name).toBe('Read');
+    expect(firstToolUses[0]?.input.file_path).toBe('/tmp/probe-child-read-fixture.txt');
+    expect(stopReasonOf(firstEvents)).toBe('tool_use');
+
+    const secondRes = await handler(
+      jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agent.alias, 'task', firstToolUses[0]!.id, 'file contents'), { 'x-claude-code-agent-id': agentId }),
+    );
+    expect(secondRes.status).toBe(200);
+    const secondEvents = await decodeSse(secondRes);
+    expect(reassembleToolUseBlocks(secondEvents)).toHaveLength(0); // no third round; the loop ends here
+    expect(stopReasonOf(secondEvents)).toBe('end_turn');
+    expect(textOf(secondEvents)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`); // real echo, only on the second request
+
+    expect(seen).toHaveLength(2); // two requests actually forwarded upstream, not one
+    expect(seen[0]?.body.model).toBe(agent.upstreamModel);
+    expect(seen[1]?.body.model).toBe(agent.upstreamModel); // stable upstream model across both requests, no drift
+  });
+
+  test('a tool_result for a foreign or stale tool_use id is treated as a fresh first request, never a shortcut to the echo', async () => {
+    const { handler, seen } = await createHandlerFixture({ childReadFilePath: '/tmp/probe-child-read-fixture.txt' });
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const agentId = 'agent-wrong-tool-result';
+
+    await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agent.alias, 'task'), { 'x-claude-code-agent-id': agentId }));
+    const res = await handler(
+      jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agent.alias, 'task', 'toolu_totally_unrelated', 'file contents'), { 'x-claude-code-agent-id': agentId }),
+    );
+    const events = await decodeSse(res);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(1); // re-issues a tool_use, does not fall through to the echo
+    expect(seen).toHaveLength(2);
+    expect(seen.every((r) => r.body.model === agent.upstreamModel)).toBe(true);
+  });
+
+  test('two different agent ids are tracked independently: one answering its tool_use never unlocks the echo for the other', async () => {
+    const { handler } = await createHandlerFixture({ childReadFilePath: '/tmp/probe-child-read-fixture.txt' });
+    const [agentAlpha, agentBeta] = CHANNEL_A_AGENTS;
+
+    const alphaFirst = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agentAlpha!.alias, 'task-a'), { 'x-claude-code-agent-id': 'agent-alpha' }));
+    const alphaToolUseId = reassembleToolUseBlocks(await decodeSse(alphaFirst))[0]!.id;
+
+    // Beta answers ALPHA's tool_use id under its OWN agent id header -- must not be accepted.
+    const betaWithAlphasId = await handler(
+      jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agentBeta!.alias, 'task-b', alphaToolUseId, 'file contents'), { 'x-claude-code-agent-id': 'agent-beta' }),
+    );
+    const betaEvents = await decodeSse(betaWithAlphasId);
+    expect(reassembleToolUseBlocks(betaEvents)).toHaveLength(1); // beta gets its OWN fresh tool_use, not the echo
+    expect(textOf(betaEvents)).not.toBe(`CHILD_SAW_MODEL=${agentBeta!.upstreamModel}`);
+  });
+});
+
 describe('channel-A handler fixture: measured native context layout (stage 2a amendment)', () => {
   const OBSERVED_VERSION = '9.9.9'; // synthetic; the launcher passes the real observed one
 
@@ -331,5 +440,310 @@ describe('channel-A handler fixture: measured native context layout (stage 2a am
     const res = await bound.handler(req);
     expect(res.status).toBe(422);
     expect(bound.seen).toHaveLength(0);
+  });
+});
+
+describe('channel-A handler fixture: resume re-delegation (resumeReDelegate, opt-in)', () => {
+  function roundResults(prefix: string) {
+    return CHANNEL_A_AGENTS.map((agent, i) => ({
+      toolUseId: `${prefix}_${i}`,
+      content: nativeStyleResultContent(`CHILD_SAW_MODEL=${agent.upstreamModel}`),
+    }));
+  }
+
+  // A resumed request whose messages extend past the finalized tool_results with a fresh user
+  // turn (the real client's shape when a session continues after a prior round completed).
+  function resumedRequestWithNewTurn(
+    priorResults: Array<{ toolUseId: string; content: Array<{ type: 'text'; text: string }> }>,
+    newPrompt: string,
+  ): Record<string, unknown> {
+    const base = buildParentFinalRequest(priorResults) as { messages: unknown[] };
+    return {
+      ...base,
+      messages: [...base.messages, { role: 'user', content: newPrompt }],
+    };
+  }
+
+  test('a retried final request (identical body, no new user turn) does NOT re-delegate and still reports PARENT_FINAL_OK', async () => {
+    const { handler } = await createHandlerFixture({ resumeReDelegate: true });
+    await handler(jsonRequest('/v1/messages', buildParentRequest()));
+
+    const results = roundResults('toolu_probe');
+    const firstFinal = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(results)));
+    expect(textOf(await decodeSse(firstFinal))).toBe('PARENT_FINAL_OK'); // round 1 finalized
+
+    // The client lost the response and resends the IDENTICAL final body. This is a retry, not a
+    // resume: no new user turn follows, so it must NOT consume the one-shot re-delegation.
+    const retry = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(results)));
+    const retryEvents = await decodeSse(retry);
+    expect(reassembleToolUseBlocks(retryEvents)).toHaveLength(0);
+    expect(textOf(retryEvents)).toBe('PARENT_FINAL_OK');
+  });
+
+  test('a resumed turn with a NEW user turn after the finalized tool_results re-delegates exactly once', async () => {
+    const { handler } = await createHandlerFixture({ resumeReDelegate: true });
+    await handler(jsonRequest('/v1/messages', buildParentRequest()));
+
+    const results = roundResults('toolu_probe');
+    const firstFinal = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(results)));
+    expect(textOf(await decodeSse(firstFinal))).toBe('PARENT_FINAL_OK');
+
+    const resumed = await handler(jsonRequest('/v1/messages', resumedRequestWithNewTurn(results, 'Delegate again')));
+    const resumedEvents = await decodeSse(resumed);
+    const toolUses = reassembleToolUseBlocks(resumedEvents);
+    expect(toolUses).toHaveLength(CHANNEL_A_AGENTS.length);
+    expect(toolUses.every((t) => t.name === AGENT_TOOL_NAME)).toBe(true);
+    expect(stopReasonOf(resumedEvents)).toBe('tool_use');
+
+    // A SECOND resumed turn must NOT re-delegate again (one-shot): the allowance is spent.
+    const second = await handler(jsonRequest('/v1/messages', resumedRequestWithNewTurn(results, 'Again')));
+    const secondEvents = await decodeSse(second);
+    expect(reassembleToolUseBlocks(secondEvents)).toHaveLength(0);
+    expect(stopReasonOf(secondEvents)).toBe('end_turn');
+  });
+
+  test('a resumed round whose final request carries BOTH rounds of tool_results still judges PARENT_FINAL_OK', async () => {
+    const { handler } = await createHandlerFixture({ resumeReDelegate: true });
+    await handler(jsonRequest('/v1/messages', buildParentRequest()));
+
+    const prior = roundResults('toolu_probe');
+    const firstFinal = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(prior)));
+    expect(textOf(await decodeSse(firstFinal))).toBe('PARENT_FINAL_OK');
+
+    // Re-delegate: this round owns toolu_probe_r1_* ids.
+    await handler(jsonRequest('/v1/messages', resumedRequestWithNewTurn(prior, 'Delegate again')));
+
+    const current = roundResults('toolu_probe_r1');
+    // Final request for the resumed round: the real client keeps the PRIOR round's tool_results
+    // in history AND appends the current round's. Only the current (pending) ids may count.
+    const mixedRequest = (() => {
+      const base = buildParentFinalRequest(current) as { messages: unknown[] };
+      const priorFinal = buildParentFinalRequest(prior) as { messages: unknown[] };
+      // Splice the prior round's assistant+user turns before the current round's final user turn.
+      const priorTurns = priorFinal.messages.slice(1, 3);
+      const lastUser = base.messages[base.messages.length - 1];
+      return { ...base, messages: [base.messages[0], ...priorTurns, ...base.messages.slice(1, -1), lastUser] };
+    })();
+    const finalRes = await handler(jsonRequest('/v1/messages', mixedRequest));
+    const events = await decodeSse(finalRes);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(0);
+    expect(textOf(events)).toBe('PARENT_FINAL_OK');
+  });
+
+  test('without resumeReDelegate, the same replayed tool_results end the turn (PARENT_FINAL_OK, never re-delegate)', async () => {
+    const { handler } = await createHandlerFixture();
+    await handler(jsonRequest('/v1/messages', buildParentRequest()));
+
+    const results = roundResults('toolu_probe');
+    const firstFinal = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(results)));
+    expect(textOf(await decodeSse(firstFinal))).toBe('PARENT_FINAL_OK');
+
+    const replayed = await handler(jsonRequest('/v1/messages', buildParentFinalRequest(results)));
+    const events = await decodeSse(replayed);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(0); // no re-delegation: the loop ends
+    expect(textOf(events)).toBe('PARENT_FINAL_OK');
+  });
+});
+
+describe('channel-A handler fixture: nested delegation (nestedDelegatingAgent, opt-in)', () => {
+  function jsonRequestWithHeaders(path: string, body: unknown, headers: Record<string, string>): Request {
+    return new Request(`http://router.local${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+  }
+
+  // Real Anthropic-shaped child continuation turn for a nested Agent delegation: the original
+  // marker-bearing user message, then the assistant's forced Agent tool_use (the nested
+  // delegation), then the user's tool_result for it. Mirrors what a real client sends after
+  // executing the nested delegation the fixture told it to perform.
+  function nestedContinuationRequest(alias: string, taskPrompt: string, toolUseId: string, resultText: string): Record<string, unknown> {
+    const base = buildChildRequest(alias, taskPrompt) as { messages: unknown[] };
+    return {
+      ...base,
+      messages: [
+        ...base.messages,
+        { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: AGENT_TOOL_NAME, input: { subagent_type: CHANNEL_A_AGENTS[1]!.name } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: [{ type: 'text', text: resultText }] }] },
+      ],
+    };
+  }
+
+  test("with nestedDelegatingAgent set, the delegating child's first request gets exactly one Agent tool_use to beta with the smart marker and stop_reason tool_use", async () => {
+    const { handler } = await createHandlerFixture({ nestedDelegatingAgent: 'native-probe-alpha' });
+    const delegating = CHANNEL_A_AGENTS[0]!; // alpha routes to gateway/fast-worker, the one that delegates
+    const target = CHANNEL_A_AGENTS[1]!; // beta routes to gateway/smart-worker, the nested target
+
+    const res = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(delegating.alias, 'task'), { 'x-claude-code-agent-id': 'agent-alpha' }));
+    expect(res.status).toBe(200);
+    const events = await decodeSse(res);
+    const toolUses = reassembleToolUseBlocks(events);
+    expect(toolUses).toHaveLength(1); // exactly ONE nested delegation, never two
+    expect(toolUses[0]?.name).toBe(AGENT_TOOL_NAME);
+    expect(toolUses[0]?.input.subagent_type).toBe(target.name);
+    const prompt = toolUses[0]?.input.prompt as string;
+    expect(prompt.split('\n')[0]).toBe(markerLine(target.alias)); // smart marker selects beta
+    expect(stopReasonOf(events)).toBe('tool_use');
+  });
+
+  test("the delegating child's second request carrying the matching tool_result gets the echo", async () => {
+    const { handler, seen } = await createHandlerFixture({ nestedDelegatingAgent: 'native-probe-alpha' });
+    const delegating = CHANNEL_A_AGENTS[0]!;
+    const agentId = 'agent-alpha';
+
+    const firstRes = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(delegating.alias, 'task'), { 'x-claude-code-agent-id': agentId }));
+    const toolUseId = reassembleToolUseBlocks(await decodeSse(firstRes))[0]!.id;
+    expect(toolUseId).toBe('toolu_nested_0'); // deterministic id, keyed to the delegating child
+
+    const secondRes = await handler(
+      jsonRequestWithHeaders('/v1/messages', nestedContinuationRequest(delegating.alias, 'task', toolUseId, 'nested result'), { 'x-claude-code-agent-id': agentId }),
+    );
+    const secondEvents = await decodeSse(secondRes);
+    expect(reassembleToolUseBlocks(secondEvents)).toHaveLength(0); // no third round; the loop ends here
+    expect(stopReasonOf(secondEvents)).toBe('end_turn');
+    expect(textOf(secondEvents)).toBe(`CHILD_SAW_MODEL=${delegating.upstreamModel}`); // real echo, only on the second request
+
+    expect(seen).toHaveLength(2); // two requests actually forwarded upstream, not one
+    expect(seen[0]?.body.model).toBe(delegating.upstreamModel);
+    expect(seen[1]?.body.model).toBe(delegating.upstreamModel); // stable upstream model, no drift
+  });
+
+  test('a request from the other child gets the plain echo even with nestedDelegatingAgent set', async () => {
+    const { handler } = await createHandlerFixture({ nestedDelegatingAgent: 'native-probe-alpha' });
+    const other = CHANNEL_A_AGENTS[1]!; // beta, NOT the delegating agent
+
+    const res = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(other.alias, 'task'), { 'x-claude-code-agent-id': 'agent-beta' }));
+    const events = await decodeSse(res);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(0); // plain echo, no nested delegation
+    expect(textOf(events)).toBe(`CHILD_SAW_MODEL=${other.upstreamModel}`);
+  });
+
+  test('without nestedDelegatingAgent, behaviour is byte-identical (the child gets the immediate echo)', async () => {
+    const { handler } = await createHandlerFixture();
+    const delegating = CHANNEL_A_AGENTS[0]!;
+
+    const res = await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(delegating.alias, 'task'), { 'x-claude-code-agent-id': 'agent-alpha' }));
+    const events = await decodeSse(res);
+    expect(reassembleToolUseBlocks(events)).toHaveLength(0); // one request, immediate echo, exactly as before this option existed
+    expect(textOf(events)).toBe(`CHILD_SAW_MODEL=${delegating.upstreamModel}`);
+  });
+});
+
+describe('realLayoutProfile (stage 2a real-base variant, PROBE_PROFILE_BASE=real)', () => {
+  test('diverges from the real fixture on exactly the declared scaffold paths, everything else carried over untouched', async () => {
+    const realFixture = await loadCapabilityProfile('claude-code', '2.1.266', CAPABILITIES_FIXTURES);
+    const profile = realLayoutProfile(realFixture);
+
+    const diverged = diffCapturedAgainstReal(profile as unknown as Record<string, unknown>, realFixture as unknown as Record<string, unknown>);
+    const declared = new Set(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS);
+    const undeclared = diverged.filter((path) => !pathIsDeclared(path, declared));
+
+    expect(undeclared).toEqual([]); // no divergence the manifest fails to cover
+    expect(diverged.length).toBeGreaterThan(0); // and it must genuinely diverge on something, not vacuously pass
+
+    // Everything NOT explicitly overridden by realLayoutProfile must come straight from the
+    // real fixture: client, correlation-related fields, adapterMarkerPosition, and every probe
+    // the real fixture declares besides the two this variant sets (M10, M3-A).
+    expect(profile.client).toBe(realFixture.client);
+    expect(profile.version).toBe(realFixture.version);
+    expect(profile.correlation).toBe(realFixture.correlation);
+    expect(profile.correlationEntropy).toBe(realFixture.correlationEntropy);
+    expect(profile.fork).toBe(realFixture.fork);
+    expect(profile.adapterMarkerPosition).toBe(realFixture.adapterMarkerPosition);
+    for (const [name, result] of Object.entries(realFixture.probes)) {
+      if (name === 'M10' || name === 'M3-A') continue;
+      expect(profile.probes[name]).toBe(result);
+    }
+  });
+
+  test('overrides exactly what SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS declares', async () => {
+    const realFixture = await loadCapabilityProfile('claude-code', '2.1.267', CAPABILITIES_FIXTURES);
+    const profile = realLayoutProfile(realFixture);
+
+    expect(profile.status).toBe('supported');
+    expect(profile.probes.M10).toBe('passed');
+    expect(profile.probes['M3-A']).toBe('passed');
+    expect(profile.parentPromptPosition).toBe('after-native-context-v1');
+    expect(profile.lifecycle).toEqual({ 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' });
+  });
+});
+
+describe('layout v2 profile variant (PROBE_LAYOUT=v2)', () => {
+  test('both profile builders take the layout position and default to v1 when it is omitted', async () => {
+    const realFixture = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
+
+    expect(syntheticLayoutProfile('2.1.268').parentPromptPosition).toBe('after-native-context-v1');
+    expect(realLayoutProfile(realFixture).parentPromptPosition).toBe('after-native-context-v1');
+
+    expect(syntheticLayoutProfile('2.1.268', 'after-native-context-v2').parentPromptPosition).toBe('after-native-context-v2');
+    expect(realLayoutProfile(realFixture, 'after-native-context-v2').parentPromptPosition).toBe('after-native-context-v2');
+  });
+
+  // Declaring a path in the scaffold manifest and diverging on it are different claims: the override
+  // always SETS parentPromptPosition, so the manifest must always name it, while the divergence only
+  // shows up when the base did not already carry that value. A real fixture declaring v2 is a
+  // recording, not a regression, so the contract runs over every base shape, on in-memory copies.
+  function assertLayoutContract(label: string, base: CapabilityProfile, profile: CapabilityProfile): void {
+    const declared = new Set(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS);
+
+    // The override always declares v2, whatever the base said. The label rides along in the
+    // compared object so a failure names which base variant broke.
+    expect({ base: label, declared: profile.parentPromptPosition }).toEqual({ base: label, declared: 'after-native-context-v2' });
+
+    const diverged = diffCapturedAgainstReal(profile as unknown as Record<string, unknown>, base as unknown as Record<string, unknown>);
+
+    // Every path that actually differs is covered by the manifest, for every base. This is the
+    // property extractM3AEvidence relies on, and the one that must never regress.
+    expect(diverged.filter((path) => !pathIsDeclared(path, declared))).toEqual([]);
+    // Non-vacuous: status and probes.M10 always differ from a pending real fixture.
+    expect(diverged.length).toBeGreaterThan(0);
+
+    // And the layout path diverges exactly when the base did not already carry v2.
+    expect({ base: label, diverges: diverged.includes('parentPromptPosition') }).toEqual({
+      base: label,
+      diverges: base.parentPromptPosition !== 'after-native-context-v2',
+    });
+
+    // Everything the v2 override does not touch still comes straight from the base fixture.
+    expect(profile.adapterMarkerPosition).toBe(base.adapterMarkerPosition);
+    expect(profile.correlation).toBe(base.correlation);
+  }
+
+  test('the v2 variant still overrides exactly what the scaffold manifest declares, for every base layout value, so a v2 run stays judgeable', async () => {
+    const loaded = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
+    const { parentPromptPosition: _dropped, ...withoutLayout } = loaded;
+
+    const bases: ReadonlyArray<{ label: string; base: CapabilityProfile }> = [
+      { label: 'absent', base: withoutLayout as CapabilityProfile },
+      { label: 'after-native-context-v1', base: { ...withoutLayout, parentPromptPosition: 'after-native-context-v1' } as CapabilityProfile },
+      { label: 'after-native-context-v2', base: { ...withoutLayout, parentPromptPosition: 'after-native-context-v2' } as CapabilityProfile },
+    ];
+
+    // The manifest must name parentPromptPosition under every base: the override writes that field
+    // unconditionally, so it is always a path the scaffold is responsible for declaring.
+    expect(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS).toContain('parentPromptPosition');
+
+    for (const { label, base } of bases) {
+      assertLayoutContract(label, base, realLayoutProfile(base, 'after-native-context-v2'));
+    }
+  });
+
+  test('assertLayoutContract passes the real override and throws for a forgotten or a straying one', async () => {
+    const loaded = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
+    const { parentPromptPosition: _dropped, ...withoutLayout } = loaded;
+    const v1Base = { ...withoutLayout, parentPromptPosition: 'after-native-context-v1' } as CapabilityProfile;
+
+    // Positive control: the real override passes the very check the mutants must fail, so a helper
+    // that throws for everything cannot fake this test green.
+    expect(() => assertLayoutContract('real override', v1Base, realLayoutProfile(v1Base, 'after-native-context-v2'))).not.toThrow();
+
+    // Mutation 1: an override that never writes the field at all, keeping the base's v1 value.
+    const forgotten = { ...realLayoutProfile(v1Base, 'after-native-context-v2'), parentPromptPosition: v1Base.parentPromptPosition } as CapabilityProfile;
+    expect(() => assertLayoutContract('forgotten', v1Base, forgotten)).toThrow();
+
+    // Mutation 2: an override that writes an undeclared field instead.
+    const straying = { ...realLayoutProfile(v1Base, 'after-native-context-v2'), adapterMarkerPosition: 'system' } as CapabilityProfile;
+    expect(() => assertLayoutContract('straying', v1Base, straying)).toThrow();
   });
 });

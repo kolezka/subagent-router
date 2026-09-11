@@ -119,7 +119,7 @@ async function readFixtureFile(path: string, fixtureName: string): Promise<ReadF
 const PROBE_RESULTS: readonly ProbeResult[] = ['passed', 'failed', 'pending'];
 const PROFILE_STATUSES: readonly CapabilityProfile['status'][] = ['pending', 'supported', 'unsupported'];
 const MARKER_POSITIONS: readonly CapabilityProfile['adapterMarkerPosition'][] = ['system', 'first-user', 'b2', 'unknown'];
-const PARENT_PROMPT_POSITIONS: readonly ParentPromptPosition[] = ['first-text', 'after-native-context-v1'];
+const PARENT_PROMPT_POSITIONS: readonly ParentPromptPosition[] = ['first-text', 'after-native-context-v1', 'after-native-context-v2'];
 
 function isProbeResult(value: unknown): value is ProbeResult {
   return typeof value === 'string' && (PROBE_RESULTS as readonly string[]).includes(value);

@@ -122,15 +122,20 @@ export function observedClaudeClientVersion(headers: Headers): string | undefine
   return CLAUDE_CLI_USER_AGENT_RE.exec(userAgent)?.[1];
 }
 
-// createHandler freezes one profile per generation and never reloads it per request, so the
-// alternate layout, measured on one exact client version, must additionally be bound to the
+// createHandler freezes one profile per generation and never reloads it per request, so an
+// alternate layout, each measured on one exact client version, must additionally be bound to the
 // version this request actually claims. Anything else falls back to the legacy first-text slot.
+// The profile's declared layout is returned as-is, never widened: a v1 profile opens only the
+// two-block slot and a v2 profile only the three-block one.
+const ALTERNATE_PARENT_PROMPT_POSITIONS: readonly ParentPromptPosition[] = ['after-native-context-v1', 'after-native-context-v2'];
+
 function effectiveParentPromptPosition(profile: CapabilityProfile, headers: Headers): ParentPromptPosition {
-  if (profile.parentPromptPosition !== 'after-native-context-v1') return 'first-text';
+  const declared = profile.parentPromptPosition;
+  if (declared === undefined || !ALTERNATE_PARENT_PROMPT_POSITIONS.includes(declared)) return 'first-text';
   if (profile.probes['M3-A'] !== 'passed') return 'first-text';
   const observedVersion = observedClaudeClientVersion(headers);
   if (observedVersion === undefined || observedVersion !== profile.version) return 'first-text';
-  return 'after-native-context-v1';
+  return declared;
 }
 
 export async function normalizeClaudeRequest(
