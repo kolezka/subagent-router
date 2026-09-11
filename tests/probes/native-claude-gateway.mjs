@@ -10,6 +10,9 @@ import path from 'node:path';
 
 const OUT = process.env.PROBE_OUT;
 const MODE = process.env.PROBE_MODE || 'simple';
+// M2 measurement: when set, every scripted Agent call carries this value in its `model`
+// parameter, so the capture shows what clientModel the real client sends for a full id.
+const AGENT_MODEL = process.env.PROBE_AGENT_MODEL || undefined;
 const MARKER = 'NATIVE_PROBE_CHILD_MARKER_7Q2';
 if (!OUT) throw new Error('PROBE_OUT required');
 fs.mkdirSync(OUT, { recursive: true });
@@ -53,7 +56,7 @@ function taskReply(model, tasks) {
     ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }],
   ];
   tasks.forEach((t, i) => {
-    const input = { description: t.desc, prompt: t.prompt, subagent_type: t.agent, run_in_background: false };
+    const input = { description: t.desc, prompt: t.prompt, subagent_type: t.agent, run_in_background: false, ...(AGENT_MODEL ? { model: AGENT_MODEL } : {}) };
     ev.push(['content_block_start', { type: 'content_block_start', index: i, content_block: { type: 'tool_use', id: `toolu_probe_${i}`, name: 'Agent', input: {} } }]);
     ev.push(['content_block_delta', { type: 'content_block_delta', index: i, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } }]);
     ev.push(['content_block_stop', { type: 'content_block_stop', index: i }]);

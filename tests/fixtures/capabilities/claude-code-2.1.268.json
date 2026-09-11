@@ -9,7 +9,7 @@
   "parentPromptPosition": "after-native-context-v2",
   "probes": {
     "M1": "pending",
-    "M2": "pending",
+    "M2": "failed",
     "M3": "pending",
     "M3-B2": "pending",
     "M4": "pending",
@@ -28,6 +28,7 @@
     "measured:M3-A=passed;run=handler-yXSP4o;at=2026-09-10T22:40:27.895Z",
     "measured:lifecycle.parallel=passed;run=next-turn-UJqWfM;at=2026-09-11T00:10:13.022Z",
     "measured:lifecycle.next-turn=passed;run=next-turn-UJqWfM;at=2026-09-11T00:10:13.022Z",
-    "measured:lifecycle.nested=passed;run=nested-uxI3hK;at=2026-09-11T00:10:13.031Z"
+    "measured:lifecycle.nested=passed;run=nested-uxI3hK;at=2026-09-11T00:10:13.031Z",
+    "measured:M2=failed;run=delegate-8EiyAy+delegate-IiHhdB;at=2026-09-11T04:19:13.352Z"
   ]
 }
