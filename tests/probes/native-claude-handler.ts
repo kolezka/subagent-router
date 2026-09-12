@@ -106,13 +106,27 @@ const DEFAULT_LAYOUT_POSITION: ParentPromptPosition = 'after-native-context-v1';
 // launcher actually observed via `claude --version` and passed in. 'M3-A' here is synthetic
 // scaffolding so the handler trial can run at all; a real M3-A pass is what that trial is
 // meant to produce, never something this fixture asserts.
-export function syntheticLayoutProfile(observedClientVersion: string, layout: ParentPromptPosition = DEFAULT_LAYOUT_POSITION): CapabilityProfile {
-  return {
+export function syntheticLayoutProfile(
+  observedClientVersion: string,
+  layout: ParentPromptPosition = DEFAULT_LAYOUT_POSITION,
+  correlationScaffold = false,
+): CapabilityProfile {
+  const base: CapabilityProfile = {
     ...SYNTHETIC_PROFILE,
     version: observedClientVersion,
     parentPromptPosition: layout,
     probes: { ...SYNTHETIC_PROFILE.probes, 'M3-A': 'passed' },
   };
+  return correlationScaffold ? withCorrelationScaffold(base) : base;
+}
+
+// The three profile fields src/adapters/capabilities.ts's claude-correlation gate reads. Applied
+// only when a run opts in (PROBE_CORRELATION_SCAFFOLD), so createHandler builds a CorrelationStore
+// and a marker-less child request can be routed by its x-claude-code-agent-id alone. Like every
+// other scaffold here this is a measurement device, never a claim: whether that channel actually
+// carries a child across a compaction is exactly what such a run is meant to find out.
+function withCorrelationScaffold(profile: CapabilityProfile): CapabilityProfile {
+  return { ...profile, correlation: true, correlationEntropy: 'passed', probes: { ...profile.probes, M1: 'passed' } };
 }
 
 // Real-base variant of syntheticLayoutProfile(): applies exactly the SAME channel-A overrides
@@ -123,14 +137,19 @@ export function syntheticLayoutProfile(observedClientVersion: string, layout: Pa
 // a run using this profile makes a judgeable claim (the fixture it diverges from is real, not a
 // measurement-only stand-in) while still declaring every path it overrode via
 // SCAFFOLD_OVERRIDDEN_PATHS below. Opt-in via PROBE_PROFILE_BASE=real; never the default.
-export function realLayoutProfile(realFixture: CapabilityProfile, layout: ParentPromptPosition = DEFAULT_LAYOUT_POSITION): CapabilityProfile {
-  return {
+export function realLayoutProfile(
+  realFixture: CapabilityProfile,
+  layout: ParentPromptPosition = DEFAULT_LAYOUT_POSITION,
+  correlationScaffold = false,
+): CapabilityProfile {
+  const base: CapabilityProfile = {
     ...realFixture,
     status: 'supported',
     probes: { ...realFixture.probes, M10: 'passed', 'M3-A': 'passed' },
     lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' },
     parentPromptPosition: layout,
   };
+  return correlationScaffold ? withCorrelationScaffold(base) : base;
 }
 
 // The scaffold manifest for BOTH syntheticLayoutProfile() and realLayoutProfile(): exactly the
@@ -141,6 +160,19 @@ export function realLayoutProfile(realFixture: CapabilityProfile, layout: Parent
 // one that omits a path that actually diverges) can never judge M3-A past 'pending', however clean
 // its request/response pairs look.
 export const SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS: readonly string[] = ['status', 'probes.M10', 'probes.M3-A', 'lifecycle.*', 'parentPromptPosition'];
+
+// Exactly the paths withCorrelationScaffold() overrides, in the same shape the manifest uses.
+export const CORRELATION_SCAFFOLD_OVERRIDDEN_PATHS: readonly string[] = ['correlation', 'correlationEntropy', 'probes.M1'];
+
+/**
+ * The declared-override manifest for one run: the layout scaffold's paths, plus the correlation
+ * ones when that scaffold was applied. Keeping the two lists joined here (rather than at each
+ * call site) is what stops a scaffolded run from writing a manifest that omits a path its profile
+ * actually diverges on, which extractM3AEvidence would report as an undeclared divergence.
+ */
+export function scaffoldOverriddenPaths(correlationScaffold: boolean): readonly string[] {
+  return correlationScaffold ? [...SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS, ...CORRELATION_SCAFFOLD_OVERRIDDEN_PATHS] : SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS;
+}
 
 export interface RecordedUpstreamRequest {
   url: string;
@@ -227,6 +259,13 @@ export interface HandlerFixtureOptions {
   // Never fakes the header: whether the grandchild request carries x-claude-code-parent-agent-id
   // is the real client's behavior to prove, never something this fixture synthesizes.
   nestedDelegatingAgent?: string;
+  // Opt-in: applies withCorrelationScaffold() to whichever profile this fixture ends up injecting,
+  // so createHandler builds a CorrelationStore and a child request with no marker can be routed
+  // by its x-claude-code-agent-id alone. For callers that do not build their own profile;
+  // native-claude-run.sh's own runs scaffold the profile they pass in instead, because the
+  // capture's NNN-profile.json has to show the scaffolded profile. Absent (the default), the
+  // correlation gate stays exactly as the injected profile had it.
+  correlationScaffold?: boolean;
 }
 
 export interface HandlerFixture {
@@ -659,6 +698,7 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
     return new Response(agentToolUseSse(body.model, pendingToolUses), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
 
+  const injectedProfile = options.profile ?? SYNTHETIC_PROFILE;
   const handler = createHandler({
     config: configFixture({
       modelOverrides: Object.fromEntries(
@@ -670,7 +710,7 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
     }),
     snapshot: await snapshotFixture(CHANNEL_A_AGENTS.map((agent) => agent.upstreamModel)),
     source: { sourceId: 'probe', effectiveGatewayUrl: 'http://127.0.0.1:1/v1', effectiveModelsUrl: 'http://127.0.0.1:1/v1/models', headers: {}, gatewayHeaders: {} },
-    profile: options.profile ?? SYNTHETIC_PROFILE,
+    profile: options.correlationScaffold === true ? withCorrelationScaffold(injectedProfile) : injectedProfile,
     transportProfile: { adapterId: 'fixture-fetch', runtimeVersion: 'synthetic-hermetic', status: 'passed', gzipBytes: 'passed', responseHeaders: 'passed' },
     secret: 'probe-secret',
     fetch: upstreamFetch,
@@ -736,16 +776,22 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   // measured on Claude Code 2.1.268 instead of the two-block v1 layout. Absent, empty or any
   // other value means v1, so behavior is byte-identical to before this variable existed.
   const layoutPosition: ParentPromptPosition = process.env.PROBE_LAYOUT === 'v2' ? 'after-native-context-v2' : 'after-native-context-v1';
+  // Opt-in: PROBE_CORRELATION_SCAFFOLD=1 additionally opens the correlation gate in the injected
+  // profile, so a run can exercise the agent-id correlation channel. Applied to the profile
+  // itself (not through the fixture option) so NNN-profile.json records what actually ran, and
+  // declared through the manifest below. Absent, empty or any other value leaves the gate shut,
+  // so every existing run is byte-identical to before this variable existed.
+  const correlationScaffold = process.env.PROBE_CORRELATION_SCAFFOLD === '1';
   const profile =
     process.env.PROBE_PROFILE_BASE === 'real'
-      ? realLayoutProfile(await loadCapabilityProfile('claude-code', observedClientVersion, `${import.meta.dir}/../fixtures/capabilities`), layoutPosition)
-      : syntheticLayoutProfile(observedClientVersion, layoutPosition);
+      ? realLayoutProfile(await loadCapabilityProfile('claude-code', observedClientVersion, `${import.meta.dir}/../fixtures/capabilities`), layoutPosition, correlationScaffold)
+      : syntheticLayoutProfile(observedClientVersion, layoutPosition, correlationScaffold);
   rec('profile', profile);
   // Sibling to NNN-profile.json, same sequence number, written directly (not through rec()) so
   // it never consumes a seq number of its own and shifts every later capture file's numbering.
   writeFileSync(
     `${OUT}/${String(seq).padStart(3, '0')}-profile-scaffold.json`,
-    JSON.stringify({ overriddenPaths: SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS }, null, 2),
+    JSON.stringify({ overriddenPaths: scaffoldOverriddenPaths(correlationScaffold) }, null, 2),
   );
 
   // Freshness measurement wiring (opt-in, PROBE_FRESHNESS_HOOK=production only). Records

@@ -20,11 +20,20 @@ export interface JudgedFixtureUpdate {
   runId: string;
   // Must be true (evidence-m3a.ts's extractM3AEvidence output) or the write is refused outright.
   scaffoldDeclared: boolean;
+  // The dotted profile paths the run declared it scaffolded (extractM3AEvidence's
+  // declaredScaffoldPaths). Only consulted by the correlation-gate guard below; a run that
+  // supplies nothing here is treated as having scaffolded no correlation path.
+  scaffoldedPaths?: readonly string[];
   probes?: Readonly<Record<string, ProbeResult>>;
   lifecycle?: Readonly<Partial<Record<LifecyclePhase, ProbeResult>>>;
 }
 
-const JUDGED_ALLOWED_KEYS = new Set<string>(['runId', 'scaffoldDeclared', 'probes', 'lifecycle']);
+const JUDGED_ALLOWED_KEYS = new Set<string>(['runId', 'scaffoldDeclared', 'scaffoldedPaths', 'probes', 'lifecycle']);
+
+// The three profile fields that together open the router's correlation channel
+// (src/adapters/capabilities.ts's claude-correlation gate). A run that scaffolded any of them
+// routed its children through correlation, which the real fixture does not claim.
+const CORRELATION_GATE_PATHS = new Set<string>(['probes.M1', 'correlation', 'correlationEntropy']);
 
 // judged arrives typed, but a caller can still smuggle an extra field past the type checker (a
 // spread from a larger, less-trusted object). This is the runtime backstop: any key outside the
@@ -33,7 +42,7 @@ const JUDGED_ALLOWED_KEYS = new Set<string>(['runId', 'scaffoldDeclared', 'probe
 function assertNoForeignKeys(judged: Record<string, unknown>): void {
   for (const key of Object.keys(judged)) {
     if (!JUDGED_ALLOWED_KEYS.has(key)) {
-      throw new RouterError('fixture-writer-forbidden-key', `refusing to write judged.${key}: only runId, scaffoldDeclared, probes and lifecycle may be supplied`);
+      throw new RouterError('fixture-writer-forbidden-key', `refusing to write judged.${key}: only runId, scaffoldDeclared, scaffoldedPaths, probes and lifecycle may be supplied`);
     }
   }
 }
@@ -104,6 +113,21 @@ export async function writeCapabilityFixture(
   }
   if (probeKeys.length === 0 && lifecycleKeys.length === 0) {
     throw new RouterError('fixture-writer-nothing-to-write', 'judged.probes and judged.lifecycle are both empty; nothing to narrow');
+  }
+
+  // A scaffolded correlation gate changes routing itself: the child that survived the phase was
+  // carried by correlation, not by what this fixture describes, so the pass is conditional on M1
+  // and may never land on disk. 'failed' and 'pending' still may, since a phase that broke even
+  // with correlation open broke for real.
+  const scaffoldedCorrelationPaths = (judged.scaffoldedPaths ?? []).filter((path) => CORRELATION_GATE_PATHS.has(path));
+  if (scaffoldedCorrelationPaths.length > 0) {
+    const passedPhases = lifecycleKeys.filter((key) => judged.lifecycle?.[key as LifecyclePhase] === 'passed');
+    if (passedPhases.length > 0) {
+      throw new RouterError(
+        'fixture-writer-correlation-scaffold',
+        `refusing to narrow lifecycle ${passedPhases.join(', ')} to passed: this run scaffolded ${scaffoldedCorrelationPaths.join(', ')}, so the pass is conditional on M1`,
+      );
+    }
   }
 
   const fixtureName = `${client}-${version}.json`;

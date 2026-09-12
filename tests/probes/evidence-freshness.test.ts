@@ -81,7 +81,7 @@ function capture(pairs: CapturedPair[], unforwarded: CapturedUnforwardedRequest[
 }
 
 function manifest(patch: Partial<RunManifest> = {}): RunManifest {
-  return { mode: '', phasesExercised: [], freshnessHook: 'none', ...patch };
+  return { mode: '', phasesExercised: [], freshnessHook: 'none', correlationScaffold: false, ...patch };
 }
 
 describe('evidence-m10: extractLifecycleEvidence + judgeLifecyclePhase', () => {

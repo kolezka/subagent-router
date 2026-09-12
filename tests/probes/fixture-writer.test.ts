@@ -95,6 +95,51 @@ describe('fixture-writer: writeCapabilityFixture', () => {
     expect(await readFile(fixturePath, 'utf8')).toBe(`${JSON.stringify(BASE_FIXTURE, null, 2)}\n`);
   });
 
+  // A run that scaffolds the correlation gate routes children through the correlation channel
+  // itself, so whatever lifecycle phase it survived was survived by a router the real fixture
+  // does not describe. That pass is conditional on M1 and may never reach the on-disk fixture.
+  const CORRELATION_GATE_PATHS = ['probes.M1', 'correlation', 'correlationEntropy'] as const;
+
+  test('a lifecycle pass is refused when the run scaffolded any part of the correlation gate', async () => {
+    for (const scaffolded of CORRELATION_GATE_PATHS) {
+      const error = await writeCapabilityFixture(
+        'claude-code',
+        '2.1.266',
+        { runId: 'run-corr', scaffoldDeclared: true, scaffoldedPaths: ['status', 'lifecycle.*', scaffolded], lifecycle: { compaction: 'passed' } },
+        dir,
+      ).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RouterError);
+      expect((error as RouterError).code).toBe('fixture-writer-correlation-scaffold');
+    }
+    expect(await readFile(fixturePath, 'utf8')).toBe(`${JSON.stringify(BASE_FIXTURE, null, 2)}\n`);
+  });
+
+  test('failed and pending are still writable under the same scaffolded paths -- only a pass is refused', async () => {
+    // The guard exists to stop an over-claim, not to make a scaffolded run unreportable: a phase
+    // the run actually broke is real evidence whatever the router was scaffolded into doing.
+    const scaffoldedPaths = ['status', ...CORRELATION_GATE_PATHS];
+
+    await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-corr-failed', scaffoldDeclared: true, scaffoldedPaths, lifecycle: { compaction: 'failed' } }, dir);
+    expect(((JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>).lifecycle as Record<string, string>).compaction).toBe('failed');
+
+    await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-corr-pending', scaffoldDeclared: true, scaffoldedPaths, lifecycle: { resume: 'pending' } }, dir);
+    expect(((JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>).lifecycle as Record<string, string>).resume).toBe('pending');
+  });
+
+  test('a lifecycle pass still writes when the declared scaffold names no correlation path, and when scaffoldedPaths is absent', async () => {
+    await writeCapabilityFixture(
+      'claude-code',
+      '2.1.266',
+      { runId: 'run-plain-scaffold', scaffoldDeclared: true, scaffoldedPaths: ['status', 'probes.M10', 'lifecycle.*'], lifecycle: { compaction: 'passed' } },
+      dir,
+    );
+    expect(((JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>).lifecycle as Record<string, string>).compaction).toBe('passed');
+
+    await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-no-scaffold-list', scaffoldDeclared: true, lifecycle: { nested: 'passed' } }, dir);
+    expect(((JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>).lifecycle as Record<string, string>).nested).toBe('passed');
+  });
+
   test('writer-keeps-original-on-write-failure', async () => {
     const before = await readFile(fixturePath, 'utf8');
     const failure = new Error('simulated write failure');

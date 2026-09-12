@@ -416,6 +416,9 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   What did survive: the post-compaction request carried the same `x-claude-code-agent-id` as before
   the boundary. A correlation binding keyed on that id is therefore the only known way to keep a
   child's routing across a compaction, and that channel stays closed until `M1` is ruled on.
+  That channel has since been exercised: run `compaction-up61gf` routes both children across
+  three boundaries each with the correlation scaffold on, and still narrows nothing; see the
+  correlation-scaffold bullet at the end of this file.
 
   Judge change, RED first, in this branch: the compaction signal in
   [../../tests/probes/evidence-m10.ts](../../tests/probes/evidence-m10.ts) moved from the
@@ -428,5 +431,78 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   request was dropped from the capture entirely and the judge could not see the very refusal that
   defines this failure. Refused requests now reach the lifecycle judge as `unforwarded`, while
   `pairs` keeps its forwarded-only meaning for M3-A.
+
+- **M1 evidence for 2.1.268: the agent id generator is inspected and measures 64 random bits, and
+  `M1` still stays `pending` because no mechanism can record a generator proof.** [verified] direct
+  read of the pinned binary `/Users/me/.local/share/claude/versions/2.1.268` with `dd`. The
+  generator at offset 159684340 is
+  `` let t=xn(8).toString("hex");return e?`a${e}-${t}`:`a${t}` ``, where `xn` is `randomBytes`,
+  imported `from"crypto"` at offset 159683454. That is the Node CSPRNG, not `Math.random`. New in
+  this version: an optional label argument, giving `a<label>-<16hex>`. The label is caller text and
+  adds no entropy. An unlabelled id is `a` plus 16 hex characters, so 64 random bits, which is
+  exactly the plan's "at least 64 bits" bar. 2.1.267 was dd-verified earlier as the same shape
+  without the label.
+
+  The id is minted once per spawn: `Rn=U?.agentId?U.agentId:ty()` near offset 168068141, where a
+  supplied id wins, so a resumed agent reuses its id rather than regenerating one. The header is
+  attached from `agentContext.agentId` in the API client factory near offset 166326487, a sibling of
+  the message queue and not part of the message array. The main agent sends no id.
+
+  Continuity across compaction, measured in run `tests/probes/.runs/compaction-sbnVo0` (the
+  marker-only run that failed): each child's `x-claude-code-agent-id` is identical on every one of
+  its requests, including the two post-compaction requests whose history had been replaced (child
+  prefixes a76a7f and a9164f). Continuity across `next-turn`, `parallel` and `nested` was measured
+  earlier, in runs `next-turn-UJqWfM` and `nested-uxI3hK`.
+
+  Uniqueness: eight children across four of the compaction runs of 2026-09-12 (`sbnVo0`, `R0dgMy`,
+  `m3D0Sf`, `Hc6FD5`) produced eight distinct ids, all of length 17, plus two more distinct ids in
+  `compaction-up61gf`. No collision in any run so far.
+
+  Why this is NOT narrowed: `probes.M1` stays `pending` in every fixture, and the judge cannot emit
+  `passed` for M1 at all today.
+  [../../tests/probes/evidence-m1.ts](../../tests/probes/evidence-m1.ts) declares `judgeM1Sample`
+  as returning `Exclude<ProbeResult, 'passed'>`, its proof object is always
+  `source: statistical-sample` with `generatorInspected: false`, and no input carries a
+  generator-inspection proof or binds one to a client version. Making M1 passable needs that
+  mechanism built, RED first, and it is an operator decision: the operator has twice answered
+  "idk" on M1. So the evidence above is recorded here and changes nothing in
+  [../../tests/fixtures/capabilities/claude-code-2.1.268.json](../../tests/fixtures/capabilities/claude-code-2.1.268.json).
+
+- **Compaction under the agent-id correlation channel keeps both children on their upstream models
+  on 2.1.268, and the pass is conditional on `M1`, so nothing is narrowed.** [verified] run
+  `tests/probes/.runs/compaction-up61gf` (2026-09-12), the same pinned binary
+  `/Users/me/.local/share/claude/versions/2.1.268` and the same compaction mode as
+  `compaction-sbnVo0`, plus `PROBE_CORRELATION_SCAFFOLD=1`. The launcher forwards that variable only
+  in compaction mode, the phase where the marker is the thing that goes missing, and the handler
+  applies it to the run profile as declared measurement scaffolding: `correlation: true`,
+  `correlationEntropy: passed` and `probes.M1: passed`, declared in the scaffold manifest alongside
+  the existing `status`, `lifecycle.*`, `probes.M10`, `probes.M3-A` and `parentPromptPosition`
+  overrides. The run manifest records `correlationScaffold: true`.
+
+  Result: both children compacted three times each (three `compact_boundary` lines per child
+  transcript). Every post-compaction request (4 messages, history replaced, opening with the
+  continuation wrapper, no channel-A marker) was forwarded, and each child kept its upstream model
+  across every boundary: child prefix ae2d69 on `gateway/fast-worker`, child prefix a7e948 on
+  `gateway/smart-worker`, 10 requests each, 31 pre/post pairs, no refusal. The parent decoded
+  `PARENT_FINAL_OK`. [../../tests/probes/judge-run.ts](../../tests/probes/judge-run.ts) returns
+  `lifecycle.compaction: passed` for this run and reports `correlationScaffold: true`.
+
+  Why this is NOT narrowed: the pass is conditional on `M1`. `writeCapabilityFixture` in
+  [../../tests/probes/fixture-writer.ts](../../tests/probes/fixture-writer.ts) now refuses to narrow
+  any lifecycle phase to `passed` from a run whose declared scaffold paths include `probes.M1`,
+  `correlation` or `correlationEntropy`, with the diagnostic `fixture-writer-correlation-scaffold`.
+  So
+  [../../tests/fixtures/capabilities/claude-code-2.1.268.json](../../tests/fixtures/capabilities/claude-code-2.1.268.json)
+  keeps `lifecycle.compaction: failed` from `compaction-sbnVo0`, which describes production today:
+  the marker-only path loses the child.
+
+  What it establishes: on 2.1.268 the agent-id correlation channel is sufficient to keep a routed
+  child on its upstream model across a compaction. The only things between the measured failure and
+  a pass are the `M1` ruling and the small judge mechanism named in the bullet above.
+
+  Caveat, so the verdict is not misread: `M3-A` judges `pending` on this run with
+  `m3a-layout-envelope-mismatch: 10 of 20 child pairs`, because post-compaction requests have a
+  compacted shape rather than the three-block first-message envelope. That is expected and says
+  nothing about the layout claim; `M3-A` was measured on run `handler-yXSP4o`.
 
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

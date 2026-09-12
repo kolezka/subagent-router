@@ -20,6 +20,10 @@ export interface RunManifest {
   mode: string;
   phasesExercised: readonly string[];
   freshnessHook: 'production' | 'fake' | 'none';
+  // Whether the run scaffolded the router's correlation gate open (PROBE_CORRELATION_SCAFFOLD).
+  // Anything but a literal true reads as false: a lifecycle pass under that scaffold is
+  // conditional on M1 and must never narrow an on-disk fixture (see fixture-writer.ts).
+  correlationScaffold: boolean;
 }
 
 const FRESHNESS_HOOK_VALUES = new Set(['production', 'fake', 'none']);
@@ -54,7 +58,7 @@ export async function readRunManifest(runDir: string): Promise<RunManifest | und
     typeof parsed.freshnessHook === 'string' && FRESHNESS_HOOK_VALUES.has(parsed.freshnessHook)
       ? (parsed.freshnessHook as RunManifest['freshnessHook'])
       : 'none';
-  return { mode, phasesExercised, freshnessHook };
+  return { mode, phasesExercised, freshnessHook, correlationScaffold: parsed.correlationScaffold === true };
 }
 
 // ---------- per-request evidence ----------

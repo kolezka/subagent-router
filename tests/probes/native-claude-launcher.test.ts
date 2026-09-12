@@ -377,7 +377,7 @@ test("compaction mode declares mode: compaction in the run manifest", () => {
   // production hook wrapper is asserted structurally above).
   const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
   expect(script).toContain('[ "$MODE" = "compaction" ]; }'); // the last clause of is_handler_like
-  expect(script).toContain('{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK" }');
+  expect(script).toContain('{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK", "correlationScaffold": $CORRELATION_SCAFFOLD_JSON }');
 
   const manifestGuard = script.lastIndexOf("if is_handler_like; then");
   expect(manifestGuard).toBeGreaterThan(-1);
@@ -466,6 +466,41 @@ test("compaction mode's child scripting reuses the forced-Read channel with more
   expect(script).toContain('uses_child_read() { [ "$MODE" = "next-turn" ] || [ "$MODE" = "compaction" ]; }');
   expect(script).toContain("if uses_child_read; then\n  ALLOW_JSON='[\"Agent\", \"Read\"]'");
   expect(script).toContain('if uses_child_read; then\n  CHILD_TOOLS_LINE="[Read]"');
+});
+
+test("PROBE_CORRELATION_SCAFFOLD is forwarded only in the compaction branch, never set by the launcher itself", () => {
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+
+  const dispatchGuard = script.indexOf('elif [ "$MODE" = "compaction" ]; then');
+  const dispatchEnd = script.indexOf('elif [ "$MODE" = "resume" ]; then', dispatchGuard);
+  expect(dispatchGuard).toBeGreaterThan(-1);
+  expect(dispatchEnd).toBeGreaterThan(dispatchGuard);
+
+  // Forwarded from the invoking environment, defaulted to empty: the launcher never turns the
+  // scaffold on by itself, and no other mode's dispatch branch mentions it at all.
+  const forward = 'PROBE_CORRELATION_SCAFFOLD="${PROBE_CORRELATION_SCAFFOLD:-}"';
+  expect(script.indexOf(forward)).toBeGreaterThan(dispatchGuard);
+  expect(script.indexOf(forward)).toBeLessThan(dispatchEnd);
+
+  // Exactly one assignment in the whole file, and it is the passthrough form: the launcher can
+  // never turn the scaffold on for a run the operator did not ask to scaffold.
+  const assignments = script.match(/^\s+PROBE_CORRELATION_SCAFFOLD=\S*/gm) ?? [];
+  expect(assignments).toHaveLength(1);
+  expect(assignments[0]?.trim()).toBe(forward);
+});
+
+test("the run manifest records whether the correlation scaffold was on, read from the invoking environment", () => {
+  // The handler inherits the launcher's environment, so the flag reaches it whatever branch ran.
+  // The manifest has to report what the handler actually saw, or the fixture-writer guard that
+  // reads it would let a scaffolded lifecycle pass through.
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+
+  const manifestGuard = script.lastIndexOf("if is_handler_like; then");
+  const assignIndex = script.indexOf("CORRELATION_SCAFFOLD_JSON=");
+  expect(assignIndex).toBeGreaterThan(manifestGuard);
+  expect(assignIndex).toBeLessThan(script.indexOf("000-run-manifest.json", manifestGuard));
+  expect(script).toContain('[ "${PROBE_CORRELATION_SCAFFOLD:-}" = "1" ]');
+  expect(script).toContain("correlationScaffold");
 });
 
 test("compaction mode rejects PROBE_FRESHNESS_HOOK=production inside its own branch", () => {
