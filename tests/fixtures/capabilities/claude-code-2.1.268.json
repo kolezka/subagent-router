@@ -2,13 +2,13 @@
   "client": "claude-code",
   "version": "2.1.268",
   "status": "pending",
-  "correlation": false,
-  "correlationEntropy": "pending",
+  "correlation": true,
+  "correlationEntropy": "passed",
   "fork": false,
   "adapterMarkerPosition": "unknown",
   "parentPromptPosition": "after-native-context-v2",
   "probes": {
-    "M1": "pending",
+    "M1": "passed",
     "M2": "failed",
     "M3": "pending",
     "M3-B2": "pending",
@@ -30,6 +30,9 @@
     "measured:lifecycle.next-turn=passed;run=next-turn-UJqWfM;at=2026-09-11T00:10:13.022Z",
     "measured:lifecycle.nested=passed;run=nested-uxI3hK;at=2026-09-11T00:10:13.031Z",
     "measured:M2=failed;run=delegate-8EiyAy+delegate-IiHhdB;at=2026-09-11T04:19:13.352Z",
-    "measured:lifecycle.compaction=failed;run=compaction-sbnVo0;at=2026-09-12T07:51:09.332Z"
+    "measured:lifecycle.compaction=failed;run=compaction-sbnVo0;at=2026-09-12T07:51:09.332Z",
+    "measured:M1=passed;run=compaction-sbnVo0;at=2026-09-12T09:45:27.721Z",
+    "measured:correlation=true;run=compaction-sbnVo0;at=2026-09-12T09:45:27.721Z",
+    "measured:correlationEntropy=passed;run=compaction-sbnVo0;at=2026-09-12T09:45:27.721Z"
   ]
 }
