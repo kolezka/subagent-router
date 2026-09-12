@@ -92,6 +92,24 @@ describe('evidence-m10: extractLifecycleEvidence + judgeLifecyclePhase', () => {
     expect(judgeLifecyclePhase('compaction', extractLifecycleEvidence(withBoundary), manifest({ mode: 'compaction', phasesExercised: ['compaction'] })).result).toBe('passed');
   });
 
+  test('lifecycle-compaction-pending-under-a-different-declared-mode', () => {
+    // A boundary marker can ride along in the history of any multi-turn run, so on its own it
+    // never proves the run drove a compaction. The declared mode must agree, exactly as
+    // next-turn and resume already require.
+    const withBoundary = capture([
+      pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' }),
+      pair(2, 'agent-1', { upstreamModel: 'gateway/fast-worker', compactBoundary: true }),
+    ]);
+    const evidence = extractLifecycleEvidence(withBoundary);
+
+    const judgement = judgeLifecyclePhase('compaction', evidence, manifest({ mode: 'next-turn', phasesExercised: ['compaction'] }));
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toBe('compaction-requires-declared-mode: the run manifest\'s mode must equal \'compaction\', got "next-turn"');
+
+    // Positive control: identical evidence, only the declared mode differs.
+    expect(judgeLifecyclePhase('compaction', evidence, manifest({ mode: 'compaction', phasesExercised: ['compaction'] })).result).toBe('passed');
+  });
+
   test('lifecycle-pending-when-phase-not-declared', () => {
     const cap = capture([pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' }), pair(2, 'agent-1', { upstreamModel: 'gateway/fast-worker' })]);
     expect(judgeLifecyclePhase('next-turn', extractLifecycleEvidence(cap), undefined).result).toBe('pending');

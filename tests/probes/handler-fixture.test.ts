@@ -368,6 +368,61 @@ describe('channel-A handler fixture: forced two-request child flow (childReadFil
     expect(seen[1]?.body.model).toBe(agent.upstreamModel); // stable upstream model across both requests, no drift
   });
 
+  test('childReadRounds drives one child through several Read rounds before the echo, so it still has a turn left after its conversation has grown', async () => {
+    // What compaction mode needs: the child must keep taking turns after the tool_result that
+    // pushed its own conversation past the auto-compaction threshold, because only a LATER request
+    // can carry the resulting compact_boundary in its history.
+    const { handler, seen } = await createHandlerFixture({ childReadFilePath: '/tmp/probe-child-read-fixture.txt', childReadRounds: 2 });
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const agentId = 'agent-multi-round';
+
+    const firstToolUses = reassembleToolUseBlocks(
+      await decodeSse(await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agent.alias, 'task'), { 'x-claude-code-agent-id': agentId }))),
+    );
+    expect(firstToolUses).toHaveLength(1);
+
+    // Round 1 answered: with two rounds configured this must issue ANOTHER tool_use, not the echo.
+    const secondEvents = await decodeSse(
+      await handler(jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agent.alias, 'task', firstToolUses[0]!.id, 'file contents'), { 'x-claude-code-agent-id': agentId })),
+    );
+    const secondToolUses = reassembleToolUseBlocks(secondEvents);
+    expect(secondToolUses).toHaveLength(1);
+    expect(secondToolUses[0]?.id).not.toBe(firstToolUses[0]?.id); // a fresh round, not a replay
+    expect(textOf(secondEvents)).not.toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+
+    // Round 2 answered: the last round, so now the echo ends the loop.
+    const thirdEvents = await decodeSse(
+      await handler(jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agent.alias, 'task', secondToolUses[0]!.id, 'file contents'), { 'x-claude-code-agent-id': agentId })),
+    );
+    expect(reassembleToolUseBlocks(thirdEvents)).toHaveLength(0);
+    expect(textOf(thirdEvents)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+
+    expect(seen).toHaveLength(3); // three forwarded requests from one child
+    expect(seen.every((r) => r.body.model === agent.upstreamModel)).toBe(true); // no upstream drift
+  });
+
+  test('childReadRounds defaults to a single round, so every existing mode keeps its two-request flow', async () => {
+    // Guards the opt-in: absent (and at 1) the knob must change nothing for handler/next-turn runs.
+    for (const rounds of [undefined, 1]) {
+      const { handler, seen } = await createHandlerFixture({
+        childReadFilePath: '/tmp/probe-child-read-fixture.txt',
+        ...(rounds !== undefined ? { childReadRounds: rounds } : {}),
+      });
+      const agent = CHANNEL_A_AGENTS[1]!;
+      const agentId = `agent-single-round-${String(rounds)}`;
+
+      const toolUses = reassembleToolUseBlocks(
+        await decodeSse(await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agent.alias, 'task'), { 'x-claude-code-agent-id': agentId }))),
+      );
+      const events = await decodeSse(
+        await handler(jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agent.alias, 'task', toolUses[0]!.id, 'file contents'), { 'x-claude-code-agent-id': agentId })),
+      );
+      expect(reassembleToolUseBlocks(events)).toHaveLength(0); // echo on the second request, as before
+      expect(textOf(events)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+      expect(seen).toHaveLength(2);
+    }
+  });
+
   test('a tool_result for a foreign or stale tool_use id is treated as a fresh first request, never a shortcut to the echo', async () => {
     const { handler, seen } = await createHandlerFixture({ childReadFilePath: '/tmp/probe-child-read-fixture.txt' });
     const agent = CHANNEL_A_AGENTS[0]!;
@@ -745,5 +800,78 @@ describe('layout v2 profile variant (PROBE_LAYOUT=v2)', () => {
     // Mutation 2: an override that writes an undeclared field instead.
     const straying = { ...realLayoutProfile(v1Base, 'after-native-context-v2'), adapterMarkerPosition: 'system' } as CapabilityProfile;
     expect(() => assertLayoutContract('straying', v1Base, straying)).toThrow();
+  });
+});
+
+describe('channel-A handler fixture: routed-child usage reporting (childUsageInputTokens, opt-in)', () => {
+  const READ_FILE = '/tmp/probe-child-read-fixture.txt';
+
+  function childRequest(alias: string, agentId?: string): Request {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (agentId !== undefined) headers['x-claude-code-agent-id'] = agentId;
+    return new Request('http://router.local/v1/messages', { method: 'POST', headers, body: JSON.stringify(buildChildRequest(alias, 'task')) });
+  }
+
+  function messageStartOf(events: Array<{ event: string; data: Record<string, unknown> }>): Record<string, unknown> {
+    const start = events.find((e) => e.event === 'message_start');
+    if (start === undefined) throw new Error('no message_start event in stream');
+    return (start.data as { message: Record<string, unknown> }).message;
+  }
+
+  function usageOf(events: Array<{ event: string; data: Record<string, unknown> }>): Record<string, unknown> {
+    return messageStartOf(events).usage as Record<string, unknown>;
+  }
+
+  test('default inert: absent, and set to the value already reported, leave a routed child response exactly as it was', async () => {
+    const agent = CHANNEL_A_AGENTS[0]!;
+
+    // Absent: the echo reports the input_tokens this builder has always reported.
+    const absent = await createHandlerFixture();
+    const absentUsage = usageOf(await decodeSse(await absent.handler(childRequest(agent.alias, 'agent-usage-absent'))));
+    expect(absentUsage).toEqual({ input_tokens: 5, output_tokens: 1 });
+
+    // Set to that same value: indistinguishable from absent, so the knob cannot double-apply.
+    const same = await createHandlerFixture({ childUsageInputTokens: 5 });
+    const sameUsage = usageOf(await decodeSse(await same.handler(childRequest(agent.alias, 'agent-usage-same'))));
+    expect(sameUsage).toEqual(absentUsage);
+
+    // The forced-Read tool_use builder keeps its own (different) default too.
+    const read = await createHandlerFixture({ childReadFilePath: READ_FILE });
+    const readUsage = usageOf(await decodeSse(await read.handler(childRequest(agent.alias, 'agent-usage-read-default'))));
+    expect(readUsage).toEqual({ input_tokens: 8, output_tokens: 1 });
+  });
+
+  test('when set, a routed child message_start carries it on both child reply shapes, and the parent response does not', async () => {
+    const agent = CHANNEL_A_AGENTS[0]!;
+
+    // Child echo: inflated input_tokens, every other usage field left alone.
+    const echo = await createHandlerFixture({ childUsageInputTokens: 5000 });
+    const echoEvents = await decodeSse(await echo.handler(childRequest(agent.alias, 'agent-usage-set')));
+    expect(usageOf(echoEvents)).toEqual({ input_tokens: 5000, output_tokens: 1 });
+    // The model must survive untouched: the client ignores an assistant message whose model
+    // matches an internal constant, and tripping that filter would void the whole measurement.
+    expect(messageStartOf(echoEvents).model).toBe(agent.upstreamModel);
+    expect(textOf(echoEvents)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+
+    // Forced-Read tool_use: the reply shape compaction mode actually drives.
+    const read = await createHandlerFixture({ childReadFilePath: READ_FILE, childUsageInputTokens: 5000 });
+    const readEvents = await decodeSse(await read.handler(childRequest(agent.alias, 'agent-usage-set-read')));
+    expect(usageOf(readEvents)).toEqual({ input_tokens: 5000, output_tokens: 1 });
+    expect(reassembleToolUseBlocks(readEvents)).toHaveLength(1);
+
+    // The parent's delegation turn carries no agent-id header, so its usage stays untouched. A
+    // parent compaction could disturb the final echo this probe reads.
+    const parentEvents = await decodeSse(await echo.handler(jsonRequest('/v1/messages', buildParentRequest())));
+    expect(usageOf(parentEvents)).toEqual({ input_tokens: 10, output_tokens: 1 });
+  });
+
+  test('the gate is the agent-id header, not merely being a routed child: an unheadered child request keeps the default usage', async () => {
+    // childInputTokens is resolved from x-claude-code-agent-id, so a request the client never
+    // marked as a child must not get the inflated value even though its model is a routed one.
+    const { handler } = await createHandlerFixture({ childUsageInputTokens: 5000 });
+    const agent = CHANNEL_A_AGENTS[1]!;
+    const events = await decodeSse(await handler(childRequest(agent.alias)));
+    expect(usageOf(events)).toEqual({ input_tokens: 5, output_tokens: 1 });
+    expect(textOf(events)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`); // still a real routed child reply
   });
 });

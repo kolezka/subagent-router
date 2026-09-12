@@ -176,6 +176,13 @@ function nestedInvolvedAgents(evidence: LifecycleEvidenceByAgent): Set<string> |
   return involved.size > 0 ? involved : undefined;
 }
 
+// Shared by every phase whose only distinguishing signal is the run's own declaration. Kept as
+// one helper so the wording of the diagnostic cannot drift between call sites.
+function checkDeclaredMode(phase: LifecyclePhase, runMetadata: RunManifest | undefined): LifecycleJudgement | undefined {
+  if (runMetadata?.mode === phase) return undefined;
+  return { result: 'pending', diagnostic: `${phase}-requires-declared-mode: the run manifest's mode must equal '${phase}', got ${JSON.stringify(runMetadata?.mode)}` };
+}
+
 function checkDriftAndForwarding(agentIds: readonly string[], evidence: LifecycleEvidenceByAgent, phase: LifecyclePhase): LifecycleJudgement | undefined {
   for (const agentId of agentIds) {
     const list = evidence.get(agentId) ?? [];
@@ -226,6 +233,10 @@ export function judgeLifecyclePhase(phase: LifecyclePhase, evidence: LifecycleEv
   }
 
   if (phase === 'compaction') {
+    // A compact_boundary marker can ride along in the history of any multi-turn run, so the
+    // marker alone never proves this run drove a compaction: the declared mode must agree too.
+    const declared = checkDeclaredMode(phase, runMetadata);
+    if (declared !== undefined) return declared;
     const withBoundary = [...evidence.entries()]
       .filter(([, list]) => list.length >= 2 && list.slice(1).some((e) => e.hasCompactBoundary))
       .map(([agentId]) => agentId);
@@ -238,9 +249,8 @@ export function judgeLifecyclePhase(phase: LifecyclePhase, evidence: LifecycleEv
   // 'next-turn' | 'resume': no structural signal in the request itself distinguishes these
   // from any other multi-turn request, so the ONLY thing that can tell them apart is the run's
   // own declared mode -- never inferred from request count or history length.
-  if (runMetadata?.mode !== phase) {
-    return { result: 'pending', diagnostic: `${phase}-requires-declared-mode: the run manifest's mode must equal '${phase}', got ${JSON.stringify(runMetadata?.mode)}` };
-  }
+  const declared = checkDeclaredMode(phase, runMetadata);
+  if (declared !== undefined) return declared;
   const qualifying = agentsWithAtLeastTwoRequests(evidence);
   if (qualifying.length === 0) {
     return { result: 'pending', diagnostic: `${phase}-insufficient-requests: no agent has two routed requests spanning the declared boundary` };

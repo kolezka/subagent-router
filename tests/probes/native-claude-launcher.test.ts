@@ -266,12 +266,15 @@ test("next-turn mode's structural additions are present and scoped to next-turn,
   expect(script).toContain('CHILD_TOOLS_LINE="[Read]"');
   expect(script).toContain('ALLOW_JSON=\'["Agent", "Read"]\'');
 
-  // The two mode-specific additions are gated on the literal mode, never on is_handler_like:
-  // handler mode itself must still get tools: [] and no Read in the allow list.
-  const toolsGuardIndex = script.indexOf('if [ "$MODE" = "next-turn" ]; then\n  CHILD_TOOLS_LINE="[Read]"');
-  const allowGuardIndex = script.indexOf('if [ "$MODE" = "next-turn" ]; then\n  ALLOW_JSON=');
+  // The two Read-granting additions are gated on uses_child_read (next-turn or compaction), never
+  // on is_handler_like: handler, resume and nested must still get tools: [] and no Read in the
+  // allow list. compaction joined next-turn here, which is why the guard is a named predicate
+  // rather than a literal mode test.
+  const toolsGuardIndex = script.indexOf('if uses_child_read; then\n  CHILD_TOOLS_LINE="[Read]"');
+  const allowGuardIndex = script.indexOf("if uses_child_read; then\n  ALLOW_JSON=");
   expect(toolsGuardIndex).toBeGreaterThan(-1);
   expect(allowGuardIndex).toBeGreaterThan(-1);
+  expect(script).toContain('uses_child_read() { [ "$MODE" = "next-turn" ] || [ "$MODE" = "compaction" ]; }');
 });
 
 test("resume mode is accepted at mode validation (fails later at fake-client version observation, same as handler mode would)", () => {
@@ -355,6 +358,89 @@ test("nested mode's structural additions are present and scoped to nested, never
   expect(agentGrantCount).toHaveLength(1);
 });
 
+test("compaction mode is accepted at mode validation (fails later at fake-client version observation, same as handler mode would)", () => {
+  // compaction shares handler mode's is_handler_like branch, which needs a real `claude --version`
+  // to observe the client version before it can start the bun fixture. This fixture's fake client
+  // understands no flags and prints no version, so the run fails there -- never at mode
+  // validation. That is enough to prove the case statement accepts "compaction" without needing a
+  // real claude binary or bun in this harness (mirrors the next-turn, resume and nested tests).
+  const { result } = runCopy("compaction");
+  expect(result.stderr ?? "").not.toMatch(/unknown mode/i);
+  expect(result.stdout ?? "").toContain("FAIL: could not observe client version");
+});
+
+test("compaction mode declares mode: compaction in the run manifest", () => {
+  // Structural proof chain: the manifest heredoc writes "$MODE" verbatim, it is gated on
+  // is_handler_like, and is_handler_like answers yes for compaction. The manifest itself is
+  // written only after the client-version observation, which no fake client here can satisfy, so
+  // this branch is unreachable behaviorally in this harness (same reason the handler-mode
+  // production hook wrapper is asserted structurally above).
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  expect(script).toContain('[ "$MODE" = "compaction" ]; }'); // the last clause of is_handler_like
+  expect(script).toContain('{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK" }');
+
+  const manifestGuard = script.lastIndexOf("if is_handler_like; then");
+  expect(manifestGuard).toBeGreaterThan(-1);
+  expect(script.indexOf("000-run-manifest.json")).toBeGreaterThan(manifestGuard);
+});
+
+test("compaction mode sets both auto-compaction env vars for the client and never the disable vars", () => {
+  // The whole point of the mode: auto-compaction is opt-out only in the client, so naming either
+  // disable var anywhere in the launcher would silently turn off what this mode measures.
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+
+  const compactionBranch = script.lastIndexOf('if [ "$MODE" = "compaction" ]; then');
+  expect(compactionBranch).toBeGreaterThan(-1);
+  const branchEnd = script.indexOf("\nelif is_handler_like", compactionBranch);
+  expect(branchEnd).toBeGreaterThan(compactionBranch);
+  const branch = script.slice(compactionBranch, branchEnd);
+
+  // Both vars live inside the compaction invocation branch, not anywhere else in the file.
+  // Anchored to the env -i continuation-line indentation so the explanatory comment above the
+  // branch, which names both vars in prose, is not counted as an assignment.
+  expect(branch).toContain("CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000");
+  expect(branch).toContain("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1");
+  expect(script.match(/^\s+CLAUDE_CODE_AUTO_COMPACT_WINDOW=/gm) ?? []).toHaveLength(1);
+  expect(script.match(/^\s+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=/gm) ?? []).toHaveLength(1);
+
+  // Never assigned anywhere, in any mode. A comment naming them is fine; an assignment is not.
+  expect(script).not.toMatch(/DISABLE_COMPACT=/);
+  expect(script).not.toMatch(/DISABLE_AUTO_COMPACT=/);
+});
+
+test("compaction mode's child scripting reuses the forced-Read channel with more than one round", () => {
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  expect(script).toContain("simple|delegate|handler|next-turn|resume|nested|compaction");
+
+  // The dispatch branch reuses PROBE_CHILD_READ_FILE (next-turn's existing channel) rather than a
+  // new one, and adds the rounds knob so the child still has a turn after the threshold is crossed.
+  const dispatchGuard = script.indexOf('elif [ "$MODE" = "compaction" ]; then');
+  expect(dispatchGuard).toBeGreaterThan(-1);
+  expect(script.indexOf("PROBE_CHILD_READ_ROUNDS=2")).toBeGreaterThan(dispatchGuard);
+  expect(script.match(/PROBE_CHILD_READ_ROUNDS=/g) ?? []).toHaveLength(1); // never leaks into another mode
+
+  // The client does not estimate context from the transcript, it sums the usage on the last
+  // assistant message carrying one, so the reported usage is what actually moves the estimate.
+  // 5000 clears the roughly 800 token threshold with margin and stays well under the window.
+  expect(script.indexOf("PROBE_CHILD_USAGE_INPUT_TOKENS=5000")).toBeGreaterThan(dispatchGuard);
+  expect(script.match(/^\s+PROBE_CHILD_USAGE_INPUT_TOKENS=/gm) ?? []).toHaveLength(1); // compaction only
+
+  // The Read tool must actually be grantable for both forced-Read modes, via one shared predicate.
+  expect(script).toContain('uses_child_read() { [ "$MODE" = "next-turn" ] || [ "$MODE" = "compaction" ]; }');
+  expect(script).toContain("if uses_child_read; then\n  ALLOW_JSON='[\"Agent\", \"Read\"]'");
+  expect(script).toContain('if uses_child_read; then\n  CHILD_TOOLS_LINE="[Read]"');
+});
+
+test("compaction mode rejects PROBE_FRESHNESS_HOOK=production inside its own branch", () => {
+  // Same trap resume guards against: this branch carries no SUBAGENT_ROUTER_SECRET, so the
+  // production hook would lose the secret it needs to sign a FreshDelegationEnvelope.
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  const compactionBranch = script.lastIndexOf('if [ "$MODE" = "compaction" ]; then');
+  const rejectIndex = script.indexOf("FAIL: compaction mode does not support PROBE_FRESHNESS_HOOK=production yet");
+  expect(rejectIndex).toBeGreaterThan(compactionBranch);
+  expect(rejectIndex).toBeLessThan(script.lastIndexOf('elif is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then'));
+});
+
 test("launcher refuses an unknown mode before touching the filesystem", () => {
   const runsDir = join(fixtureProbesDir, ".runs");
   const before = existsSync(runsDir) ? readdirSync(runsDir) : [];
@@ -410,10 +496,10 @@ test("every client invocation goes through $CLAUDE_BIN, resolved once before the
   expect(script).toContain('CLAUDE_BIN_SELECTED="${PROBE_CLAUDE_BIN:-/Users/me/.local/bin/claude}"');
   expect(script.split(REAL_CLIENT_PATH).length - 1).toBe(1);
 
-  // One --version observe plus four `env -i` invocations (handler+production, default, and the
-  // two resume invocations).
+  // One --version observe plus five `env -i` invocations (compaction, handler+production, default,
+  // and the two resume invocations).
   const invocations = script.match(/"\$CLAUDE_BIN" (\\|--version)/g) ?? [];
-  expect(invocations).toHaveLength(5);
+  expect(invocations).toHaveLength(6);
 
   // Resolved exactly once, before any invocation, so a symlink moving later cannot change targets.
   expect(script.match(/\/usr\/bin\/readlink -f/g) ?? []).toHaveLength(1);

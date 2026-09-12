@@ -170,6 +170,24 @@ export interface HandlerFixtureOptions {
   // against it; hermetic tests never execute a real Read tool (they drive `handler` directly), so
   // any string works for them.
   childReadFilePath?: string;
+  // Opt-in (the launcher's `compaction` mode only, and only alongside childReadFilePath): how many
+  // forced Read rounds a routed child is driven through before it finally gets the echo. Each
+  // answered tool_use issues the next one, so N rounds means N+1 requests from that child. Absent
+  // or 1 (the default) is byte-identical to before this option existed: one round, echo on the
+  // second request. compaction mode needs more than one so the child still has a turn left AFTER
+  // its own conversation has grown past the auto-compaction threshold, which is what puts a
+  // compact_boundary in a later request's history.
+  childReadRounds?: number;
+  // Opt-in (the launcher's `compaction` mode only): the input_tokens a ROUTED CHILD's own
+  // message_start reports. The client never estimates context size from the transcript: it anchors
+  // on the last assistant message carrying `usage` and sums that usage, so a child whose replies
+  // report single-digit input_tokens looks like a tiny context no matter how long its history has
+  // grown, and auto-compaction never fires. Absent (the default) every response keeps the usage it
+  // has always reported, byte-identical for every existing mode. Applies ONLY to requests carrying
+  // x-claude-code-agent-id: the parent keeps its current usage, because a parent compaction could
+  // disturb the final echo this probe reads, and the phase being measured is the child's. Only
+  // message_start's input_tokens changes; every other usage field is left alone.
+  childUsageInputTokens?: number;
   // Opt-in (the launcher's `resume` mode only): when a parent turn arrives whose tool_results
   // are all for ids this fixture already finalized, treat it as a resumed session replaying the
   // prior round's history and force a FRESH Agent delegation (new tool_use ids) instead of ending
@@ -210,10 +228,12 @@ function sseFrom(events: ReadonlyArray<readonly [string, Record<string, unknown>
   return events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join('');
 }
 
-function textSse(model: unknown, text: string): string {
+// inputTokens defaults to the value this builder has always reported, so an omitted argument is
+// byte-identical to before the childUsageInputTokens option existed.
+function textSse(model: unknown, text: string, inputTokens = 5): string {
   const id = `msg_probe_${Math.random().toString(36).slice(2, 10)}`;
   return sseFrom([
-    ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 1 } } }],
+    ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: inputTokens, output_tokens: 1 } } }],
     ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
     ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }],
     ['content_block_stop', { type: 'content_block_stop', index: 0 }],
@@ -254,11 +274,11 @@ function agentToolUseSse(model: unknown, pendingToolUses: Map<string, PendingToo
 // a SECOND request for this same child once it has actually executed Read and can reply with a
 // tool_result -- the only way to make a child issue two upstream requests (a text reply with
 // stop_reason 'end_turn' would end the child's turn after just one).
-function childToolUseSse(model: unknown, toolUseId: string, filePath: string): string {
+function childToolUseSse(model: unknown, toolUseId: string, filePath: string, inputTokens = 8): string {
   const id = `msg_probe_${Math.random().toString(36).slice(2, 10)}`;
   const input = { file_path: filePath };
   return sseFrom([
-    ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 8, output_tokens: 1 } } }],
+    ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: inputTokens, output_tokens: 1 } } }],
     ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: toolUseId, name: 'Read', input: {} } }],
     ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } }],
     ['content_block_stop', { type: 'content_block_stop', index: 0 }],
@@ -273,7 +293,7 @@ function childToolUseSse(model: unknown, toolUseId: string, filePath: string): s
 // delegating child to execute the Agent tool and send a SECOND request once it can reply with a
 // tool_result, and -- the thing being measured -- whether that grandchild request carries
 // x-claude-code-parent-agent-id naming the delegating child.
-function nestedAgentToolUseSse(model: unknown, toolUseId: string, targetAgent: (typeof CHANNEL_A_AGENTS)[number]): string {
+function nestedAgentToolUseSse(model: unknown, toolUseId: string, targetAgent: (typeof CHANNEL_A_AGENTS)[number], inputTokens = 8): string {
   const id = `msg_probe_${Math.random().toString(36).slice(2, 10)}`;
   const input = {
     description: `nested probe ${targetAgent.name}`,
@@ -282,7 +302,7 @@ function nestedAgentToolUseSse(model: unknown, toolUseId: string, targetAgent: (
     run_in_background: false,
   };
   return sseFrom([
-    ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 8, output_tokens: 1 } } }],
+    ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: inputTokens, output_tokens: 1 } } }],
     ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: toolUseId, name: AGENT_TOOL_NAME, input: {} } }],
     ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } }],
     ['content_block_stop', { type: 'content_block_stop', index: 0 }],
@@ -434,6 +454,10 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
   const seen: RecordedUpstreamRequest[] = [];
   const pendingToolUses = new Map<string, PendingToolUse>();
   const pendingChildToolUseByAgent = new Map<string, PendingChildToolUse>();
+  // Forced Read rounds each agent has actually completed (a tool_use this fixture issued, answered
+  // by a matching tool_result). Keyed by agent id, never by request order.
+  const childReadRoundsDoneByAgent = new Map<string, number>();
+  const childReadRounds = options.childReadRounds !== undefined && options.childReadRounds > 1 ? options.childReadRounds : 1;
   // Nested-delegation state, keyed by x-claude-code-agent-id (never by request order): the
   // deterministic tool_use id this fixture issued to the delegating child on its first request,
   // so only a SECOND request from that SAME agent carrying the matching tool_result gets the echo.
@@ -477,7 +501,12 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
     // see this request, so that block can never be the signal here.
     const isRoutedChild = typeof body.model === 'string' && KNOWN_UPSTREAM_MODELS.has(body.model);
     if (isRoutedChild) {
-      const childEcho = () => new Response(textSse(body.model, `CHILD_SAW_MODEL=${String(body.model)}`), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      // Gated on the header, not just on isRoutedChild: only a request the client itself marked as
+      // a child may get the inflated usage. undefined leaves every builder on its own default.
+      const childAgentId = record.headers['x-claude-code-agent-id'];
+      const childInputTokens = childAgentId !== undefined ? options.childUsageInputTokens : undefined;
+      const childEcho = () =>
+        new Response(textSse(body.model, `CHILD_SAW_MODEL=${String(body.model)}`, childInputTokens), { status: 200, headers: { 'content-type': 'text/event-stream' } });
 
       // Nested delegation (nestedDelegatingAgent set, the launcher's `nested` mode only): the
       // FIRST routed request from the delegating child (matched by its forwarded model, keyed by
@@ -502,7 +531,7 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
         const toolUseId = 'toolu_nested_0';
         if (agentId !== undefined) nestedToolUseByAgent.set(agentId, toolUseId);
         const target = CHANNEL_A_AGENTS.find((a) => a.name !== nestedDelegating.name) ?? CHANNEL_A_AGENTS[1]!;
-        return new Response(nestedAgentToolUseSse(body.model, toolUseId, target), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+        return new Response(nestedAgentToolUseSse(body.model, toolUseId, target, childInputTokens), { status: 200, headers: { 'content-type': 'text/event-stream' } });
       }
 
       // Default (childReadFilePath absent): unchanged from before this option existed -- one
@@ -520,12 +549,16 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
         const answered = extractToolResults(body).some((result) => result.toolUseId === pendingChildToolUse.toolUseId);
         if (answered) {
           pendingChildToolUseByAgent.delete(agentId as string);
-          return childEcho();
+          const done = (childReadRoundsDoneByAgent.get(agentId as string) ?? 0) + 1;
+          childReadRoundsDoneByAgent.set(agentId as string, done);
+          // With the default single round this is always the echo, exactly as before. Only the
+          // multi-round opt-in falls through to issue the next tool_use below.
+          if (done >= childReadRounds) return childEcho();
         }
       }
       const toolUseId = `toolu_child_${agentId ?? 'unknown'}_${Math.random().toString(36).slice(2, 8)}`;
       if (agentId !== undefined) pendingChildToolUseByAgent.set(agentId, { toolUseId });
-      return new Response(childToolUseSse(body.model, toolUseId, options.childReadFilePath), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      return new Response(childToolUseSse(body.model, toolUseId, options.childReadFilePath, childInputTokens), { status: 200, headers: { 'content-type': 'text/event-stream' } });
     }
 
     // A parent turn that already carries its children's tool_results must end
@@ -662,6 +695,19 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   // two-request behavior).
   const childReadFilePath = process.env.PROBE_CHILD_READ_FILE || undefined;
 
+  // Opt-in (the launcher's compaction mode only): how many forced Read rounds each routed child is
+  // driven through. Unset, blank or unparseable means 1, the single round every other mode has
+  // always had. See HandlerFixtureOptions.childReadRounds.
+  const parsedChildReadRounds = Number.parseInt(process.env.PROBE_CHILD_READ_ROUNDS ?? '', 10);
+  const childReadRounds = Number.isInteger(parsedChildReadRounds) && parsedChildReadRounds > 1 ? parsedChildReadRounds : undefined;
+
+  // Opt-in (the launcher's compaction mode only): the input_tokens a routed child's own
+  // message_start reports, so the client's context estimate for that child can cross its
+  // compaction threshold. Unset, blank or unparseable leaves every response's usage untouched.
+  // See HandlerFixtureOptions.childUsageInputTokens.
+  const parsedChildUsageInputTokens = Number.parseInt(process.env.PROBE_CHILD_USAGE_INPUT_TOKENS ?? '', 10);
+  const childUsageInputTokens = Number.isInteger(parsedChildUsageInputTokens) && parsedChildUsageInputTokens > 0 ? parsedChildUsageInputTokens : undefined;
+
   // Opt-in (the launcher's resume mode only): lets a resumed parent turn re-delegate instead of
   // ending. See HandlerFixtureOptions.resumeReDelegate for why this must never be inferred from
   // request shape. Empty/unset for every other mode.
@@ -700,6 +746,8 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
     },
     profile,
     ...(childReadFilePath !== undefined ? { childReadFilePath } : {}),
+    ...(childReadRounds !== undefined ? { childReadRounds } : {}),
+    ...(childUsageInputTokens !== undefined ? { childUsageInputTokens } : {}),
     ...(resumeReDelegate ? { resumeReDelegate: true } : {}),
     ...(nestedDelegatingAgent !== undefined ? { nestedDelegatingAgent } : {}),
   });
