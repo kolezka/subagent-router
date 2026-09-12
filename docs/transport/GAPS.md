@@ -1,6 +1,10 @@
 # Transport: gaps
 
-- **Claude Code capability is `pending`.** [verified] direct read of
+- **2026-09-12 product acceptance: Claude Code 2.1.268 is supported for the measured packaged router path.** The pinned real client ran through the recording proxy into spawned `dist/cli.js serve`, using the real Bun raw-fetch dependency and a scripted loopback upstream, not an embedded `createHandler` substitute. `handler-ezphM0` routed two selected models and completed with `PARENT_FINAL_OK`; `next-turn-iscAxQ`, `nested-IWrTVw`, and `compaction-Sroc4G` passed their named lifecycle paths; accepted resume `resume-0FieA7` continued the same child ids after parent resume through native `SendMessage`, and both invocations completed with `PARENT_FINAL_OK`. Routing, completion, executable identity, and capture pairing checks passed. M3-A and explicit zero scaffold declaration also passed on the accepted resume. `resume-8SNn3i` is not an accepted resume record because its capture boundary was recorded incorrectly before the driver materialized invocation-one captures and sorted request ids numerically. Direct native evidence is separately recorded in `resume-3STpCB`, `next-turn-RKA2N4`, `nested-a4QSXS`, and `compaction-WH9nKg`.
+- **Limits.** Claude Code 2.1.269 is installed but unmeasured. M2 failed. M3, M3-B2, M4, and M10-freshness remain unmeasured or closed. Correlation is in memory, expires after idle TTL, and is lost on restart. These limits do not invalidate the exercised explicit-marker and correlation paths; they limit what this profile claims to support.
+- **Historical entries follow.** They preserve earlier measurements and their evidence. A prior `pending` or unsupported statement applies to its named version, fixture, or checkpoint unless this current acceptance bullet supersedes it.
+
+- **Historical 2.1.263 profile: capability is `pending`.** [verified] direct read of
   [../../tests/fixtures/capabilities/claude-code-2.1.263.json](../../tests/fixtures/capabilities/claude-code-2.1.263.json):
   every probe (`M1`-`M4`, `M10`) is `"pending"`, `status: "pending"`. `assertCapability` refuses
   every `claude-marker`/`claude-correlation`/`claude-fork` gate for this fixture, by design.
@@ -8,10 +12,11 @@
   bootstrap ([../../src/transport/claude-hook.ts](../../src/transport/claude-hook.ts)) always
   returns `freshDelegation: false`; channel B and B2 both stay closed in production until a real
   producer exists and M10-freshness passes.
-- **Correlation (M1) is untested against a live client.** `CorrelationStore` itself is unit-tested
-  ([../../tests/adapters/correlation.test.ts](../../tests/adapters/correlation.test.ts)), but no
-  shipped Claude Code version has a passing M1 (identifier entropy) measurement.
-- **M1 has a statistical sample analyzer, not a generator-entropy proof.**
+- **Historical 2.1.263 correlation status.** `CorrelationStore` itself is unit-tested
+  ([../../tests/adapters/correlation.test.ts](../../tests/adapters/correlation.test.ts)), but this
+  fixture has no passing M1 (identifier entropy) measurement. The 2.1.268 M1 proof and measured
+  correlation path are recorded in the current acceptance bullet and later historical detail.
+- **Historical M1 sample analyzer limitation.**
   [../../tests/probes/evidence-m1.ts](../../tests/probes/evidence-m1.ts) reads agent ids out of
   run captures and measures their observed variety (length, alphabet, per-position entropy).
   Sample variety is not generator entropy: `judgeM1Sample` can fail a sample outright (a
@@ -573,5 +578,13 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   - Every failure mode of the channel is a refusal, never a misroute: a marker that disagrees with
     an existing binding throws `correlation-conflict` out of `bind` and is returned as a 422, and a
     request carrying neither a marker nor a binding is refused `missing-selection`.
+
+- **2026-09-12 correction: `lifecycle.resume`, `M10`, and `status` remain pending for production certification.** No profile is supported. `resume-YGQ0Ab` recorded a successful parent resume, two fresh child ids after boundary 11, and `PARENT_FINAL_OK` from both invocations. Its five matching binary snippets establish source inspection only. They do not exclude other resume entry points, and runtime does not distinguish or refuse takeover. The run therefore cannot establish takeover behaviour, a takeover-specific fail-closed claim, or that no request shape can drift.
+
+- **Direct same-child observation is recorded separately from certification.** `resume-ONBUDz` used native `SendMessage` against the child ids captured before resume. `SendMessage` is present in the captured native tool schema and was previously overlooked. The recorded observation has the same parent session, `PARENT_FINAL_OK` from both invocations, the same two child ids before and after seq=11, and unchanged upstream models. This is direct evidence for that exercised path, not a promotion of `lifecycle.resume`, M10, or status.
+
+- **The current judge and writer keep the promotion path closed.** In [../../tests/probes/evidence-m10.ts](../../tests/probes/evidence-m10.ts), every post-boundary child is checked for forwarding and drift, a forwarded pre-boundary baseline is required, and a fresh-only result remains `pending` regardless of binary inspection. [../../tests/probes/native-claude-run.sh](../../tests/probes/native-claude-run.sh) records the launch executable digest in `capture/client-binary.sha256`; [../../tests/probes/run-binary.ts](../../tests/probes/run-binary.ts) rejects a missing or mismatched identity. [../../tests/probes/native-claude-handler.ts](../../tests/probes/native-claude-handler.ts) writes `route-expectations.json`, and [../../tests/probes/routing-evidence.ts](../../tests/probes/routing-evidence.ts) checks configured parent and child targets rather than observed models. Finally, [../../tests/probes/fixture-writer.ts](../../tests/probes/fixture-writer.ts) requires replayable routing evidence for every lifecycle phase before M10 or `status: supported` can be written.
+
+- **Legacy captures cannot meet the newer promotion bar.** Captures without the launch digest and route expectations are not retrofitted and cannot establish promotion. `M10-freshness` remains pending, so default initialisation without an explicit selection or correlation remains unsupported. Main owns the remaining native reruns and final verification.
 
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

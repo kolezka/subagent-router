@@ -14,13 +14,16 @@
 // version the run OBSERVED (tests/fixtures/generator-proofs), whose byte sites are re-checked
 // against the binary it cites before any pass is reported.
 //
-// Usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir> [<generator-proofs-dir>]
+// The 'resume' lifecycle phase is judged the same way, from capture/invocation-boundary.json plus
+// the resume-inspection record for the observed version (tests/fixtures/resume-proofs).
+//
+// Usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir> [<generator-proofs-dir>] [<resume-proofs-dir>]
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LifecyclePhase } from '../../src/core/types';
 import { extractM3AEvidence, judgeM3A, readRunCapture } from './evidence-m3a';
 import type { CapturedPair } from './evidence-m3a';
-import { extractLifecycleEvidence, judgeLifecyclePhase, readRunManifest } from './evidence-m10';
+import { extractLifecycleEvidence, judgeLifecyclePhase, readInvocationBoundary, readRunManifest } from './evidence-m10';
 import { extractFreshnessEvidence, judgeM10Freshness } from './evidence-freshness';
 import type {
   DelegationConsumeRecord,
@@ -31,6 +34,10 @@ import type {
 } from './evidence-freshness';
 import { analyzeIdSample, collectAgentIds, judgeM1 } from './evidence-m1';
 import { loadGeneratorProof, verifyGeneratorProofAgainstBinary } from './generator-proof';
+import { loadResumeProof, verifyResumeProofAgainstBinary } from './resume-proof';
+import { verifyRunBinary } from './run-binary';
+import { judgeRouting, isMessagesEndpointUrl } from './routing-evidence';
+import type { RoutingJudgement } from './routing-evidence';
 import type { M1SampleReport } from './m1-sample-report';
 import type { ProbeResult } from '../../src/core/types';
 
@@ -40,6 +47,87 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 async function readJsonFile(path: string): Promise<unknown> {
   return JSON.parse(await readFile(path, 'utf8'));
+}
+
+interface InvocationCompletion {
+  result: ProbeResult;
+  diagnostic?: string;
+  parentSessionId?: string;
+}
+
+async function readInvocationCompletion(runDir: string, outputFile: string, statusFile: string): Promise<InvocationCompletion> {
+  let status: string;
+  try {
+    status = (await readFile(join(runDir, statusFile), 'utf8')).trim();
+  } catch {
+    return { result: 'pending', diagnostic: `completion-exit-status-missing:${statusFile}` };
+  }
+  if (!/^\d+$/.test(status)) return { result: 'pending', diagnostic: `completion-exit-status-invalid:${statusFile}` };
+
+  if (status !== '0') return { result: 'failed', diagnostic: `completion-exit-nonzero:${statusFile}` };
+
+  let output: unknown;
+  try {
+    output = await readJsonFile(join(runDir, outputFile));
+  } catch {
+    return { result: 'pending', diagnostic: `completion-output-missing-or-invalid:${outputFile}` };
+  }
+  if (!isRecord(output)) return { result: 'pending', diagnostic: `completion-output-invalid:${outputFile}` };
+  if (output.subtype !== 'success') return { result: 'failed', diagnostic: `completion-subtype-not-success:${outputFile}` };
+  if (output.is_error !== false) return { result: 'failed', diagnostic: `completion-is-error:${outputFile}` };
+  if (typeof output.result !== 'string') return { result: 'pending', diagnostic: `completion-result-invalid:${outputFile}` };
+  if (output.result !== 'PARENT_FINAL_OK') return { result: 'failed', diagnostic: `completion-parent-result:${output.result}` };
+  if (typeof output.session_id !== 'string' || output.session_id.length === 0) {
+    return { result: 'pending', diagnostic: `completion-parent-session-id-invalid:${outputFile}` };
+  }
+  return { result: 'passed', parentSessionId: output.session_id };
+}
+
+async function readRunCompletion(runDir: string, isResume: boolean): Promise<InvocationCompletion> {
+  const first = await readInvocationCompletion(runDir, 'cli-stdout.json', 'cli-exit-status');
+  if (first.result !== 'passed' || !isResume) return first;
+  const second = await readInvocationCompletion(runDir, 'cli2-stdout.json', 'cli2-exit-status');
+  if (second.result !== 'passed') return second;
+  if (first.parentSessionId !== second.parentSessionId) return { result: 'failed', diagnostic: 'completion-parent-session-id-mismatch' };
+  return { result: 'passed' };
+}
+
+function extractResumeMessageTargets(capture: Awaited<ReturnType<typeof readRunCapture>>, afterSeq: number | undefined): string[] {
+  if (afterSeq === undefined) return [];
+  const preBoundaryToolUseIds = new Set<string>();
+  const targets = new Set<string>();
+
+  const addSendMessageTargets = (messages: unknown, onlyNew: boolean): void => {
+    if (!Array.isArray(messages)) return;
+    for (const message of messages) {
+      if (!isRecord(message) || message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+      for (const block of message.content) {
+        if (!isRecord(block) || block.type !== 'tool_use' || typeof block.id !== 'string' || block.id.length === 0) continue;
+        if (!onlyNew) {
+          preBoundaryToolUseIds.add(block.id);
+          continue;
+        }
+        if (preBoundaryToolUseIds.has(block.id) || block.name !== 'SendMessage' || !isRecord(block.input)) continue;
+        const target = block.input.to;
+        if (typeof target !== 'string' || target.length === 0) continue;
+        targets.add(target);
+      }
+    }
+  };
+
+  // Any earlier parent history can show that an id is old; only real message pairs admit targets.
+  for (const request of [...capture.pairs, ...capture.unforwarded]) {
+    if (request.seq > afterSeq || request.agentId !== undefined) continue;
+    addSendMessageTargets(request.pre.body.messages, false);
+  }
+
+  for (const pair of capture.pairs) {
+    if (pair.seq <= afterSeq || pair.agentId !== undefined) continue;
+    if (!isMessagesEndpointUrl(pair.pre.url) || !isMessagesEndpointUrl(pair.post.url)) continue;
+    addSendMessageTargets(pair.pre.body.messages, true);
+  }
+
+  return [...targets];
 }
 
 const NUMBERED_FILE_RE = /^(\d+)-(.+)\.json$/;
@@ -134,6 +222,14 @@ async function buildSingleRunM1Sample(runDir: string, observedVersion: string, g
     ...(siteVerification !== undefined ? { siteVerification } : {}),
   });
 
+  if (verdict.result === 'passed' && generatorProof !== undefined) {
+    const identity = await verifyRunBinary(runDir, generatorProof.binaryPath);
+    if (identity.result !== 'passed') {
+      verdict.result = 'pending';
+      verdict.diagnostic = `m1-${identity.diagnostic}`;
+    }
+  }
+
   const idsPerRunCount: Record<string, number> = {};
   for (const [runId, runIds] of Object.entries(perRun)) idsPerRunCount[runId] = runIds.length;
 
@@ -161,6 +257,9 @@ const LIFECYCLE_PHASES: readonly LifecyclePhase[] = ['next-turn', 'resume', 'com
 // synthetic proof and a small stand-in binary instead of the real pinned client.
 const DEFAULT_GENERATOR_PROOFS_DIR = join(import.meta.dir, '..', 'fixtures', 'generator-proofs');
 
+// Same arrangement for the resume-inspection records the 'resume' lifecycle branch needs.
+const DEFAULT_RESUME_PROOFS_DIR = join(import.meta.dir, '..', 'fixtures', 'resume-proofs');
+
 // One boolean field of M3APairEvidence (see evidence-m3a.ts), excluding `seq`/`agentId` -- never
 // surfaced per-pair here (that would carry an agentId), only aggregated into a count below.
 const M3A_PAIR_BOOLEAN_KEYS = [
@@ -174,6 +273,14 @@ const M3A_PAIR_BOOLEAN_KEYS = [
 
 export interface RunJudgement {
   runDir: string;
+  client: string;
+  clientVersion: string;
+  scaffoldDeclared: boolean;
+  correlationCompleteness: { result: ProbeResult; diagnostic?: string };
+  // This proves the run-local executable snapshot is byte-identical to the verified binary for
+  // the observed version. It is independent of M1's id-sample result.
+  identity: { result: ProbeResult; diagnostic?: string };
+  routing: RoutingJudgement;
   m3a: {
     result: ReturnType<typeof judgeM3A>;
     diagnostics: readonly string[];
@@ -188,6 +295,8 @@ export interface RunJudgement {
   // this is what a caller passes to writeCapabilityFixture, which refuses a lifecycle pass from a
   // run that scaffolded the correlation gate.
   correlationScaffold: boolean;
+  // The CLI completion record is independent evidence: lifecycle passes require it to be passed.
+  completion: { result: ProbeResult; diagnostic?: string };
   // The judged probe verdicts this run establishes. M1 only: every other probe is judged
   // elsewhere in this report (m3a) or not at all by this file.
   probes: { M1: ProbeResult };
@@ -210,8 +319,14 @@ export interface RunJudgement {
  * judgeM10Freshness, or buildM1SampleReport, exactly as a human reading this directory's capture/
  * files by hand would conclude.
  */
-export async function judgeRun(runDir: string, fixturesDir: string, generatorProofsDir: string = DEFAULT_GENERATOR_PROOFS_DIR): Promise<RunJudgement> {
+export async function judgeRun(
+  runDir: string,
+  fixturesDir: string,
+  generatorProofsDir: string = DEFAULT_GENERATOR_PROOFS_DIR,
+  resumeProofsDir: string = DEFAULT_RESUME_PROOFS_DIR,
+): Promise<RunJudgement> {
   const capture = await readRunCapture(runDir);
+  const observedVersion = capture.clientVersionFile ?? 'unknown';
 
   const m3aEvidence = await extractM3AEvidence(capture, fixturesDir);
   const pairsTrueCounts = {} as Record<(typeof M3A_PAIR_BOOLEAN_KEYS)[number], number>;
@@ -220,23 +335,57 @@ export async function judgeRun(runDir: string, fixturesDir: string, generatorPro
   }
 
   const runManifest = await readRunManifest(runDir);
+  const completion = await readRunCompletion(runDir, runManifest?.mode === 'resume');
   const lifecycleEvidence = extractLifecycleEvidence(capture);
+  const generatorProofForIdentity = await loadGeneratorProof('claude-code', observedVersion, generatorProofsDir);
+  const generatorProofVerification = generatorProofForIdentity === undefined ? undefined : await verifyGeneratorProofAgainstBinary(generatorProofForIdentity);
+  const generatorProofVerified = generatorProofVerification !== undefined && generatorProofVerification.binaryPresent &&
+    generatorProofVerification.sitesVerified === generatorProofVerification.sitesTotal;
+  const identity = generatorProofForIdentity === undefined || !generatorProofVerified
+    ? { result: 'pending' as ProbeResult, diagnostic: 'binary-identity-expected-proof-unverified: no verified generator proof binds this observed version to an expected binary' }
+    : await verifyRunBinary(runDir, generatorProofForIdentity.binaryPath);
+
+  // The 'resume' branch alone needs these. Same rule as the generator proof: the record is looked
+  // up by the version the run OBSERVED, and its recorded byte sites are re-checked against the
+  // binary it cites, this run, before that record may settle anything.
+  const invocationBoundary = await readInvocationBoundary(runDir);
+  const resumeProof = await loadResumeProof('claude-code', observedVersion, resumeProofsDir);
+  const resumeProofVerification = resumeProof === undefined ? undefined : await verifyResumeProofAgainstBinary(resumeProof);
+  const lifecycleOptions = {
+    observedVersion,
+    ...(invocationBoundary !== undefined ? { invocationBoundary } : {}),
+    ...(resumeProof !== undefined ? { resumeProof } : {}),
+    ...(resumeProofVerification !== undefined ? { resumeProofVerification } : {}),
+    ...(invocationBoundary !== undefined ? { resumeMessageTargets: extractResumeMessageTargets(capture, invocationBoundary.afterSeq) } : {}),
+  };
+
+  const routing = await judgeRouting(capture);
   const lifecycle = {} as Record<LifecyclePhase, { result: string; diagnostic?: string }>;
   for (const phase of LIFECYCLE_PHASES) {
-    const judgement = judgeLifecyclePhase(phase, lifecycleEvidence, runManifest);
-    lifecycle[phase] = { result: judgement.result, ...(judgement.diagnostic !== undefined ? { diagnostic: judgement.diagnostic } : {}) };
+    const judgement = judgeLifecyclePhase(phase, lifecycleEvidence, runManifest, lifecycleOptions);
+    const correlated = judgement.result === 'passed' && capture.correlationCompleteness.result !== 'passed' ? capture.correlationCompleteness : judgement;
+    const identified = correlated.result === 'passed' && identity.result !== 'passed' ? identity : correlated;
+    const routed = identified.result === 'passed' && routing.result !== 'passed' ? routing : identified;
+    const checked = routed.result === 'passed' && completion.result !== 'passed' ? completion : routed;
+    lifecycle[phase] = { result: checked.result, ...(checked.diagnostic !== undefined ? { diagnostic: checked.diagnostic } : {}) };
   }
   const freshnessCapture = await readFreshnessCapture(runDir, capture.pairs);
   const freshnessJudgement = judgeM10Freshness(extractFreshnessEvidence(freshnessCapture));
 
   // No client-version file means the run never observed one, so no proof can be matched to it.
   // 'unknown' keeps the missing-proof diagnostic readable rather than naming an empty version.
-  const m1Sample = await buildSingleRunM1Sample(runDir, capture.clientVersionFile ?? 'unknown', generatorProofsDir);
+  const m1Sample = await buildSingleRunM1Sample(runDir, observedVersion, generatorProofsDir);
   const m1Result = m1Sample.verdict.result;
   const proofDroveTheVerdict = m1Sample.proof.source === 'generator-inspection';
 
   return {
     runDir,
+    client: String(capture.profileRaw.client),
+    clientVersion: observedVersion,
+    scaffoldDeclared: m3aEvidence.scaffoldDeclared,
+    correlationCompleteness: capture.correlationCompleteness,
+    identity,
+    routing,
     m3a: {
       result: judgeM3A(m3aEvidence),
       diagnostics: m3aEvidence.diagnostics,
@@ -245,6 +394,7 @@ export async function judgeRun(runDir: string, fixturesDir: string, generatorPro
       declaredScaffoldPaths: m3aEvidence.declaredScaffoldPaths,
     },
     correlationScaffold: runManifest?.correlationScaffold ?? false,
+    completion: { result: completion.result, ...(completion.diagnostic !== undefined ? { diagnostic: completion.diagnostic } : {}) },
     probes: { M1: m1Result },
     correlationEntropy: proofDroveTheVerdict ? m1Result : 'pending',
     lifecycle,
@@ -263,12 +413,12 @@ export async function judgeRun(runDir: string, fixturesDir: string, generatorPro
 }
 
 if (import.meta.main) {
-  const [runDir, fixturesDir, generatorProofsDir] = process.argv.slice(2);
+  const [runDir, fixturesDir, generatorProofsDir, resumeProofsDir] = process.argv.slice(2);
   if (runDir === undefined || fixturesDir === undefined) {
-    process.stderr.write('usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir> [<generator-proofs-dir>]\n');
+    process.stderr.write('usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir> [<generator-proofs-dir>] [<resume-proofs-dir>]\n');
     process.exitCode = 2;
   } else {
-    judgeRun(runDir, fixturesDir, generatorProofsDir ?? DEFAULT_GENERATOR_PROOFS_DIR)
+    judgeRun(runDir, fixturesDir, generatorProofsDir ?? DEFAULT_GENERATOR_PROOFS_DIR, resumeProofsDir ?? DEFAULT_RESUME_PROOFS_DIR)
       .then((report) => {
         process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
       })

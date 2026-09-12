@@ -5,8 +5,10 @@
 // the substitution is asserted first, not assumed.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -25,6 +27,7 @@ import { join } from "node:path";
 const PROBES_DIR = import.meta.dir;
 const REAL_SCRIPT_PATH = join(PROBES_DIR, "native-claude-run.sh");
 const REAL_GATEWAY_PATH = join(PROBES_DIR, "native-claude-gateway.mjs");
+const REAL_ROOT = join(PROBES_DIR, '..', '..');
 const REAL_CLIENT_PATH = "/Users/me/.local/bin/claude";
 const FAKE_EXIT_CODE = 47;
 
@@ -34,6 +37,10 @@ const fixtureHome = join(fixtureRoot, "outer-home");
 const fakeClaudePath = join(fixtureRoot, "fake-claude");
 // Second test double, used only to prove PROBE_CLAUDE_BIN actually redirects which binary runs.
 const fakeClaude2Path = join(fixtureRoot, "fake-claude-2");
+const versionedFakeClaudePath = join(fixtureRoot, 'versioned-fake-claude');
+const resumeFakeClaudePath = join(fixtureRoot, 'resume-fake-claude');
+const packagedProfilePath = join(fixtureRoot, 'synthetic-supported-profile.json');
+const replaceableClaudePath = join(fixtureRoot, "replaceable-claude");
 // A same-named decoy on PATH: a bare PROBE_CLAUDE_BIN must never reach it.
 const decoyBinDir = join(fixtureRoot, "decoy-bin");
 const decoyClaudePath = join(decoyBinDir, "fake-claude-2");
@@ -41,6 +48,7 @@ const decoyClaudePath = join(decoyBinDir, "fake-claude-2");
 const pinnedLinkPath = join(fixtureRoot, "pinned-claude-link");
 // Seam dir holding a fake `timeout`, which runs between the launcher fixing its argv and exec.
 const seamBinDir = join(fixtureRoot, "seam-bin");
+const replacementSeamBinDir = join(fixtureRoot, "replacement-seam-bin");
 const notExecutablePath = join(fixtureRoot, "not-executable-client");
 const failingReadlinkPath = join(fixtureRoot, "fake-readlink-always-fails");
 const launcherCopyPath = join(fixtureProbesDir, "native-claude-run.sh");
@@ -79,6 +87,42 @@ beforeAll(() => {
   );
   chmodSync(fakeClaude2Path, 0o755);
 
+  writeFileSync(
+    versionedFakeClaudePath,
+    [
+      '#!/bin/bash',
+      'if [ "$1" = "--version" ]; then printf "9.9.9\\n"; exit 0; fi',
+      'curl -sS -X POST "$ANTHROPIC_BASE_URL/v1/messages" -H "content-type: application/json" --data \'{"model":"probe-parent-model","system":[{"type":"text","text":"x-anthropic-billing-header: cc_is_subagent=true"}],"messages":[{"role":"user","content":"<subagent-router v=\\"1\\" model=\\"fast\\"/>\\nsynthetic packaged request"}]}\'',
+      `exit ${FAKE_EXIT_CODE}`,
+      '',
+    ].join('\n'),
+  );
+  chmodSync(versionedFakeClaudePath, 0o755);
+  writeFileSync(
+    resumeFakeClaudePath,
+    [
+      '#!/bin/bash',
+      'if [ "$1" = "--version" ]; then printf "9.9.9\\n"; exit 0; fi',
+      'code=0',
+      'for argument in "$@"; do [ "$argument" = "-c" ] && code=47; done',
+      'curl -sS -X POST "$ANTHROPIC_BASE_URL/v1/messages" -H "content-type: application/json" --data \'{"model":"probe-parent-model","system":[{"type":"text","text":"x-anthropic-billing-header: cc_is_subagent=true"}],"messages":[{"role":"user","content":"<subagent-router v=\\"1\\" model=\\"fast\\"/>\\nsynthetic packaged request"}]}\'',
+      'exit "$code"',
+      '',
+    ].join('\n'),
+  );
+  chmodSync(resumeFakeClaudePath, 0o755);
+  writeFileSync(
+    packagedProfilePath,
+    JSON.stringify({
+      client: 'claude-code', version: '9.9.9', status: 'supported', correlation: false, correlationEntropy: 'pending', fork: false,
+      adapterMarkerPosition: 'unknown', probes: { M10: 'passed' },
+      lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' },
+      diagnostics: ['synthetic-launcher-test-only'],
+    }),
+  );
+  writeFileSync(replaceableClaudePath, readFileSync(fakeClaudePath));
+  chmodSync(replaceableClaudePath, 0o755);
+
   mkdirSync(decoyBinDir, { recursive: true });
   writeFileSync(decoyClaudePath, ['#!/bin/bash', 'printf "FAKE_CLAUDE_DECOY=1\\n"', `exit ${FAKE_EXIT_CODE}`, ''].join('\n'));
   chmodSync(decoyClaudePath, 0o755);
@@ -104,8 +148,30 @@ beforeAll(() => {
   );
   chmodSync(join(seamBinDir, "timeout"), 0o755);
 
+  mkdirSync(replacementSeamBinDir, { recursive: true });
+  writeFileSync(
+    join(replacementSeamBinDir, "timeout"),
+    [
+      "#!/bin/bash",
+      `/bin/cp ${fakeClaude2Path} ${replaceableClaudePath}`,
+      "shift",
+      'exec "$@"',
+      "",
+    ].join("\n"),
+  );
+  chmodSync(join(replacementSeamBinDir, "timeout"), 0o755);
+
   // Self-contained (only node:http/fs/path); safe to copy standalone.
   writeFileSync(join(fixtureProbesDir, "native-claude-gateway.mjs"), readFileSync(REAL_GATEWAY_PATH, "utf8"));
+  cpSync(join(REAL_ROOT, 'src'), join(fixtureRoot, 'src'), { recursive: true });
+  cpSync(join(REAL_ROOT, 'scripts'), join(fixtureRoot, 'scripts'), { recursive: true });
+  cpSync(join(REAL_ROOT, 'tests', 'support'), join(fixtureRoot, 'tests', 'support'), { recursive: true });
+  cpSync(join(REAL_ROOT, 'tests', 'fixtures', 'capabilities'), join(fixtureRoot, 'tests', 'fixtures', 'capabilities'), { recursive: true });
+  for (const file of ['native-claude-handler.ts', 'native-claude-packaged-front.mjs', 'packaged-serve-state.ts', 'packaged-serve-capture.ts', 'evidence-freshness.ts']) {
+    cpSync(join(PROBES_DIR, file), join(fixtureProbesDir, file));
+  }
+  for (const file of ['package.json', 'tsconfig.json', 'tsconfig.build.json']) cpSync(join(REAL_ROOT, file), join(fixtureRoot, file));
+  symlinkSync(join(REAL_ROOT, 'node_modules'), join(fixtureRoot, 'node_modules'));
 
   const original = readFileSync(REAL_SCRIPT_PATH, "utf8");
   expect(original).toContain(REAL_CLIENT_PATH); // sanity: literal still present to replace
@@ -199,9 +265,169 @@ test("launcher runs the client from WORK and propagates its real exit code (mode
   expect(result.status).toBe(FAKE_EXIT_CODE); // old script always exited 0 via its last echo
 });
 
+test("launcher records a digest of the executable used by the run", () => {
+  const { result, runDir } = runCopy("delegate");
+  expect(result.status).toBe(FAKE_EXIT_CODE);
+  expect(runDir).toBeTruthy();
+  const digest = createHash("sha256").update(readFileSync(fakeClaudePath)).digest("hex");
+  expect(existsSync(join(runDir!, "capture", "client-binary.sha256"))).toBe(true);
+  expect(readFileSync(join(runDir!, "capture", "client-binary"), "utf8").trim()).toBe(join(runDir!, "client-binary"));
+  expect(readFileSync(join(runDir!, "capture", "client-binary-source"), "utf8").trim()).toBe(realpathSync(fakeClaudePath));
+  expect(readFileSync(join(runDir!, "capture", "client-binary.sha256"), "utf8").trim()).toBe(digest);
+});
+
 test("launcher reaches the client for simple mode too", () => {
   const { result } = runCopy("simple");
   expect(result.status).toBe(FAKE_EXIT_CODE);
+});
+
+test('opt-in packaged serve launches the built CLI and routes a synthetic loopback child request', () => {
+  const { result, runDir } = runCopy('handler', {
+    PROBE_CLAUDE_BIN: versionedFakeClaudePath,
+    PROBE_PACKAGED_SERVE: '1',
+    PROBE_PACKAGED_CAPABILITY_PROFILE: packagedProfilePath,
+  });
+
+  if (runDir === undefined) throw new Error(`launcher did not start: ${result.stdout}\n${result.stderr}`);
+  expect(result.status).toBe(FAKE_EXIT_CODE);
+  expect(existsSync(join(runDir, 'package', 'dist', 'cli.js'))).toBe(true);
+  expect(readFileSync(join(runDir!, 'packaged-serve.log'), 'utf8')).toContain('listening on http://127.0.0.1:');
+  const records = readdirSync(join(runDir!, 'capture')).filter((file) => file.endsWith('-pre-handler.json') || file.endsWith('-post-handler-upstream.json'));
+  if (!records.some((file) => file.endsWith('-pre-handler.json'))) {
+    throw new Error(`packaged request was not recorded: ${readdirSync(join(runDir, 'capture')).join(', ')}\nlauncher=${result.stdout}\n${result.stderr}\npre=${readdirSync(join(runDir, 'capture', 'packaged-pre')).join(', ')}\n${readFileSync(join(runDir, 'cli-stdout.json'), 'utf8')}\n${readFileSync(join(runDir, 'cli-stderr.txt'), 'utf8')}`);
+  }
+  expect(records.some((file) => file.endsWith('-post-handler-upstream.json'))).toBe(true);
+  const preRecord = JSON.parse(readFileSync(join(runDir, 'capture', records.find((file) => file.endsWith('-pre-handler.json'))!), 'utf8')) as { captureRequestId?: string };
+  const upstreamRecord = JSON.parse(readFileSync(join(runDir, 'capture', records.find((file) => file.endsWith('-post-handler-upstream.json'))!), 'utf8')) as { captureRequestId?: string; body?: { model?: string } };
+  expect(upstreamRecord.captureRequestId).toBe(preRecord.captureRequestId);
+  expect(upstreamRecord.body?.model).toBe('gateway/fast-worker');
+  expect(readFileSync(join(runDir, 'cli-stdout.json'), 'utf8')).toContain('CHILD_SAW_MODEL=gateway/fast-worker');
+});
+
+test('packaged serve runs every handler lifecycle mode and captures both resume invocations', () => {
+  for (const [mode, client] of [
+    ['handler', versionedFakeClaudePath],
+    ['next-turn', versionedFakeClaudePath],
+    ['nested', versionedFakeClaudePath],
+    ['compaction', versionedFakeClaudePath],
+    ['resume', resumeFakeClaudePath],
+  ] as const) {
+    const { result, runDir } = runCopy(mode, {
+      PROBE_CLAUDE_BIN: client,
+      PROBE_PACKAGED_SERVE: '1',
+      PROBE_PACKAGED_CAPABILITY_PROFILE: packagedProfilePath,
+    });
+    if (runDir === undefined) throw new Error(`launcher did not start for ${mode}: ${result.stdout}\n${result.stderr}`);
+
+    expect(result.status).toBe(FAKE_EXIT_CODE);
+    expect(existsSync(join(runDir, 'package', 'dist', 'cli.js'))).toBe(true);
+    const serveLog = readFileSync(join(runDir, 'packaged-serve.log'), 'utf8');
+    expect(serveLog).toContain('listening on http://127.0.0.1:');
+    expect(serveLog.match(/listening on http:\/\/127\.0\.0\.1:/g)).toHaveLength(1);
+    expect(existsSync(join(runDir, 'capture', '001-profile.json'))).toBe(true);
+    if (mode === 'resume') {
+      expect(existsSync(join(runDir, 'cli2-stdout.json'))).toBe(true);
+      expect(existsSync(join(runDir, 'capture', 'invocation-boundary.json'))).toBe(true);
+      expect(readdirSync(join(runDir, 'capture')).some((file) => file.endsWith('-post-handler-upstream.json'))).toBe(true);
+    }
+  }
+}, 30_000);
+
+test('packaged serve dispatches before every handler lifecycle branch', () => {
+  const script = readFileSync(REAL_SCRIPT_PATH, 'utf8');
+  const packagedDispatch = script.indexOf('if [ "${PROBE_PACKAGED_SERVE:-}" = "1" ]; then');
+  expect(packagedDispatch).toBeGreaterThan(-1);
+
+  for (const modeBranch of [
+    'if [ "$MODE" = "next-turn" ]; then',
+    'elif [ "$MODE" = "compaction" ]; then',
+    'elif [ "$MODE" = "resume" ]; then',
+    'elif [ "$MODE" = "nested" ]; then',
+  ]) {
+    expect(packagedDispatch).toBeLessThan(script.indexOf(modeBranch));
+  }
+});
+
+test('packaged serve installs its guarded process trap before the first background process', () => {
+  const script = readFileSync(REAL_SCRIPT_PATH, 'utf8');
+  const trapIndex = script.indexOf('trap cleanup_probe_processes EXIT');
+  const firstBackgroundProcess = script.indexOf('2>&1 &');
+
+  expect(script.indexOf('GW=""')).toBeGreaterThan(-1);
+  expect(script.indexOf('PACKAGED_SERVE=""')).toBeGreaterThan(-1);
+  expect(script.indexOf('UPSTREAM=""')).toBeGreaterThan(-1);
+  expect(trapIndex).toBeGreaterThan(-1);
+  expect(trapIndex).toBeLessThan(firstBackgroundProcess);
+  expect(script).toContain('exit "$cleanup_exit"');
+});
+
+test('packaged early failure stops only its started upstream and serve processes', async () => {
+  const variant = launcherVariant('native-claude-run-early-failure.sh', (source) =>
+    source.replace(
+      'PACKAGED_SERVE=$!',
+      'PACKAGED_SERVE=$!\nprintf "%s\\n" "$UPSTREAM" > "$RUN/upstream.pid"\nprintf "%s\\n" "$PACKAGED_SERVE" > "$RUN/packaged-serve.pid"\nprintf "EARLY_RUN=%s\\n" "$RUN"\nexit 91',
+    ),
+  );
+  const result = spawnSync('/bin/bash', [variant, 'handler'], {
+    cwd: fixtureRoot,
+    env: outerEnv({
+      PROBE_CLAUDE_BIN: versionedFakeClaudePath,
+      PROBE_PACKAGED_SERVE: '1',
+      PROBE_PACKAGED_CAPABILITY_PROFILE: packagedProfilePath,
+    }),
+    timeout: 20000,
+    encoding: 'utf8',
+  });
+  if (result.error) throw result.error;
+  const runDir = (result.stdout ?? '').match(/^EARLY_RUN=(\S+)/m)?.[1];
+  if (runDir === undefined) throw new Error(`early failure did not expose its run: ${result.stdout}\n${result.stderr}`);
+
+  expect(result.status).toBe(91);
+  for (const pidPath of ['upstream.pid', 'packaged-serve.pid']) {
+    const pid = Number(readFileSync(join(runDir, pidPath), 'utf8').trim());
+    let stopped = false;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        stopped = true;
+        break;
+      }
+      await Bun.sleep(25);
+    }
+    expect(stopped).toBe(true);
+  }
+});
+
+test('packaged capture copies the run-local capability snapshot after the source profile changes', () => {
+  const originalProfile = readFileSync(packagedProfilePath, 'utf8');
+  const variant = launcherVariant('native-claude-run-profile-snapshot.sh', (source) =>
+    source.replace(
+      /\/bin\/cp "\$PROFILE_SOURCE" "[^"]+" \|\| exit 1/,
+      `$&\nprintf '%s\\n' '{"client":"claude-code","version":"9.9.9","status":"unsupported","diagnostics":["mutated-after-copy"]}' > "$PROFILE_SOURCE"`,
+    ),
+  );
+
+  try {
+    const result = spawnSync('/bin/bash', [variant, 'handler'], {
+      cwd: fixtureRoot,
+      env: outerEnv({
+        PROBE_CLAUDE_BIN: versionedFakeClaudePath,
+        PROBE_PACKAGED_SERVE: '1',
+        PROBE_PACKAGED_CAPABILITY_PROFILE: packagedProfilePath,
+      }),
+      timeout: 20000,
+      encoding: 'utf8',
+    });
+    if (result.error) throw result.error;
+    const runDir = (result.stdout ?? '').match(/^=== RUN mode=\S+ port=\d+ run=(\S+)/m)?.[1];
+    if (runDir === undefined) throw new Error(`launcher did not start: ${result.stdout}\n${result.stderr}`);
+
+    const capturedProfile = JSON.parse(readFileSync(join(runDir, 'capture', '001-profile.json'), 'utf8')) as { diagnostics?: string[] };
+    expect(capturedProfile.diagnostics).toEqual(['synthetic-launcher-test-only']);
+  } finally {
+    writeFileSync(packagedProfilePath, originalProfile);
+  }
 });
 
 test("launcher script parses as valid bash (syntax check only, the production hook branch is never executed here)", () => {
@@ -324,6 +550,40 @@ test("resume mode rejects PROBE_FRESHNESS_HOOK=production inside the resume bloc
   expect(rejectIndex).toBeLessThan(script.lastIndexOf('if is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then'));
 });
 
+test("resume mode records the invocation boundary between its two invocations, and nowhere else", () => {
+  // The resume judge splits each agent's requests at this seq, so the number has to be taken
+  // after invocation 1 has finished writing captures and before invocation 2 starts writing any.
+  // Written anywhere else it would describe a boundary that never existed.
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  const resumeBlockGuard = script.lastIndexOf('if [ "$MODE" = "resume" ]; then');
+  expect(resumeBlockGuard).toBeGreaterThan(-1);
+
+  // Exactly one write, and it is inside the resume block: no other mode has two invocations, so
+  // a boundary file anywhere else would be a seq split nothing produced.
+  const writes = script.match(/invocation-boundary\.json/g) ?? [];
+  expect(writes).toHaveLength(1);
+  const writeIndex = script.indexOf("invocation-boundary.json");
+  expect(writeIndex).toBeGreaterThan(resumeBlockGuard);
+
+  // Between the two invocations: after invocation 1's exit code is captured, before the flags
+  // that only appear in invocation 2.
+  const firstInvocationDone = script.indexOf("CLI1_EXIT=$?", resumeBlockGuard);
+  const secondInvocation = script.indexOf('-c -p "$PROMPT2"', resumeBlockGuard);
+  expect(firstInvocationDone).toBeGreaterThan(resumeBlockGuard);
+  expect(secondInvocation).toBeGreaterThan(firstInvocationDone);
+  expect(writeIndex).toBeGreaterThan(firstInvocationDone);
+  expect(writeIndex).toBeLessThan(secondInvocation);
+
+  // The seq itself: highest NNN prefix among the numbered capture files at that moment, with
+  // leading zeros stripped (JSON rejects 007, and bash printf %d reads 008 as a bad octal).
+  const boundaryBlock = script.slice(firstInvocationDone, secondInvocation);
+  expect(boundaryBlock).toContain('"afterSeq"');
+  expect(boundaryBlock).toContain("BOUNDARY_SEQ=0");
+  expect(boundaryBlock).toMatch(/sort -n/);
+  expect(boundaryBlock).toMatch(/tail -n 1/);
+  expect(boundaryBlock).toMatch(/printf '\{ "afterSeq": %s \}/);
+});
+
 test("nested mode is accepted at mode validation (fails later at fake-client version observation, same as handler mode would)", () => {
   // nested shares handler mode's is_handler_like branch, which needs a real `claude --version`
   // to observe the client version before it can start the bun fixture. This fixture's fake
@@ -340,10 +600,15 @@ test("nested mode's structural additions are present and scoped to nested, never
   expect(script).toContain("simple|delegate|handler|next-turn|resume|nested");
   expect(script).toContain("PROBE_NESTED_AGENT"); // handler-fixture opt-in for the one-shot nested delegation
 
-  // The nested dispatch branch (PROBE_NESTED_AGENT wiring) must be gated on the literal mode.
-  const nestedDispatchGuard = script.lastIndexOf('elif [ "$MODE" = "nested" ]; then');
-  expect(nestedDispatchGuard).toBeGreaterThan(-1);
-  expect(script.indexOf('PROBE_NESTED_AGENT="native-probe-alpha"')).toBeGreaterThan(nestedDispatchGuard);
+  // Packaged serve gets the nested target before the embedded lifecycle branches. The embedded
+  // branch remains for non-packaged runs.
+  const packagedDispatchGuard = script.indexOf('if [ "${PROBE_PACKAGED_SERVE:-}" = "1" ]; then');
+  const firstEmbeddedBranch = script.indexOf('elif [ "$MODE" = "next-turn" ]; then');
+  const nestedTarget = script.indexOf('PROBE_NESTED_AGENT="native-probe-alpha"');
+  expect(packagedDispatchGuard).toBeGreaterThan(-1);
+  expect(firstEmbeddedBranch).toBeGreaterThan(packagedDispatchGuard);
+  expect(nestedTarget).toBeGreaterThan(packagedDispatchGuard);
+  expect(nestedTarget).toBeLessThan(firstEmbeddedBranch);
 
   // The per-agent tools override: exactly native-probe-alpha gets [Agent], gated on the literal
   // mode AND the agent name, so beta (and handler/next-turn/resume) keep tools: [].
@@ -377,7 +642,7 @@ test("compaction mode declares mode: compaction in the run manifest", () => {
   // production hook wrapper is asserted structurally above).
   const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
   expect(script).toContain('[ "$MODE" = "compaction" ]; }'); // the last clause of is_handler_like
-  expect(script).toContain('{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK", "correlationScaffold": $CORRELATION_SCAFFOLD_JSON }');
+  expect(script).toContain('"resumeStrategy": "$RESUME_STRATEGY"');
 
   const manifestGuard = script.lastIndexOf("if is_handler_like; then");
   expect(manifestGuard).toBeGreaterThan(-1);
@@ -436,18 +701,20 @@ test("compaction mode's child scripting reuses the forced-Read channel with more
   const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
   expect(script).toContain("simple|delegate|handler|next-turn|resume|nested|compaction");
 
-  // The dispatch branch reuses PROBE_CHILD_READ_FILE (next-turn's existing channel) rather than a
+  // The packaged branch reuses PROBE_CHILD_READ_FILE (next-turn's existing channel) rather than a
   // new one, and adds the rounds knob so the child still has a turn after the threshold is crossed.
-  const dispatchGuard = script.indexOf('elif [ "$MODE" = "compaction" ]; then');
+  const dispatchGuard = script.indexOf('      compaction)');
+  const firstEmbeddedBranch = script.indexOf('elif [ "$MODE" = "next-turn" ]; then');
   expect(dispatchGuard).toBeGreaterThan(-1);
+  expect(dispatchGuard).toBeLessThan(firstEmbeddedBranch);
   expect(script.indexOf("PROBE_CHILD_READ_ROUNDS=6")).toBeGreaterThan(dispatchGuard);
-  expect(script.match(/PROBE_CHILD_READ_ROUNDS=/g) ?? []).toHaveLength(1); // never leaks into another mode
+  expect(script.match(/PROBE_CHILD_READ_ROUNDS=/g) ?? []).toHaveLength(2); // packaged and embedded compaction only
 
   // The client does not estimate context from the transcript, it sums the usage on the last
   // assistant message carrying one, so the reported usage is what actually moves the estimate.
   // 5000 clears the roughly 800 token threshold with margin and stays well under the window.
   expect(script.indexOf("PROBE_CHILD_USAGE_INPUT_TOKENS=5000")).toBeGreaterThan(dispatchGuard);
-  expect(script.match(/^\s+PROBE_CHILD_USAGE_INPUT_TOKENS=/gm) ?? []).toHaveLength(1); // compaction only
+  expect(script.match(/^\s+PROBE_CHILD_USAGE_INPUT_TOKENS=/gm) ?? []).toHaveLength(2); // packaged and embedded compaction only
 
   // The ramp holds that usage back so the threshold trips against a conversation that has
   // something old enough to summarize. A measured run without it fired the decision seven times
@@ -455,12 +722,12 @@ test("compaction mode's child scripting reuses the forced-Read channel with more
   // 3 rounds held back leaves four assistant turns behind the child; 6 rounds total leaves three
   // more requests afterwards for a compact_boundary to show up in.
   expect(script.indexOf("PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=3")).toBeGreaterThan(dispatchGuard);
-  expect(script.match(/^\s+PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=/gm) ?? []).toHaveLength(1); // compaction only
+  expect(script.match(/^\s+PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=/gm) ?? []).toHaveLength(2); // packaged and embedded compaction only
 
   // Without this the compactor's own summarizer request is answered with the next forced Read, and
   // the client rejects a tool_use-only reply as "empty summary text" with no retry.
   expect(script.indexOf("PROBE_ANSWER_COMPACTION_SUMMARIES=1")).toBeGreaterThan(dispatchGuard);
-  expect(script.match(/^\s+PROBE_ANSWER_COMPACTION_SUMMARIES=/gm) ?? []).toHaveLength(1); // compaction only
+  expect(script.match(/^\s+PROBE_ANSWER_COMPACTION_SUMMARIES=/gm) ?? []).toHaveLength(2); // packaged and embedded compaction only
 
   // The Read tool must actually be grantable for both forced-Read modes, via one shared predicate.
   expect(script).toContain('uses_child_read() { [ "$MODE" = "next-turn" ] || [ "$MODE" = "compaction" ]; }');
@@ -625,6 +892,21 @@ test("a PROBE_CLAUDE_BIN symlink repointed mid-run still runs the target chosen 
   const clientStdout = readFileSync(join(runDir!, "cli-stdout.json"), "utf8");
   expect(clientStdout).toContain("FAKE_CLAUDE_1=1");
   expect(clientStdout).not.toContain("FAKE_CLAUDE_2=1");
+  expect(result.status).toBe(FAKE_EXIT_CODE);
+});
+
+test("launcher executes the immutable snapshot when the original canonical target is replaced after capture", () => {
+  const originalDigest = createHash("sha256").update(readFileSync(replaceableClaudePath)).digest("hex");
+  const { result, runDir } = runCopy("delegate", {
+    PROBE_CLAUDE_BIN: replaceableClaudePath,
+    PATH: `${replacementSeamBinDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+  });
+  expect(runDir).toBeTruthy();
+  expect(createHash("sha256").update(readFileSync(replaceableClaudePath)).digest("hex")).not.toBe(originalDigest);
+  const stdout = readFileSync(join(runDir!, "cli-stdout.json"), "utf8");
+  expect(stdout).toContain("FAKE_CLAUDE_1=1");
+  expect(stdout).not.toContain("FAKE_CLAUDE_2=1");
+  expect(readFileSync(join(runDir!, "capture", "client-binary.sha256"), "utf8").trim()).toBe(originalDigest);
   expect(result.status).toBe(FAKE_EXIT_CODE);
 });
 

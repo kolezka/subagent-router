@@ -1,20 +1,18 @@
 // Generator-inspection proofs: what a human read out of one pinned client binary about the agent
 // id generator, recorded as byte offsets plus the literals that sit at them. A version string on
 // a file proves nothing on its own, so verifyGeneratorProofAgainstBinary re-reads each recorded
-// site out of the cited binary and reports which ones still match. Reads are positional and
-// exactly literal.length bytes wide: the binary is ~200MB and is never loaded into memory here.
+// site out of the cited binary and reports which ones still match (proof-sites.ts does the
+// reading, shared with resume-proof.ts).
 //
 // This is the evidence judgeM1 (evidence-m1.ts) needs before M1 can be anything but pending.
 // A statistical id sample shows variety; only this shows where the bits come from.
-import { open, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { RouterError } from '../../src/core/errors';
+import { validateProofSite, verifyProofSitesAgainstBinary } from './proof-sites';
+import type { ProofSite, ProofSiteVerification } from './proof-sites';
 
-export interface GeneratorProofSite {
-  name: string;
-  offset: number;
-  literal: string;
-}
+export type GeneratorProofSite = ProofSite;
 
 export interface GeneratorProof {
   client: string;
@@ -54,22 +52,7 @@ function isEnoent(error: unknown): boolean {
 }
 
 function validateSite(value: unknown, index: number, fixtureName: string): GeneratorProofSite {
-  if (typeof value !== 'object' || value === null) {
-    throw schemaError(fixtureName, `sites[${index}] is not an object`);
-  }
-  const record = value as Record<string, unknown>;
-  if (typeof record.name !== 'string' || record.name.length === 0) {
-    throw schemaError(fixtureName, `sites[${index}].name is missing or empty`);
-  }
-  if (typeof record.offset !== 'number' || !Number.isInteger(record.offset) || record.offset < 0) {
-    throw schemaError(fixtureName, `site ${record.name}: offset must be a non-negative integer`);
-  }
-  // An empty literal would read zero bytes and therefore "match" at every offset in the file,
-  // turning site verification into a no-op that always succeeds.
-  if (typeof record.literal !== 'string' || record.literal.length === 0) {
-    throw schemaError(fixtureName, `site ${record.name}: literal is missing or empty`);
-  }
-  return { name: record.name, offset: record.offset, literal: record.literal };
+  return validateProofSite(value, index, (detail) => schemaError(fixtureName, detail));
 }
 
 function validateGeneratorProof(value: unknown, client: string, version: string, fixtureName: string): GeneratorProof {
@@ -168,44 +151,9 @@ export async function loadGeneratorProof(client: string, version: string, dir: s
   return validateGeneratorProof(parsed, client, version, fixtureName);
 }
 
-export interface GeneratorProofSiteVerification {
-  binaryPresent: boolean;
-  sitesTotal: number;
-  sitesVerified: number;
-  // Sites whose declared bytes are NOT what the binary holds at that offset. Empty when the
-  // binary is absent: nothing was compared, so nothing may be reported as mismatched either.
-  mismatchedSites: readonly string[];
-}
+export type GeneratorProofSiteVerification = ProofSiteVerification;
 
-/**
- * Re-reads every recorded site out of the binary the proof cites and reports which still match.
- * Each read is positional and exactly the literal's byte length, so this costs a handful of bytes
- * regardless of how large the binary is.
- *
- * An absent or unreadable binary returns binaryPresent false with nothing verified. That is not a
- * pass and not a failure: it means this run could not check, which callers must treat as pending.
- */
+/** Re-reads every recorded site out of the binary this proof cites. See verifyProofSitesAgainstBinary. */
 export async function verifyGeneratorProofAgainstBinary(proof: GeneratorProof): Promise<GeneratorProofSiteVerification> {
-  const sitesTotal = proof.sites.length;
-
-  let handle: Awaited<ReturnType<typeof open>>;
-  try {
-    handle = await open(proof.binaryPath, 'r');
-  } catch {
-    return { binaryPresent: false, sitesTotal, sitesVerified: 0, mismatchedSites: [] };
-  }
-
-  try {
-    const mismatchedSites: string[] = [];
-    for (const site of proof.sites) {
-      const expected = Buffer.from(site.literal, 'utf8');
-      const actual = Buffer.alloc(expected.length);
-      // A short read means the offset runs past the end of the file: a mismatch, not a crash.
-      const { bytesRead } = await handle.read(actual, 0, expected.length, site.offset);
-      if (bytesRead !== expected.length || !actual.equals(expected)) mismatchedSites.push(site.name);
-    }
-    return { binaryPresent: true, sitesTotal, sitesVerified: sitesTotal - mismatchedSites.length, mismatchedSites };
-  } finally {
-    await handle.close();
-  }
+  return verifyProofSitesAgainstBinary(proof.sites, proof.binaryPath);
 }

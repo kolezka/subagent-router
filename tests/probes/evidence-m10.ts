@@ -8,7 +8,10 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { RunCapture } from './evidence-m3a';
+import type { ResumeProof } from './resume-proof';
+import type { ProofSiteVerification } from './proof-sites';
 import type { LifecyclePhase, ProbeResult } from '../../src/core/types';
+import { isMessagesEndpointUrl } from './routing-evidence';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -16,10 +19,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 // ---------- run manifest ----------
 
+export type ResumeStrategy = 'message-existing' | 're-delegate' | 'unknown';
+
 export interface RunManifest {
   mode: string;
   phasesExercised: readonly string[];
   freshnessHook: 'production' | 'fake' | 'none';
+  resumeStrategy: ResumeStrategy;
   // Whether the run scaffolded the router's correlation gate open (PROBE_CORRELATION_SCAFFOLD).
   // Anything but a literal true reads as false: a lifecycle pass under that scaffold is
   // conditional on M1 and must never narrow an on-disk fixture (see fixture-writer.ts).
@@ -58,7 +64,43 @@ export async function readRunManifest(runDir: string): Promise<RunManifest | und
     typeof parsed.freshnessHook === 'string' && FRESHNESS_HOOK_VALUES.has(parsed.freshnessHook)
       ? (parsed.freshnessHook as RunManifest['freshnessHook'])
       : 'none';
-  return { mode, phasesExercised, freshnessHook, correlationScaffold: parsed.correlationScaffold === true };
+  const resumeStrategy: ResumeStrategy =
+    parsed.resumeStrategy === 'message-existing' || parsed.resumeStrategy === 're-delegate' ? parsed.resumeStrategy : 'unknown';
+  return { mode, phasesExercised, freshnessHook, resumeStrategy, correlationScaffold: parsed.correlationScaffold === true };
+}
+
+// ---------- invocation boundary ----------
+
+export interface InvocationBoundary {
+  // The highest capture seq invocation 1 produced. At or below it is pre-boundary, above it is
+  // post-boundary.
+  afterSeq: number;
+}
+
+/**
+ * Reads capture/invocation-boundary.json, which native-claude-run.sh's resume mode writes between
+ * its two CLI invocations. Absent or unparseable is never an error here: it means the run never
+ * recorded where invocation 1 stopped, so the resume judge fails closed to 'pending' rather than
+ * guessing a split. A real afterSeq of 0 (invocation 1 wrote no numbered capture file) is a
+ * different answer from absence, which is why absence has to be undefined and never a zero.
+ */
+export async function readInvocationBoundary(runDir: string): Promise<InvocationBoundary | undefined> {
+  let raw: string;
+  try {
+    raw = await readFile(join(runDir, 'capture', 'invocation-boundary.json'), 'utf8');
+  } catch {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed)) return undefined;
+  const afterSeq = parsed.afterSeq;
+  if (typeof afterSeq !== 'number' || !Number.isInteger(afterSeq) || afterSeq < 0) return undefined;
+  return { afterSeq };
 }
 
 // ---------- per-request evidence ----------
@@ -123,8 +165,9 @@ function hasCompactionContinuationMessage(body: Record<string, unknown>): boolea
  */
 export function extractLifecycleEvidence(capture: RunCapture): LifecycleEvidenceByAgent {
   const byAgent = new Map<string, LifecycleRequestEvidence[]>();
+  if ((capture.invalidEvidence?.length ?? 0) > 0) return byAgent;
   for (const pair of capture.pairs) {
-    if (pair.agentId === undefined) continue;
+    if (pair.agentId === undefined || !isMessagesEndpointUrl(pair.pre.url)) continue;
     const clientModel = typeof pair.pre.body.model === 'string' ? pair.pre.body.model : undefined;
     const upstreamModel = typeof pair.post.body.model === 'string' ? pair.post.body.model : undefined;
     const parentAgentId = pair.pre.headers['x-claude-code-parent-agent-id'];
@@ -140,7 +183,7 @@ export function extractLifecycleEvidence(capture: RunCapture): LifecycleEvidence
     else list.push(entry);
   }
   for (const request of capture.unforwarded) {
-    if (request.agentId === undefined) continue;
+    if (request.agentId === undefined || !isMessagesEndpointUrl(request.pre.url)) continue;
     const clientModel = typeof request.pre.body.model === 'string' ? request.pre.body.model : undefined;
     const parentAgentId = request.pre.headers['x-claude-code-parent-agent-id'];
     const entry: LifecycleRequestEvidence = {
@@ -239,14 +282,102 @@ function checkDriftAndForwarding(agentIds: readonly string[], evidence: Lifecycl
   return undefined;
 }
 
+// Unlike checkDriftAndForwarding, this one inspects an agent's FIRST request too. That helper
+// deliberately skips it (an agent whose opening request was never routed simply never started,
+// which is a pending condition for the other phases), but a child delegated fresh AFTER the resume
+// has only that first request, so skipping it would let an unrouted fresh child read as clean.
+function checkEveryRequestForwarded(agentIds: readonly string[], evidence: LifecycleEvidenceByAgent, phase: LifecyclePhase): LifecycleJudgement | undefined {
+  for (const agentId of agentIds) {
+    const list = evidence.get(agentId) ?? [];
+    if (list.some((entry) => entry.upstreamModel === undefined)) {
+      return {
+        result: 'failed',
+        diagnostic: `${phase}-post-boundary-child-not-forwarded: post-boundary child ${agentId} had a request that was not forwarded to any upstream model`,
+      };
+    }
+  }
+  return undefined;
+}
+
+export interface LifecycleJudgeOptions {
+  // Where invocation 1's captures stop. Only the 'resume' phase reads it.
+  invocationBoundary?: InvocationBoundary;
+  // The client version this run observed, so a missing resume record can name the version nobody
+  // has inspected yet (same role observedVersion plays in judgeM1).
+  observedVersion?: string;
+  resumeProof?: ResumeProof;
+  resumeProofVerification?: ProofSiteVerification;
+  // Parsed only from assistant tool_use blocks in post-boundary parent requests.
+  resumeMessageTargets?: readonly string[];
+}
+
+// Fresh re-delegation is not same-child resume. Matching binary snippets cannot prove a
+// continuation path is unreachable, so only a routed child spanning the boundary can pass.
+function judgeResume(evidence: LifecycleEvidenceByAgent, runMetadata: RunManifest | undefined, options: LifecycleJudgeOptions): LifecycleJudgement {
+  const phase: LifecyclePhase = 'resume';
+  const declared = checkDeclaredMode(phase, runMetadata);
+  if (declared !== undefined) return declared;
+
+  const boundary = options.invocationBoundary;
+  if (boundary === undefined || !Number.isSafeInteger(boundary.afterSeq) || boundary.afterSeq < 0) {
+    return {
+      result: 'pending',
+      diagnostic: 'resume-requires-invocation-boundary: a valid boundary between the two invocations is required',
+    };
+  }
+
+  const crossing: string[] = [];
+  const postBoundary: string[] = [];
+  let hasBaseline = false;
+  for (const [agentId, list] of evidence) {
+    const forwardedBefore = list.some((entry) => entry.seq <= boundary.afterSeq && entry.upstreamModel !== undefined);
+    const hasPost = list.some((entry) => entry.seq > boundary.afterSeq);
+    if (forwardedBefore) hasBaseline = true;
+    if (hasPost) postBoundary.push(agentId);
+    if (forwardedBefore && hasPost) crossing.push(agentId);
+  }
+
+  if (postBoundary.length === 0) {
+    return { result: 'pending', diagnostic: 'resume-no-post-boundary-children: no child request follows the boundary' };
+  }
+  if (!hasBaseline) {
+    return { result: 'pending', diagnostic: 'resume-no-pre-boundary-baseline: no child was forwarded before the boundary' };
+  }
+
+  // A healthy continuing child must not hide another child's refusal or model drift.
+  const forwarding = checkDriftAndForwarding(postBoundary, evidence, phase) ?? checkEveryRequestForwarded(postBoundary, evidence, phase);
+  if (forwarding !== undefined) return forwarding;
+  if (crossing.length === 0) {
+    return {
+      result: 'pending',
+      diagnostic: `resume-fresh-delegations-only: ${postBoundary.length} post-boundary children have new ids; same-child continuation remains unmeasured`,
+    };
+  }
+  if (runMetadata?.resumeStrategy !== 'message-existing') {
+    return { result: 'pending', diagnostic: `resume-requires-message-existing-strategy: got ${JSON.stringify(runMetadata?.resumeStrategy ?? 'unknown')}` };
+  }
+  const targets = new Set(options.resumeMessageTargets ?? []);
+  if (!crossing.every((agentId) => targets.has(agentId))) {
+    return { result: 'pending', diagnostic: 'resume-requires-sendmessage-targets: post-boundary parent tool_use did not target every pre-boundary child id' };
+  }
+  return { result: 'passed' };
+}
+
 /**
  * Judges one M10 lifecycle phase against a run's declared phasesExercised and the extracted
  * per-agent request evidence. Every phase fails closed to 'pending' when the run itself never
  * declares the phase was tried: aggregate request shape, history length, or the mere presence
  * of a request are never treated as proof a phase happened (per the design doc's M10-freshness
  * language, applied here to every phase, not only freshness).
+ *
+ * `options` carries what only the 'resume' branch needs; every other phase ignores it.
  */
-export function judgeLifecyclePhase(phase: LifecyclePhase, evidence: LifecycleEvidenceByAgent, runMetadata: RunManifest | undefined): LifecycleJudgement {
+export function judgeLifecyclePhase(
+  phase: LifecyclePhase,
+  evidence: LifecycleEvidenceByAgent,
+  runMetadata: RunManifest | undefined,
+  options: LifecycleJudgeOptions = {},
+): LifecycleJudgement {
   const phasesExercised = runMetadata?.phasesExercised ?? [];
   if (!phasesExercised.includes(phase)) {
     return { result: 'pending', diagnostic: `${phase}-not-declared: the run manifest does not declare ${phase} as an exercised phase` };
@@ -289,9 +420,13 @@ export function judgeLifecyclePhase(phase: LifecyclePhase, evidence: LifecycleEv
     return checkDriftAndForwarding(withBoundary, evidence, phase) ?? { result: 'passed' };
   }
 
-  // 'next-turn' | 'resume': no structural signal in the request itself distinguishes these
-  // from any other multi-turn request, so the ONLY thing that can tell them apart is the run's
-  // own declared mode -- never inferred from request count or history length.
+  if (phase === 'resume') return judgeResume(evidence, runMetadata, options);
+
+  // 'next-turn': no structural signal in the request itself distinguishes it from any other
+  // multi-turn request, so the ONLY thing that can tell them apart is the run's own declared
+  // mode -- never inferred from request count or history length. resume used to share this
+  // predicate; it now has its own branch above, because two turns in one invocation and two
+  // turns across a resume look identical here.
   const declared = checkDeclaredMode(phase, runMetadata);
   if (declared !== undefined) return declared;
   const qualifying = agentsWithAtLeastTwoRequests(evidence);

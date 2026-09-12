@@ -41,6 +41,37 @@ CFG="$RUN/config"
 WORK="$RUN/work"
 mkdir -p "$HOMEDIR" "$CFG" "$WORK" "$RUN/capture"
 
+# Copy the resolved executable before any client invocation. The updater can replace the original
+# target after resolution, so every invocation, including --version, runs this read-only snapshot.
+CLAUDE_BIN_SOURCE="$CLAUDE_BIN"
+CLAUDE_BIN="$RUN/client-binary"
+/bin/cp "$CLAUDE_BIN_SOURCE" "$CLAUDE_BIN" || exit 1
+/bin/chmod 500 "$CLAUDE_BIN" || exit 1
+printf '%s\n' "$CLAUDE_BIN_SOURCE" > "$RUN/capture/client-binary-source"
+printf '%s\n' "$CLAUDE_BIN" > "$RUN/capture/client-binary"
+/usr/bin/shasum -a 256 "$CLAUDE_BIN" | awk '{print $1}' > "$RUN/capture/client-binary.sha256" || exit 1
+
+GW=""
+PACKAGED_SERVE=""
+UPSTREAM=""
+UPSTREAM_CAPTURE=""
+PROFILE_SNAPSHOT=""
+cleanup_probe_processes() {
+  cleanup_exit=$?
+  for pid in "$GW" "$PACKAGED_SERVE" "$UPSTREAM"; do
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  done
+  trap - EXIT
+  exit "$cleanup_exit"
+}
+trap cleanup_probe_processes EXIT
+
+assemble_packaged_capture() {
+  if [ "${PROBE_PACKAGED_SERVE:-}" = "1" ]; then
+    bun "$ROOT/tests/probes/packaged-serve-capture.ts" "$RUN/capture" "$UPSTREAM_CAPTURE" "$PROFILE_SNAPSHOT" "$CLIENT_VERSION" || echo "FAIL: could not assemble packaged serve captures" >&2
+  fi
+}
+
 if is_handler_like; then
   # The handler binds its alternate marker slot to the exact client version it is told
   # about, so observe that version first, from the same isolated environment the real
@@ -56,9 +87,61 @@ if is_handler_like; then
   CLIENT_VERSION="$(printf '%s' "$VERSION_OUT" | /usr/bin/grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | /usr/bin/head -1)"
   [ -z "$CLIENT_VERSION" ] && { echo "FAIL: could not observe client version"; exit 1; }
   printf '%s\n' "$CLIENT_VERSION" > "$RUN/capture/client-version"
-  # The exact file this run executes, frozen above rather than resolved again here.
-  printf '%s\n' "$CLAUDE_BIN" > "$RUN/capture/client-binary"
-  if [ "$MODE" = "next-turn" ]; then
+  if [ "${PROBE_PACKAGED_SERVE:-}" = "1" ]; then
+    PROFILE_SOURCE="${PROBE_PACKAGED_CAPABILITY_PROFILE:-}"
+    [ -f "$PROFILE_SOURCE" ] || { echo "FAIL: PROBE_PACKAGED_CAPABILITY_PROFILE must name a supported profile" >&2; exit 2; }
+    PACKAGE_DIST="$RUN/package/dist"
+    mkdir -p "$RUN/package" || exit 1
+    BUILD_OUTPUT_DIR="$PACKAGE_DIST" bun "$ROOT/scripts/build.ts" >"$RUN/package-build.log" 2>&1 || { /bin/cat "$RUN/package-build.log" >&2; exit 1; }
+    PROFILE_SNAPSHOT="$PACKAGE_DIST/capabilities/claude-code-$CLIENT_VERSION.json"
+    /bin/cp "$PROFILE_SOURCE" "$PROFILE_SNAPSHOT" || exit 1
+
+    case "$MODE" in
+      next-turn)
+        PROBE_CHILD_READ_FILE="$WORK/probe-child-read.txt"
+        printf 'probe-child-read-notice\n' > "$PROBE_CHILD_READ_FILE"
+        export PROBE_CHILD_READ_FILE
+        ;;
+      compaction)
+        PROBE_CHILD_READ_FILE="$WORK/probe-child-read.txt"
+        python3 -c 'import sys; sys.stdout.write("probe compaction filler line carrying enough words to be worth counting\n" * 400)' > "$PROBE_CHILD_READ_FILE"
+        PROBE_CHILD_READ_ROUNDS=6
+        PROBE_CHILD_USAGE_INPUT_TOKENS=5000
+        PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=3
+        PROBE_ANSWER_COMPACTION_SUMMARIES=1
+        export PROBE_CHILD_READ_FILE PROBE_CHILD_READ_ROUNDS PROBE_CHILD_USAGE_INPUT_TOKENS PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS PROBE_ANSWER_COMPACTION_SUMMARIES
+        ;;
+      resume)
+        PROBE_RESUME=1
+        PROBE_RESUME_EXISTING_CHILD="${PROBE_RESUME_EXISTING_CHILD:-}"
+        export PROBE_RESUME PROBE_RESUME_EXISTING_CHILD
+        ;;
+      nested)
+        PROBE_NESTED_AGENT="native-probe-alpha"
+        export PROBE_NESTED_AGENT
+        ;;
+    esac
+
+    UPSTREAM_CAPTURE="$RUN/upstream-capture"
+    PROBE_OUT="$UPSTREAM_CAPTURE" RUN_NATIVE_PROBES=1 PROBE_SCRIPTED_UPSTREAM=1 \
+      bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/upstream.log" 2>&1 &
+    UPSTREAM=$!
+    for _ in $(seq 1 50); do [ -s "$UPSTREAM_CAPTURE/port" ] && break; sleep 0.1; done
+    UPSTREAM_PORT="$(cat "$UPSTREAM_CAPTURE/port" 2>/dev/null)"
+    [ -n "$UPSTREAM_PORT" ] || { echo "FAIL: scripted upstream did not bind"; /bin/cat "$RUN/upstream.log"; exit 1; }
+    UPSTREAM_URL="http://127.0.0.1:$UPSTREAM_PORT"
+    bun "$ROOT/tests/probes/packaged-serve-state.ts" "$RUN/router-state" "$UPSTREAM_URL" || exit 1
+
+    GATEWAY_URL="$UPSTREAM_URL/v1" GATEWAY_HEADERS='{}' MODELS_AUTH='synthetic-local-auth' ROUTER_SECRET='synthetic-local-secret' \
+      bun "$PACKAGE_DIST/cli.js" serve --config "$RUN/router-state/subagent-router.json" --host 127.0.0.1 --port 0 --claude-version "$CLIENT_VERSION" >"$RUN/packaged-serve.log" 2>&1 &
+    PACKAGED_SERVE=$!
+    for _ in $(seq 1 50); do /usr/bin/grep -q 'listening on http://127.0.0.1:' "$RUN/packaged-serve.log" 2>/dev/null && break; sleep 0.1; done
+    PACKAGED_URL="$(/usr/bin/sed -n 's/^listening on \(http:\/\/127\.0\.0\.1:[0-9][0-9]*\).*/\1/p' "$RUN/packaged-serve.log" | /usr/bin/head -1)"
+    [ -n "$PACKAGED_URL" ] || { echo "FAIL: packaged serve did not report readiness"; /bin/cat "$RUN/packaged-serve.log"; exit 1; }
+
+    PROBE_OUT="$RUN/capture" PROBE_PACKAGED_SERVE_TARGET="$PACKAGED_URL" \
+      node "$ROOT/tests/probes/native-claude-packaged-front.mjs" >"$RUN/gateway.log" 2>&1 &
+  elif [ "$MODE" = "next-turn" ]; then
     # Only next-turn forces the two-request-per-child flow: a file inside the CLI's own
     # sandboxed WORK dir that the fixture's forced tool_use (Read) points the real client's
     # Read tool at, so the second request is a genuine tool_result round trip, not a fake one.
@@ -116,6 +199,7 @@ if is_handler_like; then
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
       PROBE_LAYOUT="${PROBE_LAYOUT:-}" \
       PROBE_RESUME=1 \
+      PROBE_RESUME_EXISTING_CHILD="${PROBE_RESUME_EXISTING_CHILD:-}" \
       bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
   elif [ "$MODE" = "nested" ]; then
     # nested is handler-like but enables the fixture's nested-delegation opt-in: exactly one child
@@ -142,7 +226,6 @@ else
     node "$ROOT/tests/probes/native-claude-gateway.mjs" >"$RUN/gateway.log" 2>&1 &
 fi
 GW=$!
-trap 'kill $GW 2>/dev/null' EXIT
 
 for _ in $(seq 1 50); do [ -s "$RUN/capture/port" ] && break; sleep 0.1; done
 PORT="$(cat "$RUN/capture/port" 2>/dev/null)"
@@ -155,6 +238,8 @@ PORT="$(cat "$RUN/capture/port" 2>/dev/null)"
 # above).
 if uses_child_read; then
   ALLOW_JSON='["Agent", "Read"]'
+elif [ "$MODE" = "resume" ] && [ "${PROBE_RESUME_EXISTING_CHILD:-}" = "1" ]; then
+  ALLOW_JSON='["Agent", "SendMessage", "TaskOutput"]'
 else
   ALLOW_JSON='["Agent"]'
 fi
@@ -263,8 +348,16 @@ print(json.dumps([p for p in s.split(",") if p]))')"
   # pass from a scaffolded run on the strength of this flag, so it has to match reality.
   CORRELATION_SCAFFOLD_JSON=false
   [ "${PROBE_CORRELATION_SCAFFOLD:-}" = "1" ] && CORRELATION_SCAFFOLD_JSON=true
+  RESUME_STRATEGY=unknown
+  if [ "$MODE" = "resume" ]; then
+    if [ "${PROBE_RESUME_EXISTING_CHILD:-}" = "1" ]; then
+      RESUME_STRATEGY=message-existing
+    else
+      RESUME_STRATEGY=re-delegate
+    fi
+  fi
   cat >"$RUN/capture/000-run-manifest.json" <<JSON
-{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK", "correlationScaffold": $CORRELATION_SCAFFOLD_JSON }
+{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK", "correlationScaffold": $CORRELATION_SCAFFOLD_JSON, "resumeStrategy": "$RESUME_STRATEGY" }
 JSON
 fi
 
@@ -318,15 +411,29 @@ if [ "$MODE" = "resume" ]; then
       >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
   )
   CLI1_EXIT=$?
+  printf '%s\n' "$CLI1_EXIT" > "$RUN/cli-exit-status"
   if [ "$CLI1_EXIT" -ne 0 ]; then
     # A timed-out or failed invocation 1 must never be masked by a later invocation 2's success:
     # report the first failure, leave .last-run pointing at this run, and stop before resuming.
+    assemble_packaged_capture
     echo "exit=$CLI1_EXIT (see $RUN)"
     echo "--- captured requests:"; ls -1 "$RUN/capture" 2>/dev/null
     echo "$RUN" > "$ROOT/tests/probes/.last-run"
     exit "$CLI1_EXIT"
   fi
   echo "exit-inv1=$CLI1_EXIT"
+  assemble_packaged_capture
+  # Where invocation 1's captures stop. Nothing in a request says which CLI invocation produced
+  # it, so the resume judge splits each agent's requests at this seq: at or below it is
+  # pre-boundary, above it is post-boundary. Taken here, after invocation 1 has finished writing
+  # and before invocation 2 writes anything. Leading zeros are stripped because JSON rejects 007
+  # and bash printf %d reads 008 as a bad octal number; %s then writes the plain digits.
+  BOUNDARY_SEQ="$(/bin/ls -1 "$RUN/capture" 2>/dev/null \
+    | /usr/bin/sed -n 's/^\([0-9][0-9]*\)-.*\.json$/\1/p' \
+    | /usr/bin/sort -n | /usr/bin/tail -n 1 | /usr/bin/sed 's/^0*//')"
+  [ -z "$BOUNDARY_SEQ" ] && BOUNDARY_SEQ=0
+  printf '{ "afterSeq": %s }\n' "$BOUNDARY_SEQ" > "$RUN/capture/invocation-boundary.json"
+  echo "boundary-after-seq=$BOUNDARY_SEQ"
   (
     cd "$WORK" || exit 1
     env -i \
@@ -345,6 +452,8 @@ if [ "$MODE" = "resume" ]; then
       >"$RUN/cli2-stdout.json" 2>"$RUN/cli2-stderr.txt"
   )
   CLI_EXIT=$?
+  printf '%s\n' "$CLI_EXIT" > "$RUN/cli2-exit-status"
+  assemble_packaged_capture
   echo "exit=$CLI_EXIT (see $RUN)"
   echo "--- captured requests:"; ls -1 "$RUN/capture" 2>/dev/null
   echo "$RUN" > "$ROOT/tests/probes/.last-run"
@@ -431,6 +540,8 @@ else
   )
 fi
 CLI_EXIT=$?
+assemble_packaged_capture
+printf '%s\n' "$CLI_EXIT" > "$RUN/cli-exit-status"
 echo "exit=$CLI_EXIT (see $RUN)"
 echo "--- captured requests:"; ls -1 "$RUN/capture" 2>/dev/null
 echo "$RUN" > "$ROOT/tests/probes/.last-run"
