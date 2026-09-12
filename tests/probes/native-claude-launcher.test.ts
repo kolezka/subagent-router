@@ -408,6 +408,30 @@ test("compaction mode sets both auto-compaction env vars for the client and neve
   expect(script).not.toMatch(/DISABLE_AUTO_COMPACT=/);
 });
 
+test("compaction mode alone asks the client for a debug log, pinned inside the run dir", () => {
+  // The autocompact decision line only reaches disk when the client's debug logging is on, and
+  // --debug-file both turns it on and chooses the sink. It must stay scoped to this branch: every
+  // other mode would gain an unrelated log file and a behaviour change it was never measured with.
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+
+  const compactionBranch = script.lastIndexOf('if [ "$MODE" = "compaction" ]; then');
+  expect(compactionBranch).toBeGreaterThan(-1);
+  const branchEnd = script.indexOf("\nelif is_handler_like", compactionBranch);
+  expect(branchEnd).toBeGreaterThan(compactionBranch);
+  const branch = script.slice(compactionBranch, branchEnd);
+
+  expect(branch).toContain('--debug-file "$RUN/cli-debug.txt"');
+  // Anchored to the continuation-line indentation, so the prose above the branch that names the
+  // flag is not counted as a use. Exactly one use, and it is the one inside this branch.
+  expect(script.match(/^\s+--debug-file /gm) ?? []).toHaveLength(1);
+  expect(script.indexOf('--debug-file "$RUN/cli-debug.txt"')).toBeGreaterThan(compactionBranch);
+  expect(script.indexOf('--debug-file "$RUN/cli-debug.txt"')).toBeLessThan(branchEnd);
+
+  // The sink lives in $RUN next to cli-stderr.txt, never under $HOME or $CLAUDE_CONFIG_DIR where
+  // the isolated run dir would not keep it.
+  expect(script).not.toMatch(/--debug-file "\$(HOMEDIR|CFG|WORK)/);
+});
+
 test("compaction mode's child scripting reuses the forced-Read channel with more than one round", () => {
   const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
   expect(script).toContain("simple|delegate|handler|next-turn|resume|nested|compaction");
@@ -416,7 +440,7 @@ test("compaction mode's child scripting reuses the forced-Read channel with more
   // new one, and adds the rounds knob so the child still has a turn after the threshold is crossed.
   const dispatchGuard = script.indexOf('elif [ "$MODE" = "compaction" ]; then');
   expect(dispatchGuard).toBeGreaterThan(-1);
-  expect(script.indexOf("PROBE_CHILD_READ_ROUNDS=2")).toBeGreaterThan(dispatchGuard);
+  expect(script.indexOf("PROBE_CHILD_READ_ROUNDS=6")).toBeGreaterThan(dispatchGuard);
   expect(script.match(/PROBE_CHILD_READ_ROUNDS=/g) ?? []).toHaveLength(1); // never leaks into another mode
 
   // The client does not estimate context from the transcript, it sums the usage on the last
@@ -424,6 +448,14 @@ test("compaction mode's child scripting reuses the forced-Read channel with more
   // 5000 clears the roughly 800 token threshold with margin and stays well under the window.
   expect(script.indexOf("PROBE_CHILD_USAGE_INPUT_TOKENS=5000")).toBeGreaterThan(dispatchGuard);
   expect(script.match(/^\s+PROBE_CHILD_USAGE_INPUT_TOKENS=/gm) ?? []).toHaveLength(1); // compaction only
+
+  // The ramp holds that usage back so the threshold trips against a conversation that has
+  // something old enough to summarize. A measured run without it fired the decision seven times
+  // and bailed in the client's reactive compactor with "fewer than 2 groups, nothing to compact".
+  // 3 rounds held back leaves four assistant turns behind the child; 6 rounds total leaves three
+  // more requests afterwards for a compact_boundary to show up in.
+  expect(script.indexOf("PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=3")).toBeGreaterThan(dispatchGuard);
+  expect(script.match(/^\s+PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=/gm) ?? []).toHaveLength(1); // compaction only
 
   // The Read tool must actually be grantable for both forced-Read modes, via one shared predicate.
   expect(script).toContain('uses_child_read() { [ "$MODE" = "next-turn" ] || [ "$MODE" = "compaction" ]; }');

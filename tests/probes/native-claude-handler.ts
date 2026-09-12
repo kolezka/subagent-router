@@ -188,6 +188,16 @@ export interface HandlerFixtureOptions {
   // disturb the final echo this probe reads, and the phase being measured is the child's. Only
   // message_start's input_tokens changes; every other usage field is left alone.
   childUsageInputTokens?: number;
+  // Opt-in (the launcher's `compaction` mode only, and only alongside childUsageInputTokens): how
+  // many forced Read rounds a routed child must have COMPLETED before its replies start reporting
+  // the large usage. Reporting it from the first reply makes the client decide to compact while
+  // that child's conversation is still two messages long, and the client's reactive compactor then
+  // bails with "fewer than 2 groups, nothing to compact" -- the decision fires but there is nothing
+  // older to summarize, so no compact_boundary is ever produced. Ramping means the conversation has
+  // several real assistant turns behind it by the time the threshold trips. Absent (the default)
+  // the large usage applies from the first reply, byte-identical to before this option existed.
+  // Counted per agent id from the same map childReadRounds uses, never by request order.
+  childUsageRampAfterRounds?: number;
   // Opt-in (the launcher's `resume` mode only): when a parent turn arrives whose tool_results
   // are all for ids this fixture already finalized, treat it as a resumed session replaying the
   // prior round's history and force a FRESH Agent delegation (new tool_use ids) instead of ending
@@ -458,6 +468,15 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
   // by a matching tool_result). Keyed by agent id, never by request order.
   const childReadRoundsDoneByAgent = new Map<string, number>();
   const childReadRounds = options.childReadRounds !== undefined && options.childReadRounds > 1 ? options.childReadRounds : 1;
+  const childUsageRampAfterRounds = options.childUsageRampAfterRounds !== undefined && options.childUsageRampAfterRounds > 0 ? options.childUsageRampAfterRounds : undefined;
+  // The input_tokens a routed child's reply should report right now. undefined means "leave the
+  // builder's own default alone", which is what every non-child request and every pre-ramp reply
+  // gets. Without the ramp the large value applies from the first reply, exactly as before.
+  const childUsageFor = (agentId: string | undefined): number | undefined => {
+    if (agentId === undefined || options.childUsageInputTokens === undefined) return undefined;
+    if (childUsageRampAfterRounds === undefined) return options.childUsageInputTokens;
+    return (childReadRoundsDoneByAgent.get(agentId) ?? 0) >= childUsageRampAfterRounds ? options.childUsageInputTokens : undefined;
+  };
   // Nested-delegation state, keyed by x-claude-code-agent-id (never by request order): the
   // deterministic tool_use id this fixture issued to the delegating child on its first request,
   // so only a SECOND request from that SAME agent carrying the matching tool_result gets the echo.
@@ -504,9 +523,11 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
       // Gated on the header, not just on isRoutedChild: only a request the client itself marked as
       // a child may get the inflated usage. undefined leaves every builder on its own default.
       const childAgentId = record.headers['x-claude-code-agent-id'];
-      const childInputTokens = childAgentId !== undefined ? options.childUsageInputTokens : undefined;
+      // Read at response-build time, not once per request, so a reply issued after the round
+      // counter was bumped below already counts as being past the ramp point.
+      const childInputTokens = () => childUsageFor(childAgentId);
       const childEcho = () =>
-        new Response(textSse(body.model, `CHILD_SAW_MODEL=${String(body.model)}`, childInputTokens), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+        new Response(textSse(body.model, `CHILD_SAW_MODEL=${String(body.model)}`, childInputTokens()), { status: 200, headers: { 'content-type': 'text/event-stream' } });
 
       // Nested delegation (nestedDelegatingAgent set, the launcher's `nested` mode only): the
       // FIRST routed request from the delegating child (matched by its forwarded model, keyed by
@@ -531,7 +552,7 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
         const toolUseId = 'toolu_nested_0';
         if (agentId !== undefined) nestedToolUseByAgent.set(agentId, toolUseId);
         const target = CHANNEL_A_AGENTS.find((a) => a.name !== nestedDelegating.name) ?? CHANNEL_A_AGENTS[1]!;
-        return new Response(nestedAgentToolUseSse(body.model, toolUseId, target, childInputTokens), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+        return new Response(nestedAgentToolUseSse(body.model, toolUseId, target, childInputTokens()), { status: 200, headers: { 'content-type': 'text/event-stream' } });
       }
 
       // Default (childReadFilePath absent): unchanged from before this option existed -- one
@@ -558,7 +579,7 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
       }
       const toolUseId = `toolu_child_${agentId ?? 'unknown'}_${Math.random().toString(36).slice(2, 8)}`;
       if (agentId !== undefined) pendingChildToolUseByAgent.set(agentId, { toolUseId });
-      return new Response(childToolUseSse(body.model, toolUseId, options.childReadFilePath, childInputTokens), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      return new Response(childToolUseSse(body.model, toolUseId, options.childReadFilePath, childInputTokens()), { status: 200, headers: { 'content-type': 'text/event-stream' } });
     }
 
     // A parent turn that already carries its children's tool_results must end
@@ -708,6 +729,13 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   const parsedChildUsageInputTokens = Number.parseInt(process.env.PROBE_CHILD_USAGE_INPUT_TOKENS ?? '', 10);
   const childUsageInputTokens = Number.isInteger(parsedChildUsageInputTokens) && parsedChildUsageInputTokens > 0 ? parsedChildUsageInputTokens : undefined;
 
+  // Opt-in (the launcher's compaction mode only): how many forced Read rounds a child must have
+  // completed before the large usage above starts being reported. Unset, blank or unparseable
+  // means no ramp, so the large value applies from the first reply as it did before.
+  // See HandlerFixtureOptions.childUsageRampAfterRounds.
+  const parsedChildUsageRampAfterRounds = Number.parseInt(process.env.PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS ?? '', 10);
+  const childUsageRampAfterRounds = Number.isInteger(parsedChildUsageRampAfterRounds) && parsedChildUsageRampAfterRounds > 0 ? parsedChildUsageRampAfterRounds : undefined;
+
   // Opt-in (the launcher's resume mode only): lets a resumed parent turn re-delegate instead of
   // ending. See HandlerFixtureOptions.resumeReDelegate for why this must never be inferred from
   // request shape. Empty/unset for every other mode.
@@ -748,6 +776,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
     ...(childReadFilePath !== undefined ? { childReadFilePath } : {}),
     ...(childReadRounds !== undefined ? { childReadRounds } : {}),
     ...(childUsageInputTokens !== undefined ? { childUsageInputTokens } : {}),
+    ...(childUsageRampAfterRounds !== undefined ? { childUsageRampAfterRounds } : {}),
     ...(resumeReDelegate ? { resumeReDelegate: true } : {}),
     ...(nestedDelegatingAgent !== undefined ? { nestedDelegatingAgent } : {}),
   });
