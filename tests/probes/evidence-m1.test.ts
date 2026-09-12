@@ -2,15 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { analyzeIdSample, buildEntropyProof, collectAgentIds, judgeM1Sample } from './evidence-m1';
+import { analyzeIdSample, buildEntropyProof, collectAgentIds, judgeM1, judgeM1Sample } from './evidence-m1';
 import type { IdSampleAnalysis } from './evidence-m1';
-import { judgeM1, summarizeEvidence } from './run';
-import type { CapturedRequest } from '../support/capture-gateway';
+import { loadGeneratorProof, verifyGeneratorProofAgainstBinary } from './generator-proof';
+import type { GeneratorProof } from './generator-proof';
 import { writeSyntheticRunCapture } from '../support/native-run-capture';
-
-function capturedRequest(patch: Partial<CapturedRequest>): CapturedRequest {
-  return { method: 'POST', path: '/v1/messages', headers: {}, rawRequestBody: new Uint8Array(), body: {}, ...patch };
-}
+import { SYNTHETIC_SITES, syntheticAgentIds, writeSyntheticGeneratorBinary, writeSyntheticGeneratorProof } from '../support/generator-proof-fixture';
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
@@ -274,19 +271,138 @@ describe('judgeM1Sample', () => {
   });
 });
 
-describe('judgeM1 (run.ts) rejects an uninspected-generator sample proof', () => {
-  test('judge-m1-rejects-uninspected-generator-proof', () => {
-    const evidence = summarizeEvidence([capturedRequest({ agentId: 'agent-1', isChild: true })]);
-    expect(evidence.distinctAgentIds).toBe(1);
+describe('judgeM1: generator-inspection proof is what certifies M1', () => {
+  const OBSERVED_VERSION = '9.9.9';
 
-    const analysis = analyzeIdSample(['agent-1']);
-    const proof = buildEntropyProof(analysis);
-    expect(proof.sampleCount).toBeGreaterThanOrEqual(evidence.distinctAgentIds); // would not hit the 'failed' branch
-    expect(proof.generatorInspected).toBe(false);
+  let binaryPath = '';
+  let proof: GeneratorProof;
 
-    // Locks the intent: a sample-based proof, however internally consistent with the observed
-    // evidence, can never move M1 past 'pending' while it declares the generator uninspected.
-    expect(judgeM1(evidence, proof)).toBe('pending');
-    expect(judgeM1(evidence, proof)).not.toBe('passed');
+  async function loadProof(): Promise<GeneratorProof> {
+    const loaded = await loadGeneratorProof('claude-code', OBSERVED_VERSION, dir);
+    if (loaded === undefined) throw new Error('expected the synthetic generator proof to load');
+    return loaded;
+  }
+
+  beforeEach(async () => {
+    binaryPath = join(dir, 'fake-client-binary');
+    await writeSyntheticGeneratorBinary(binaryPath);
+    await writeSyntheticGeneratorProof(dir, { binaryPath, version: OBSERVED_VERSION });
+    proof = await loadProof();
+  });
+
+  test('passes on a clean sample of well-shaped ids whose generator proof verifies against the binary', async () => {
+    const ids = syntheticAgentIds(3);
+    const verdict = judgeM1({
+      analysis: analyzeIdSample(ids),
+      ids,
+      observedVersion: OBSERVED_VERSION,
+      generatorProof: proof,
+      siteVerification: await verifyGeneratorProofAgainstBinary(proof),
+    });
+
+    expect(verdict.result).toBe('passed');
+    expect(verdict.proof.source).toBe('generator-inspection');
+    expect(verdict.proof.generatorInspected).toBe(true);
+    expect(verdict.proof.bits).toBe(64);
+    expect(verdict.proof.version).toBe(OBSERVED_VERSION);
+    expect(verdict.proof.sitesVerified).toBe('4/4');
+    // The sample fields stay alongside the generator evidence, never replaced by it.
+    expect(verdict.proof.sampleCount).toBe(3);
+    expect(verdict.proof.distinctCount).toBe(3);
+  });
+
+  test('stays pending with no generator proof for the observed version, naming that version', async () => {
+    const ids = syntheticAgentIds(3);
+    const verdict = judgeM1({ analysis: analyzeIdSample(ids), ids, observedVersion: '2.1.267' });
+
+    expect(verdict.result).toBe('pending');
+    expect(verdict.diagnostic).toContain('m1-no-generator-proof-for-2.1.267');
+    expect(verdict.proof.source).toBe('statistical-sample');
+    expect(verdict.proof.generatorInspected).toBe(false);
+  });
+
+  test('stays pending when a sampled id does not match the proof id pattern', async () => {
+    const ids = [...syntheticAgentIds(2), 'agent-synthetic-1'];
+    const verdict = judgeM1({
+      analysis: analyzeIdSample(ids),
+      ids,
+      observedVersion: OBSERVED_VERSION,
+      generatorProof: proof,
+      siteVerification: await verifyGeneratorProofAgainstBinary(proof),
+    });
+
+    expect(verdict.result).toBe('pending');
+    expect(verdict.diagnostic).toContain('m1-id-shape-mismatch');
+    expect(verdict.proof.generatorInspected).toBe(false);
+  });
+
+  test('stays pending and names the site when a proof site no longer matches the binary', async () => {
+    const shifted = SYNTHETIC_SITES.map((site) => (site.name === 'spawn' ? { ...site, offset: site.offset + 1 } : site));
+    await writeSyntheticGeneratorProof(dir, { binaryPath, version: OBSERVED_VERSION, sites: shifted });
+    const shiftedProof = await loadProof();
+    const ids = syntheticAgentIds(3);
+
+    const verdict = judgeM1({
+      analysis: analyzeIdSample(ids),
+      ids,
+      observedVersion: OBSERVED_VERSION,
+      generatorProof: shiftedProof,
+      siteVerification: await verifyGeneratorProofAgainstBinary(shiftedProof),
+    });
+
+    expect(verdict.result).toBe('pending');
+    expect(verdict.diagnostic).toContain('m1-proof-site-mismatch:spawn');
+    expect(verdict.result).not.toBe('passed');
+  });
+
+  test('stays pending when the cited binary is absent: the proof is unverified this run', async () => {
+    await writeSyntheticGeneratorProof(dir, { binaryPath: join(dir, 'no-such-binary'), version: OBSERVED_VERSION });
+    const unbackedProof = await loadProof();
+    const ids = syntheticAgentIds(3);
+
+    const verdict = judgeM1({
+      analysis: analyzeIdSample(ids),
+      ids,
+      observedVersion: OBSERVED_VERSION,
+      generatorProof: unbackedProof,
+      siteVerification: await verifyGeneratorProofAgainstBinary(unbackedProof),
+    });
+
+    expect(verdict.result).toBe('pending');
+    expect(verdict.diagnostic).toContain('binary');
+  });
+
+  test('a proof under 64 bits, a one-id sample and a collision each block the pass', async () => {
+    const ids = syntheticAgentIds(3);
+    const verification = await verifyGeneratorProofAgainstBinary(proof);
+
+    const weakProof: GeneratorProof = { ...proof, randomBytes: 4, bits: 32 };
+    expect(judgeM1({ analysis: analyzeIdSample(ids), ids, observedVersion: OBSERVED_VERSION, generatorProof: weakProof, siteVerification: verification }).result).toBe('pending');
+
+    const oneId = syntheticAgentIds(1);
+    expect(judgeM1({ analysis: analyzeIdSample(oneId), ids: oneId, observedVersion: OBSERVED_VERSION, generatorProof: proof, siteVerification: verification }).result).toBe('pending');
+
+    // A repeated id is a direct contradiction of the M1 claim: failed, never merely pending,
+    // and the generator proof does not rescue it.
+    const repeated = [...syntheticAgentIds(2), syntheticAgentIds(1)[0] as string];
+    const collided = judgeM1({ analysis: analyzeIdSample(repeated), ids: repeated, observedVersion: OBSERVED_VERSION, generatorProof: proof, siteVerification: verification });
+    expect(collided.result).toBe('failed');
+    expect(collided.diagnostic).toContain('collision');
+  });
+
+  test('a verified proof never rescues a sample whose id format is provably under 64 bits at scale', async () => {
+    // 100 distinct two-digit ids: clean and large, but the FORMAT cannot carry 64 bits. The
+    // sample contradicts the claim, so the generator proof must not override it.
+    const ids = Array.from({ length: 100 }, (_, index) => String(index).padStart(2, '0'));
+    const verdict = judgeM1({
+      analysis: analyzeIdSample(ids),
+      ids,
+      observedVersion: OBSERVED_VERSION,
+      generatorProof: proof,
+      siteVerification: await verifyGeneratorProofAgainstBinary(proof),
+    });
+
+    expect(verdict.result).toBe('failed');
+    expect(verdict.diagnostic).toContain('low-entropy-at-scale');
   });
 });

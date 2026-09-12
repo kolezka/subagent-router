@@ -115,6 +115,47 @@ describe('fixture-writer: writeCapabilityFixture', () => {
     expect(await readFile(fixturePath, 'utf8')).toBe(`${JSON.stringify(BASE_FIXTURE, null, 2)}\n`);
   });
 
+  test('every correlation-gate key is refused under a scaffolded run, not just a lifecycle pass', async () => {
+    // The same reasoning that blocks a scaffolded lifecycle pass blocks these: a run whose
+    // router was scaffolded into correlation cannot be the evidence that opens the correlation
+    // gate for everyone else. probes.M1 is included because it is the gate's first condition.
+    const refusedWrites = [
+      { label: 'probes.M1=passed', judged: { probes: { M1: 'passed' as const } } },
+      { label: 'correlation=true', judged: { correlation: true } },
+      { label: 'correlationEntropy=passed', judged: { correlationEntropy: 'passed' as const } },
+    ];
+
+    for (const scaffolded of CORRELATION_GATE_PATHS) {
+      for (const { label, judged } of refusedWrites) {
+        const error = await writeCapabilityFixture(
+          'claude-code',
+          '2.1.266',
+          { runId: 'run-corr-key', scaffoldDeclared: true, scaffoldedPaths: ['status', scaffolded], ...judged },
+          dir,
+        ).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(RouterError);
+        expect((error as RouterError).code).toBe('fixture-writer-correlation-scaffold');
+        expect((error as RouterError).message).toContain(label);
+        expect((error as RouterError).message).toContain(scaffolded);
+      }
+    }
+    expect(await readFile(fixturePath, 'utf8')).toBe(`${JSON.stringify(BASE_FIXTURE, null, 2)}\n`);
+  });
+
+  test('a scaffolded run may still record probes.M1 failed and correlation false: only the gate-opening values are refused', async () => {
+    await writeCapabilityFixture(
+      'claude-code',
+      '2.1.266',
+      { runId: 'run-corr-m1-failed', scaffoldDeclared: true, scaffoldedPaths: ['status', 'probes.M1'], probes: { M1: 'failed' }, correlation: false },
+      dir,
+    );
+
+    const after = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>;
+    expect((after.probes as Record<string, string>).M1).toBe('failed');
+    expect(after.correlation).toBe(false);
+  });
+
   test('failed and pending are still writable under the same scaffolded paths -- only a pass is refused', async () => {
     // The guard exists to stop an over-claim, not to make a scaffolded run unreportable: a phase
     // the run actually broke is real evidence whatever the router was scaffolded into doing.
@@ -138,6 +179,65 @@ describe('fixture-writer: writeCapabilityFixture', () => {
 
     await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-no-scaffold-list', scaffoldDeclared: true, lifecycle: { nested: 'passed' } }, dir);
     expect(((JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>).lifecycle as Record<string, string>).nested).toBe('passed');
+  });
+
+  test('correlation and correlationEntropy write with their own diagnostics lines when M1 passes in the same write', async () => {
+    await writeCapabilityFixture(
+      'claude-code',
+      '2.1.266',
+      { runId: 'run-corr-ok', scaffoldDeclared: true, probes: { M1: 'passed' }, correlation: true, correlationEntropy: 'passed' },
+      dir,
+    );
+
+    const after = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>;
+    expect((after.probes as Record<string, string>).M1).toBe('passed');
+    expect(after.correlation).toBe(true);
+    expect(after.correlationEntropy).toBe('passed');
+
+    const diagnostics = after.diagnostics as string[];
+    expect(diagnostics.some((line) => /^measured:M1=passed;run=run-corr-ok;at=\d{4}-\d{2}-\d{2}T/.test(line))).toBe(true);
+    expect(diagnostics.some((line) => /^measured:correlation=true;run=run-corr-ok;at=\d{4}-\d{2}-\d{2}T/.test(line))).toBe(true);
+    expect(diagnostics.some((line) => /^measured:correlationEntropy=passed;run=run-corr-ok;at=\d{4}-\d{2}-\d{2}T/.test(line))).toBe(true);
+  });
+
+  test('correlation true or correlationEntropy passed is refused while probes.M1 is not passed', async () => {
+    const attempts = [
+      { correlation: true },
+      { correlationEntropy: 'passed' as const },
+      { correlation: true, probes: { M1: 'pending' as const } },
+      { correlationEntropy: 'passed' as const, probes: { M1: 'failed' as const } },
+    ];
+    for (const attempt of attempts) {
+      const error = await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-corr-bad', scaffoldDeclared: true, ...attempt }, dir).catch(
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(RouterError);
+      expect((error as RouterError).code).toBe('fixture-writer-correlation-requires-m1');
+    }
+    expect(await readFile(fixturePath, 'utf8')).toBe(`${JSON.stringify(BASE_FIXTURE, null, 2)}\n`);
+  });
+
+  test('correlation true writes when probes.M1 is already passed on disk from an earlier run', async () => {
+    await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-m1-first', scaffoldDeclared: true, probes: { M1: 'passed' } }, dir);
+    await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-corr-later', scaffoldDeclared: true, correlation: true, correlationEntropy: 'passed' }, dir);
+
+    const after = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>;
+    expect(after.correlation).toBe(true);
+    expect(after.correlationEntropy).toBe('passed');
+  });
+
+  test('a negative correlation result needs no M1 pass, and a correlation-only write is not nothing-to-narrow', async () => {
+    await writeCapabilityFixture(
+      'claude-code',
+      '2.1.266',
+      { runId: 'run-corr-neg', scaffoldDeclared: true, correlation: false, correlationEntropy: 'failed' },
+      dir,
+    );
+
+    const after = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>;
+    expect(after.correlation).toBe(false);
+    expect(after.correlationEntropy).toBe('failed');
+    expect((after.probes as Record<string, string>).M1).toBe('pending');
   });
 
   test('writer-keeps-original-on-write-failure', async () => {

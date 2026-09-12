@@ -488,8 +488,9 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   `lifecycle.compaction: passed` for this run and reports `correlationScaffold: true`.
 
   Why this is NOT narrowed: the pass is conditional on `M1`. `writeCapabilityFixture` in
-  [../../tests/probes/fixture-writer.ts](../../tests/probes/fixture-writer.ts) now refuses to narrow
-  any lifecycle phase to `passed` from a run whose declared scaffold paths include `probes.M1`,
+  [../../tests/probes/fixture-writer.ts](../../tests/probes/fixture-writer.ts) now refuses to write
+  any gate-opening value (a lifecycle phase `passed`, `probes.M1: passed`, `correlation: true` or
+  `correlationEntropy: passed`) from a run whose declared scaffold paths include `probes.M1`,
   `correlation` or `correlationEntropy`, with the diagnostic `fixture-writer-correlation-scaffold`.
   So
   [../../tests/fixtures/capabilities/claude-code-2.1.268.json](../../tests/fixtures/capabilities/claude-code-2.1.268.json)

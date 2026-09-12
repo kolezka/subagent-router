@@ -10,7 +10,11 @@
 // idsPerRunCount, a count, is kept); the m3a/lifecycle/freshness sections here only ever surface
 // counts and verdicts, never a per-pair agentId.
 //
-// Usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir>
+// M1 is judged from this run's own id sample plus the generator-inspection proof recorded for the
+// version the run OBSERVED (tests/fixtures/generator-proofs), whose byte sites are re-checked
+// against the binary it cites before any pass is reported.
+//
+// Usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir> [<generator-proofs-dir>]
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LifecyclePhase } from '../../src/core/types';
@@ -25,8 +29,10 @@ import type {
   FreshnessCapture,
   InstanceFetchRecord,
 } from './evidence-freshness';
-import { analyzeIdSample, buildEntropyProof, collectAgentIds, judgeM1Sample } from './evidence-m1';
+import { analyzeIdSample, collectAgentIds, judgeM1 } from './evidence-m1';
+import { loadGeneratorProof, verifyGeneratorProofAgainstBinary } from './generator-proof';
 import type { M1SampleReport } from './m1-sample-report';
+import type { ProbeResult } from '../../src/core/types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -111,11 +117,22 @@ async function readFreshnessCapture(runDir: string, pairs: readonly CapturedPair
  * zero sample instead of this run's real ids. Never returns a raw id: idsPerRunCount is a count,
  * not the id strings themselves, same redaction as buildM1SampleReport.
  */
-async function buildSingleRunM1Sample(runDir: string): Promise<M1SampleReport> {
+async function buildSingleRunM1Sample(runDir: string, observedVersion: string, generatorProofsDir: string): Promise<M1SampleReport> {
   const { ids, perRun } = await collectAgentIds([runDir]);
   const analysis = analyzeIdSample(ids);
-  const proof = buildEntropyProof(analysis);
-  const verdict = judgeM1Sample(analysis, proof);
+
+  // The proof is looked up by the version the run OBSERVED, never by a version this file picks:
+  // a proof for a different build says nothing about the binary that produced these ids. When one
+  // exists, its recorded byte sites are re-checked against the binary it cites, this run.
+  const generatorProof = await loadGeneratorProof('claude-code', observedVersion, generatorProofsDir);
+  const siteVerification = generatorProof === undefined ? undefined : await verifyGeneratorProofAgainstBinary(generatorProof);
+  const { proof, ...verdict } = judgeM1({
+    analysis,
+    ids,
+    observedVersion,
+    ...(generatorProof !== undefined ? { generatorProof } : {}),
+    ...(siteVerification !== undefined ? { siteVerification } : {}),
+  });
 
   const idsPerRunCount: Record<string, number> = {};
   for (const [runId, runIds] of Object.entries(perRun)) idsPerRunCount[runId] = runIds.length;
@@ -139,6 +156,10 @@ async function buildSingleRunM1Sample(runDir: string): Promise<M1SampleReport> {
 }
 
 const LIFECYCLE_PHASES: readonly LifecyclePhase[] = ['next-turn', 'resume', 'compaction', 'nested', 'parallel'];
+
+// Where the generator-inspection proofs live. Overridable per call so tests can point at a
+// synthetic proof and a small stand-in binary instead of the real pinned client.
+const DEFAULT_GENERATOR_PROOFS_DIR = join(import.meta.dir, '..', 'fixtures', 'generator-proofs');
 
 // One boolean field of M3APairEvidence (see evidence-m3a.ts), excluding `seq`/`agentId` -- never
 // surfaced per-pair here (that would carry an agentId), only aggregated into a count below.
@@ -167,6 +188,13 @@ export interface RunJudgement {
   // this is what a caller passes to writeCapabilityFixture, which refuses a lifecycle pass from a
   // run that scaffolded the correlation gate.
   correlationScaffold: boolean;
+  // The judged probe verdicts this run establishes. M1 only: every other probe is judged
+  // elsewhere in this report (m3a) or not at all by this file.
+  probes: { M1: ProbeResult };
+  // The fixture field the correlation gate reads (src/adapters/capabilities.ts). It tracks M1
+  // only when a generator-inspection proof drove that verdict; otherwise it stays pending, since
+  // a sample-only M1 says nothing about generator entropy.
+  correlationEntropy: ProbeResult;
   lifecycle: Record<LifecyclePhase, { result: string; diagnostic?: string }>;
   freshness: {
     result: string;
@@ -182,7 +210,7 @@ export interface RunJudgement {
  * judgeM10Freshness, or buildM1SampleReport, exactly as a human reading this directory's capture/
  * files by hand would conclude.
  */
-export async function judgeRun(runDir: string, fixturesDir: string): Promise<RunJudgement> {
+export async function judgeRun(runDir: string, fixturesDir: string, generatorProofsDir: string = DEFAULT_GENERATOR_PROOFS_DIR): Promise<RunJudgement> {
   const capture = await readRunCapture(runDir);
 
   const m3aEvidence = await extractM3AEvidence(capture, fixturesDir);
@@ -201,7 +229,11 @@ export async function judgeRun(runDir: string, fixturesDir: string): Promise<Run
   const freshnessCapture = await readFreshnessCapture(runDir, capture.pairs);
   const freshnessJudgement = judgeM10Freshness(extractFreshnessEvidence(freshnessCapture));
 
-  const m1Sample = await buildSingleRunM1Sample(runDir);
+  // No client-version file means the run never observed one, so no proof can be matched to it.
+  // 'unknown' keeps the missing-proof diagnostic readable rather than naming an empty version.
+  const m1Sample = await buildSingleRunM1Sample(runDir, capture.clientVersionFile ?? 'unknown', generatorProofsDir);
+  const m1Result = m1Sample.verdict.result;
+  const proofDroveTheVerdict = m1Sample.proof.source === 'generator-inspection';
 
   return {
     runDir,
@@ -213,6 +245,8 @@ export async function judgeRun(runDir: string, fixturesDir: string): Promise<Run
       declaredScaffoldPaths: m3aEvidence.declaredScaffoldPaths,
     },
     correlationScaffold: runManifest?.correlationScaffold ?? false,
+    probes: { M1: m1Result },
+    correlationEntropy: proofDroveTheVerdict ? m1Result : 'pending',
     lifecycle,
     freshness: {
       result: freshnessJudgement.result,
@@ -229,12 +263,12 @@ export async function judgeRun(runDir: string, fixturesDir: string): Promise<Run
 }
 
 if (import.meta.main) {
-  const [runDir, fixturesDir] = process.argv.slice(2);
+  const [runDir, fixturesDir, generatorProofsDir] = process.argv.slice(2);
   if (runDir === undefined || fixturesDir === undefined) {
-    process.stderr.write('usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir>\n');
+    process.stderr.write('usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir> [<generator-proofs-dir>]\n');
     process.exitCode = 2;
   } else {
-    judgeRun(runDir, fixturesDir)
+    judgeRun(runDir, fixturesDir, generatorProofsDir ?? DEFAULT_GENERATOR_PROOFS_DIR)
       .then((report) => {
         process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
       })

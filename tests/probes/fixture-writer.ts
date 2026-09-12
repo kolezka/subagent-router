@@ -26,9 +26,14 @@ export interface JudgedFixtureUpdate {
   scaffoldedPaths?: readonly string[];
   probes?: Readonly<Record<string, ProbeResult>>;
   lifecycle?: Readonly<Partial<Record<LifecyclePhase, ProbeResult>>>;
+  // The two correlation-gate fields (src/adapters/capabilities.ts's claude-correlation gate).
+  // Writing either toward an open gate is conditional on probes.M1 being passed -- see the
+  // fixture-writer-correlation-requires-m1 guard below.
+  correlation?: boolean;
+  correlationEntropy?: ProbeResult;
 }
 
-const JUDGED_ALLOWED_KEYS = new Set<string>(['runId', 'scaffoldDeclared', 'scaffoldedPaths', 'probes', 'lifecycle']);
+const JUDGED_ALLOWED_KEYS = new Set<string>(['runId', 'scaffoldDeclared', 'scaffoldedPaths', 'probes', 'lifecycle', 'correlation', 'correlationEntropy']);
 
 // The three profile fields that together open the router's correlation channel
 // (src/adapters/capabilities.ts's claude-correlation gate). A run that scaffolded any of them
@@ -42,7 +47,10 @@ const CORRELATION_GATE_PATHS = new Set<string>(['probes.M1', 'correlation', 'cor
 function assertNoForeignKeys(judged: Record<string, unknown>): void {
   for (const key of Object.keys(judged)) {
     if (!JUDGED_ALLOWED_KEYS.has(key)) {
-      throw new RouterError('fixture-writer-forbidden-key', `refusing to write judged.${key}: only runId, scaffoldDeclared, scaffoldedPaths, probes and lifecycle may be supplied`);
+      throw new RouterError(
+        'fixture-writer-forbidden-key',
+        `refusing to write judged.${key}: only runId, scaffoldDeclared, scaffoldedPaths, probes, lifecycle, correlation and correlationEntropy may be supplied`,
+      );
     }
   }
 }
@@ -73,12 +81,13 @@ export interface WriteCapabilityFixtureOptions {
 }
 
 /**
- * Narrows exactly the probe keys present in judged.probes and the lifecycle keys present in
- * judged.lifecycle on `<client>-<version>.json`, appends one diagnostics line per narrowed key
- * (`measured:<probe>=<result>;run=<runId>;at=<ISO date>`, or `measured:lifecycle.<phase>=...` for
- * a lifecycle phase), and writes atomically via a temp file + rename. Every other field on the
- * fixture -- status, client, version, correlation, adapterMarkerPosition, every probe/lifecycle
- * key not named in `judged` -- is carried over byte-for-byte unchanged.
+ * Narrows exactly the probe keys present in judged.probes, the lifecycle keys present in
+ * judged.lifecycle, and judged.correlation / judged.correlationEntropy when supplied, on
+ * `<client>-<version>.json`. Appends one diagnostics line per narrowed key
+ * (`measured:<key>=<value>;run=<runId>;at=<ISO date>`, or `measured:lifecycle.<phase>=...` for a
+ * lifecycle phase), and writes atomically via a temp file + rename. Every other field on the
+ * fixture -- status, client, version, adapterMarkerPosition, every probe/lifecycle key not named
+ * in `judged` -- is carried over byte-for-byte unchanged.
  */
 export async function writeCapabilityFixture(
   client: ClientId,
@@ -111,21 +120,42 @@ export async function writeCapabilityFixture(
       throw new RouterError('fixture-writer-invalid-lifecycle-result', `judged.lifecycle.${key} is not a valid ProbeResult`);
     }
   }
-  if (probeKeys.length === 0 && lifecycleKeys.length === 0) {
-    throw new RouterError('fixture-writer-nothing-to-write', 'judged.probes and judged.lifecycle are both empty; nothing to narrow');
+  const correlationKeys: string[] = [];
+  if (judged.correlation !== undefined) {
+    if (typeof judged.correlation !== 'boolean') {
+      throw new RouterError('fixture-writer-invalid-correlation', 'judged.correlation is not a boolean');
+    }
+    correlationKeys.push('correlation');
+  }
+  if (judged.correlationEntropy !== undefined) {
+    if (!isProbeResult(judged.correlationEntropy)) {
+      throw new RouterError('fixture-writer-invalid-correlation', 'judged.correlationEntropy is not a valid ProbeResult');
+    }
+    correlationKeys.push('correlationEntropy');
+  }
+  if (probeKeys.length === 0 && lifecycleKeys.length === 0 && correlationKeys.length === 0) {
+    throw new RouterError('fixture-writer-nothing-to-write', 'judged.probes, judged.lifecycle and the correlation fields are all empty; nothing to narrow');
   }
 
   // A scaffolded correlation gate changes routing itself: the child that survived the phase was
-  // carried by correlation, not by what this fixture describes, so the pass is conditional on M1
-  // and may never land on disk. 'failed' and 'pending' still may, since a phase that broke even
-  // with correlation open broke for real.
+  // carried by correlation, not by what this fixture describes, so any result that would OPEN
+  // that gate is conditional on M1 and may never land on disk. That covers a lifecycle pass and
+  // all three gate fields themselves (probes.M1, correlation, correlationEntropy): a run routed
+  // through correlation cannot be the evidence that turns correlation on for everyone else.
+  // 'failed', 'pending' and correlation:false still land, since a result that came out negative
+  // even with correlation open came out negative for real.
   const scaffoldedCorrelationPaths = (judged.scaffoldedPaths ?? []).filter((path) => CORRELATION_GATE_PATHS.has(path));
   if (scaffoldedCorrelationPaths.length > 0) {
-    const passedPhases = lifecycleKeys.filter((key) => judged.lifecycle?.[key as LifecyclePhase] === 'passed');
-    if (passedPhases.length > 0) {
+    const refusedKeys = [
+      ...lifecycleKeys.filter((key) => judged.lifecycle?.[key as LifecyclePhase] === 'passed').map((key) => `lifecycle.${key}=passed`),
+      ...(judged.probes?.M1 === 'passed' ? ['probes.M1=passed'] : []),
+      ...(judged.correlation === true ? ['correlation=true'] : []),
+      ...(judged.correlationEntropy === 'passed' ? ['correlationEntropy=passed'] : []),
+    ];
+    if (refusedKeys.length > 0) {
       throw new RouterError(
         'fixture-writer-correlation-scaffold',
-        `refusing to narrow lifecycle ${passedPhases.join(', ')} to passed: this run scaffolded ${scaffoldedCorrelationPaths.join(', ')}, so the pass is conditional on M1`,
+        `refusing to write ${refusedKeys.join(', ')}: this run scaffolded ${scaffoldedCorrelationPaths.join(', ')}, so the result is conditional on M1 rather than measured`,
       );
     }
   }
@@ -156,6 +186,18 @@ export async function writeCapabilityFixture(
     nextProbes[key] = judged.probes?.[key] as ProbeResult;
   }
 
+  // The correlation channel opens only on passed('M1') && correlation === true &&
+  // correlationEntropy === 'passed'. Writing either of the latter two while M1 is not passed
+  // would leave the fixture one narrowing away from an open gate that nothing proved, so it is
+  // refused outright. M1 passing in THIS write counts, which is what a single judged run does.
+  const claimsCorrelation = judged.correlation === true || judged.correlationEntropy === 'passed';
+  if (claimsCorrelation && nextProbes.M1 !== 'passed') {
+    throw new RouterError(
+      'fixture-writer-correlation-requires-m1',
+      `refusing to write ${correlationKeys.join(' and ')}: probes.M1 is ${nextProbes.M1 ?? 'absent'}, not passed, so nothing has proven the correlation channel`,
+    );
+  }
+
   const currentLifecycle = (fixture.lifecycle as Record<string, ProbeResult> | undefined) ?? {};
   const nextLifecycle: Record<string, ProbeResult> = { ...currentLifecycle };
   for (const key of lifecycleKeys) {
@@ -167,16 +209,21 @@ export async function writeCapabilityFixture(
   const existingDiagnostics = Array.isArray(fixture.diagnostics)
     ? (fixture.diagnostics as unknown[]).filter((entry): entry is string => typeof entry === 'string')
     : [];
+  const correlationValue = (key: string): string => String(key === 'correlation' ? judged.correlation : judged.correlationEntropy);
   const newDiagnostics: string[] = [
     ...probeKeys.map((key) => `measured:${key}=${String(judged.probes?.[key])};run=${judged.runId};at=${at}`),
     ...lifecycleKeys.map((key) => `measured:lifecycle.${key}=${String(judged.lifecycle?.[key as LifecyclePhase])};run=${judged.runId};at=${at}`),
+    ...correlationKeys.map((key) => `measured:${key}=${correlationValue(key)};run=${judged.runId};at=${at}`),
   ];
 
-  // Only these four keys ever change; every other key on `fixture` is carried over untouched by
-  // the spread below (client, version, status, correlation, correlationEntropy, fork,
-  // adapterMarkerPosition, parentPromptPosition and anything else the fixture happens to carry).
+  // Only the keys named in `judged` ever change; every other key on `fixture` is carried over
+  // untouched by the spread below (client, version, status, fork, adapterMarkerPosition,
+  // parentPromptPosition and anything else the fixture happens to carry). Re-spreading an
+  // existing key keeps its original position in the file, so the diff stays a value change.
   const nextFixture: Record<string, unknown> = {
     ...fixture,
+    ...(judged.correlation !== undefined ? { correlation: judged.correlation } : {}),
+    ...(judged.correlationEntropy !== undefined ? { correlationEntropy: judged.correlationEntropy } : {}),
     probes: nextProbes,
     lifecycle: nextLifecycle,
     diagnostics: [...existingDiagnostics, ...newDiagnostics],
