@@ -1,6 +1,10 @@
 # Transport: gaps
 
-- **Claude Code capability is `pending`.** [verified] direct read of
+- **2026-09-12 product acceptance: Claude Code 2.1.268 is supported for the measured packaged router path.** The pinned real client ran through the recording proxy into spawned `dist/cli.js serve`, using the real Bun raw-fetch dependency and a scripted loopback upstream, not an embedded `createHandler` substitute. `handler-ezphM0` routed two selected models and completed with `PARENT_FINAL_OK`; `next-turn-iscAxQ`, `nested-IWrTVw`, and `compaction-Sroc4G` passed their named lifecycle paths; accepted resume `resume-0FieA7` continued the same child ids after parent resume through native `SendMessage`, and both invocations completed with `PARENT_FINAL_OK`. Routing, completion, executable identity, and capture pairing checks passed. M3-A and explicit zero scaffold declaration also passed on the accepted resume. `resume-8SNn3i` is not an accepted resume record because its capture boundary was recorded incorrectly before the driver materialized invocation-one captures and sorted request ids numerically. Direct native evidence is separately recorded in `resume-3STpCB`, `next-turn-RKA2N4`, `nested-a4QSXS`, and `compaction-WH9nKg`.
+- **Limits.** Claude Code 2.1.269 is installed but unmeasured. M2 failed. M3, M3-B2, M4, and M10-freshness remain unmeasured or closed. Correlation is in memory, expires after idle TTL, and is lost on restart. These limits do not invalidate the exercised explicit-marker and correlation paths; they limit what this profile claims to support.
+- **Historical entries follow.** They preserve earlier measurements and their evidence. A prior `pending` or unsupported statement applies to its named version, fixture, or checkpoint unless this current acceptance bullet supersedes it.
+
+- **Historical 2.1.263 profile: capability is `pending`.** [verified] direct read of
   [../../tests/fixtures/capabilities/claude-code-2.1.263.json](../../tests/fixtures/capabilities/claude-code-2.1.263.json):
   every probe (`M1`-`M4`, `M10`) is `"pending"`, `status: "pending"`. `assertCapability` refuses
   every `claude-marker`/`claude-correlation`/`claude-fork` gate for this fixture, by design.
@@ -8,10 +12,11 @@
   bootstrap ([../../src/transport/claude-hook.ts](../../src/transport/claude-hook.ts)) always
   returns `freshDelegation: false`; channel B and B2 both stay closed in production until a real
   producer exists and M10-freshness passes.
-- **Correlation (M1) is untested against a live client.** `CorrelationStore` itself is unit-tested
-  ([../../tests/adapters/correlation.test.ts](../../tests/adapters/correlation.test.ts)), but no
-  shipped Claude Code version has a passing M1 (identifier entropy) measurement.
-- **M1 has a statistical sample analyzer, not a generator-entropy proof.**
+- **Historical 2.1.263 correlation status.** `CorrelationStore` itself is unit-tested
+  ([../../tests/adapters/correlation.test.ts](../../tests/adapters/correlation.test.ts)), but this
+  fixture has no passing M1 (identifier entropy) measurement. The 2.1.268 M1 proof and measured
+  correlation path are recorded in the current acceptance bullet and later historical detail.
+- **Historical M1 sample analyzer limitation.**
   [../../tests/probes/evidence-m1.ts](../../tests/probes/evidence-m1.ts) reads agent ids out of
   run captures and measures their observed variety (length, alphabet, per-position entropy).
   Sample variety is not generator entropy: `judgeM1Sample` can fail a sample outright (a
