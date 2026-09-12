@@ -440,7 +440,7 @@ test("compaction mode's child scripting reuses the forced-Read channel with more
   // new one, and adds the rounds knob so the child still has a turn after the threshold is crossed.
   const dispatchGuard = script.indexOf('elif [ "$MODE" = "compaction" ]; then');
   expect(dispatchGuard).toBeGreaterThan(-1);
-  expect(script.indexOf("PROBE_CHILD_READ_ROUNDS=2")).toBeGreaterThan(dispatchGuard);
+  expect(script.indexOf("PROBE_CHILD_READ_ROUNDS=6")).toBeGreaterThan(dispatchGuard);
   expect(script.match(/PROBE_CHILD_READ_ROUNDS=/g) ?? []).toHaveLength(1); // never leaks into another mode
 
   // The client does not estimate context from the transcript, it sums the usage on the last
@@ -448,6 +448,14 @@ test("compaction mode's child scripting reuses the forced-Read channel with more
   // 5000 clears the roughly 800 token threshold with margin and stays well under the window.
   expect(script.indexOf("PROBE_CHILD_USAGE_INPUT_TOKENS=5000")).toBeGreaterThan(dispatchGuard);
   expect(script.match(/^\s+PROBE_CHILD_USAGE_INPUT_TOKENS=/gm) ?? []).toHaveLength(1); // compaction only
+
+  // The ramp holds that usage back so the threshold trips against a conversation that has
+  // something old enough to summarize. A measured run without it fired the decision seven times
+  // and bailed in the client's reactive compactor with "fewer than 2 groups, nothing to compact".
+  // 3 rounds held back leaves four assistant turns behind the child; 6 rounds total leaves three
+  // more requests afterwards for a compact_boundary to show up in.
+  expect(script.indexOf("PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=3")).toBeGreaterThan(dispatchGuard);
+  expect(script.match(/^\s+PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=/gm) ?? []).toHaveLength(1); // compaction only
 
   // The Read tool must actually be grantable for both forced-Read modes, via one shared predicate.
   expect(script).toContain('uses_child_read() { [ "$MODE" = "next-turn" ] || [ "$MODE" = "compaction" ]; }');

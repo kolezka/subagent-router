@@ -72,19 +72,28 @@ if is_handler_like; then
     # compaction reuses next-turn's forced-Read channel, with three differences. The client does
     # NOT estimate context size from the transcript: it anchors on the last assistant message
     # carrying `usage` and sums that, so a long history alone never triggers anything.
-    # PROBE_CHILD_USAGE_INPUT_TOKENS is what actually moves the estimate, making each routed
-    # child's own reply report 5000 input_tokens: past the ~800-token threshold forced below with
-    # margin, and still far under the window itself. The large Read file gives the child real
-    # history to compact, and PROBE_CHILD_READ_ROUNDS makes the fixture issue a second Read
-    # afterwards, so the child still has a turn left once the client has compacted. That later
-    # request is the one expected to carry compact_boundary in its history.
+    # PROBE_CHILD_USAGE_INPUT_TOKENS is what actually moves the estimate, making a routed child's
+    # reply report 5000 input_tokens: past the ~800-token threshold forced below with margin, and
+    # still far under the window itself. The large Read file gives the child real history to
+    # compact, and PROBE_CHILD_READ_ROUNDS keeps issuing Reads so the child still has turns left
+    # once the client has compacted. One of those later requests is the one expected to carry
+    # compact_boundary in its history.
+    #
+    # PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS is why 5000 does not start on the first reply. A measured
+    # run showed the decision firing seven times (level=compact) and then bailing inside the
+    # client's reactive compactor with "fewer than 2 groups, nothing to compact": the threshold was
+    # crossed while the child's conversation was still two messages long, so there was nothing old
+    # enough to summarize. Holding the small usage back for the first 3 completed rounds means the
+    # child has four assistant turns behind it before the threshold trips, and 6 rounds leaves
+    # three more requests afterwards to carry the boundary.
     PROBE_CHILD_READ_FILE="$WORK/probe-child-read.txt"
     python3 -c 'import sys; sys.stdout.write("probe compaction filler line carrying enough words to be worth counting\n" * 400)' > "$PROBE_CHILD_READ_FILE"
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
       PROBE_LAYOUT="${PROBE_LAYOUT:-}" \
       PROBE_CHILD_READ_FILE="$PROBE_CHILD_READ_FILE" \
-      PROBE_CHILD_READ_ROUNDS=2 \
+      PROBE_CHILD_READ_ROUNDS=6 \
       PROBE_CHILD_USAGE_INPUT_TOKENS=5000 \
+      PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=3 \
       bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
   elif [ "$MODE" = "resume" ]; then
     # resume is handler-like but enables the fixture's resume re-delegation opt-in so a second,

@@ -874,4 +874,99 @@ describe('channel-A handler fixture: routed-child usage reporting (childUsageInp
     expect(usageOf(events)).toEqual({ input_tokens: 5, output_tokens: 1 });
     expect(textOf(events)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`); // still a real routed child reply
   });
+
+  // Same continuation shape the forced-Read describe above uses: the marker-bearing user message,
+  // the assistant's tool_use, then the user's tool_result answering it.
+  function readContinuation(alias: string, toolUseId: string): Record<string, unknown> {
+    const base = buildChildRequest(alias, 'task') as { messages: unknown[] };
+    return {
+      ...base,
+      messages: [
+        ...base.messages,
+        { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: { file_path: READ_FILE } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: [{ type: 'text', text: 'file contents' }] }] },
+      ],
+    };
+  }
+
+  function continuationRequest(alias: string, agentId: string, toolUseId: string): Request {
+    return new Request('http://router.local/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-claude-code-agent-id': agentId },
+      body: JSON.stringify(readContinuation(alias, toolUseId)),
+    });
+  }
+
+  test('childUsageRampAfterRounds is default inert: absent, the large usage applies from the very first reply', async () => {
+    // The knob may not change what every existing mode already measures, so absent must stay
+    // byte-identical to the pre-ramp behaviour: first reply already inflated.
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const { handler } = await createHandlerFixture({ childReadFilePath: READ_FILE, childUsageInputTokens: 5000, childReadRounds: 3 });
+
+    const first = await decodeSse(await handler(childRequest(agent.alias, 'agent-ramp-absent')));
+    expect(usageOf(first)).toEqual({ input_tokens: 5000, output_tokens: 1 });
+    expect(reassembleToolUseBlocks(first)).toHaveLength(1);
+  });
+
+  test('when set, a child keeps the builder default until it has completed that many Read rounds, then reports the large value', async () => {
+    // Why the ramp exists: reporting 5000 on the first reply makes the client decide to compact
+    // while the child's conversation is two messages long, and its reactive compactor then bails
+    // with "fewer than 2 groups, nothing to compact". The large value has to arrive only after
+    // several real assistant turns are already behind the child.
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const agentId = 'agent-ramp-set';
+    const { handler } = await createHandlerFixture({
+      childReadFilePath: READ_FILE,
+      childUsageInputTokens: 5000,
+      childReadRounds: 4,
+      childUsageRampAfterRounds: 2,
+    });
+
+    // Reply 1 (0 rounds done) and reply 2 (1 round done) stay on the tool_use builder's own default.
+    const first = await decodeSse(await handler(childRequest(agent.alias, agentId)));
+    expect(usageOf(first)).toEqual({ input_tokens: 8, output_tokens: 1 });
+    const firstId = reassembleToolUseBlocks(first)[0]!.id;
+
+    const second = await decodeSse(await handler(continuationRequest(agent.alias, agentId, firstId)));
+    expect(usageOf(second)).toEqual({ input_tokens: 8, output_tokens: 1 });
+    const secondId = reassembleToolUseBlocks(second)[0]!.id;
+    expect(secondId).not.toBe(firstId); // a real further round, not a replay
+
+    // Reply 3 is issued with 2 rounds completed, so this is the first one carrying the large usage.
+    const third = await decodeSse(await handler(continuationRequest(agent.alias, agentId, secondId)));
+    expect(usageOf(third)).toEqual({ input_tokens: 5000, output_tokens: 1 });
+    const thirdId = reassembleToolUseBlocks(third)[0]!.id;
+
+    // And it stays large for the rest of the conversation. N rounds means N+1 requests, so with 4
+    // rounds this is still a tool_use and the echo lands on the request after it.
+    const fourth = await decodeSse(await handler(continuationRequest(agent.alias, agentId, thirdId)));
+    expect(usageOf(fourth)).toEqual({ input_tokens: 5000, output_tokens: 1 });
+    const fourthId = reassembleToolUseBlocks(fourth)[0]!.id;
+
+    const fifth = await decodeSse(await handler(continuationRequest(agent.alias, agentId, fourthId)));
+    expect(usageOf(fifth)).toEqual({ input_tokens: 5000, output_tokens: 1 }); // the closing echo too
+    expect(reassembleToolUseBlocks(fifth)).toHaveLength(0); // round 4 of 4 answered: the loop ends
+    expect(textOf(fifth)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+  });
+
+  test('the ramp counts rounds per agent id, so one child crossing it never inflates another child', async () => {
+    // Same contract childReadRounds already holds: request order must not decide anything.
+    const ahead = CHANNEL_A_AGENTS[0]!;
+    const behind = CHANNEL_A_AGENTS[1]!;
+    const { handler } = await createHandlerFixture({
+      childReadFilePath: READ_FILE,
+      childUsageInputTokens: 5000,
+      childReadRounds: 4,
+      childUsageRampAfterRounds: 1,
+    });
+
+    const aheadFirst = await decodeSse(await handler(childRequest(ahead.alias, 'agent-ramp-ahead')));
+    const aheadId = reassembleToolUseBlocks(aheadFirst)[0]!.id;
+    const aheadSecond = await decodeSse(await handler(continuationRequest(ahead.alias, 'agent-ramp-ahead', aheadId)));
+    expect(usageOf(aheadSecond)).toEqual({ input_tokens: 5000, output_tokens: 1 }); // one round done
+
+    // The other child has completed nothing, and arrives later in request order.
+    const behindFirst = await decodeSse(await handler(childRequest(behind.alias, 'agent-ramp-behind')));
+    expect(usageOf(behindFirst)).toEqual({ input_tokens: 8, output_tokens: 1 });
+  });
 });
