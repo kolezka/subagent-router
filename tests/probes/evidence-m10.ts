@@ -8,6 +8,9 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { RunCapture } from './evidence-m3a';
+import { RESUME_NO_CONTINUATION_CLAIM } from './resume-proof';
+import type { ResumeProof } from './resume-proof';
+import type { ProofSiteVerification } from './proof-sites';
 import type { LifecyclePhase, ProbeResult } from '../../src/core/types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,6 +62,40 @@ export async function readRunManifest(runDir: string): Promise<RunManifest | und
       ? (parsed.freshnessHook as RunManifest['freshnessHook'])
       : 'none';
   return { mode, phasesExercised, freshnessHook, correlationScaffold: parsed.correlationScaffold === true };
+}
+
+// ---------- invocation boundary ----------
+
+export interface InvocationBoundary {
+  // The highest capture seq invocation 1 produced. At or below it is pre-boundary, above it is
+  // post-boundary.
+  afterSeq: number;
+}
+
+/**
+ * Reads capture/invocation-boundary.json, which native-claude-run.sh's resume mode writes between
+ * its two CLI invocations. Absent or unparseable is never an error here: it means the run never
+ * recorded where invocation 1 stopped, so the resume judge fails closed to 'pending' rather than
+ * guessing a split. A real afterSeq of 0 (invocation 1 wrote no numbered capture file) is a
+ * different answer from absence, which is why absence has to be undefined and never a zero.
+ */
+export async function readInvocationBoundary(runDir: string): Promise<InvocationBoundary | undefined> {
+  let raw: string;
+  try {
+    raw = await readFile(join(runDir, 'capture', 'invocation-boundary.json'), 'utf8');
+  } catch {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed)) return undefined;
+  const afterSeq = parsed.afterSeq;
+  if (typeof afterSeq !== 'number' || !Number.isInteger(afterSeq) || afterSeq < 0) return undefined;
+  return { afterSeq };
 }
 
 // ---------- per-request evidence ----------
@@ -239,14 +276,140 @@ function checkDriftAndForwarding(agentIds: readonly string[], evidence: Lifecycl
   return undefined;
 }
 
+// Unlike checkDriftAndForwarding, this one inspects an agent's FIRST request too. That helper
+// deliberately skips it (an agent whose opening request was never routed simply never started,
+// which is a pending condition for the other phases), but a child delegated fresh AFTER the resume
+// has only that first request, so skipping it would let an unrouted fresh child read as clean.
+function checkEveryRequestForwarded(agentIds: readonly string[], evidence: LifecycleEvidenceByAgent, phase: LifecyclePhase): LifecycleJudgement | undefined {
+  for (const agentId of agentIds) {
+    const list = evidence.get(agentId) ?? [];
+    if (list.some((entry) => entry.upstreamModel === undefined)) {
+      return {
+        result: 'failed',
+        diagnostic: `${phase}-post-boundary-child-not-forwarded: post-boundary child ${agentId} had a request that was not forwarded to any upstream model`,
+      };
+    }
+  }
+  return undefined;
+}
+
+export interface LifecycleJudgeOptions {
+  // Where invocation 1's captures stop. Only the 'resume' phase reads it.
+  invocationBoundary?: InvocationBoundary;
+  // The client version this run observed, so a missing resume record can name the version nobody
+  // has inspected yet (same role observedVersion plays in judgeM1).
+  observedVersion?: string;
+  resumeProof?: ResumeProof;
+  resumeProofVerification?: ProofSiteVerification;
+}
+
+/**
+ * The 'resume' verdict. A resume is two CLI invocations against one session, and nothing in a
+ * request says which invocation produced it, so the run has to record the seq where the first one
+ * stopped before anything here can be judged.
+ *
+ * Two shapes can then pass, for different reasons:
+ *
+ *  - a child with requests on BOTH sides really did keep its id across the resume. That is the
+ *    direct measurement and it decides the verdict alone, with no record consulted, so this branch
+ *    keeps working if a future client starts continuing children;
+ *  - only fresh children after the boundary is the measured Claude Code 2.1.268 behaviour, and on
+ *    its own it is indistinguishable from a router that lost every child. It passes only when
+ *    every fresh child was routed on every request AND a byte-verified record for this exact
+ *    version says this client cannot continue a child at all.
+ */
+function judgeResume(evidence: LifecycleEvidenceByAgent, runMetadata: RunManifest | undefined, options: LifecycleJudgeOptions): LifecycleJudgement {
+  const phase: LifecyclePhase = 'resume';
+  const declared = checkDeclaredMode(phase, runMetadata);
+  if (declared !== undefined) return declared;
+
+  const boundary = options.invocationBoundary;
+  if (boundary === undefined) {
+    return {
+      result: 'pending',
+      diagnostic: 'resume-requires-invocation-boundary: the run recorded no capture/invocation-boundary.json, so no request can be placed before or after the resume',
+    };
+  }
+
+  const crossing: string[] = [];
+  const postBoundary: string[] = [];
+  for (const [agentId, list] of evidence) {
+    const hasPre = list.some((entry) => entry.seq <= boundary.afterSeq);
+    const hasPost = list.some((entry) => entry.seq > boundary.afterSeq);
+    if (hasPost) postBoundary.push(agentId);
+    if (hasPre && hasPost) crossing.push(agentId);
+  }
+
+  if (postBoundary.length === 0) {
+    return {
+      result: 'pending',
+      diagnostic: `resume-no-post-boundary-children: no routed child issued a request after seq ${boundary.afterSeq}, so the resumed invocation delegated nothing to judge`,
+    };
+  }
+
+  if (crossing.length > 0) {
+    return checkDriftAndForwarding(crossing, evidence, phase) ?? { result: 'passed' };
+  }
+
+  const forwarding = checkDriftAndForwarding(postBoundary, evidence, phase) ?? checkEveryRequestForwarded(postBoundary, evidence, phase);
+  if (forwarding !== undefined) return forwarding;
+
+  const observedVersion = options.observedVersion ?? 'unknown';
+  const noProof = `resume-no-continuation-proof-for-${observedVersion}`;
+  const proof = options.resumeProof;
+  const verification = options.resumeProofVerification;
+
+  if (proof === undefined) {
+    return {
+      result: 'pending',
+      diagnostic: `${noProof}: no resume-inspection record exists for this client version, so "no child continued" cannot be told apart from a child the router lost`,
+    };
+  }
+  if (proof.version !== observedVersion) {
+    return { result: 'pending', diagnostic: `${noProof}: the record on hand describes ${proof.version}, not the version this run observed` };
+  }
+  if (proof.claim !== RESUME_NO_CONTINUATION_CLAIM) {
+    return { result: 'pending', diagnostic: `${noProof}: the record claims ${JSON.stringify(proof.claim)}, not ${JSON.stringify(RESUME_NO_CONTINUATION_CLAIM)}` };
+  }
+  if (verification === undefined || !verification.binaryPresent) {
+    return {
+      result: 'pending',
+      diagnostic: `${noProof}: the binary that record cites could not be read this run, so its ${proof.sites.length} recorded sites stay unverified and the record is a version string only`,
+    };
+  }
+  if (verification.mismatchedSites.length > 0) {
+    return {
+      result: 'pending',
+      diagnostic:
+        `resume-proof-site-mismatch:${verification.mismatchedSites.join(',')} -- the recorded bytes are not at those offsets in the ` +
+        'cited binary, so this record does not describe the binary this run used',
+    };
+  }
+
+  return {
+    result: 'passed',
+    diagnostic:
+      `resume-fresh-delegations-only: ${postBoundary.length} post-boundary children, none continuing a pre-boundary id, ` +
+      `per the dd-verified proof for ${proof.version} (${verification.sitesVerified}/${verification.sitesTotal} sites re-checked); ` +
+      'takeover handoff unmeasured and fail-closed',
+  };
+}
+
 /**
  * Judges one M10 lifecycle phase against a run's declared phasesExercised and the extracted
  * per-agent request evidence. Every phase fails closed to 'pending' when the run itself never
  * declares the phase was tried: aggregate request shape, history length, or the mere presence
  * of a request are never treated as proof a phase happened (per the design doc's M10-freshness
  * language, applied here to every phase, not only freshness).
+ *
+ * `options` carries what only the 'resume' branch needs; every other phase ignores it.
  */
-export function judgeLifecyclePhase(phase: LifecyclePhase, evidence: LifecycleEvidenceByAgent, runMetadata: RunManifest | undefined): LifecycleJudgement {
+export function judgeLifecyclePhase(
+  phase: LifecyclePhase,
+  evidence: LifecycleEvidenceByAgent,
+  runMetadata: RunManifest | undefined,
+  options: LifecycleJudgeOptions = {},
+): LifecycleJudgement {
   const phasesExercised = runMetadata?.phasesExercised ?? [];
   if (!phasesExercised.includes(phase)) {
     return { result: 'pending', diagnostic: `${phase}-not-declared: the run manifest does not declare ${phase} as an exercised phase` };
@@ -289,9 +452,13 @@ export function judgeLifecyclePhase(phase: LifecyclePhase, evidence: LifecycleEv
     return checkDriftAndForwarding(withBoundary, evidence, phase) ?? { result: 'passed' };
   }
 
-  // 'next-turn' | 'resume': no structural signal in the request itself distinguishes these
-  // from any other multi-turn request, so the ONLY thing that can tell them apart is the run's
-  // own declared mode -- never inferred from request count or history length.
+  if (phase === 'resume') return judgeResume(evidence, runMetadata, options);
+
+  // 'next-turn': no structural signal in the request itself distinguishes it from any other
+  // multi-turn request, so the ONLY thing that can tell them apart is the run's own declared
+  // mode -- never inferred from request count or history length. resume used to share this
+  // predicate; it now has its own branch above, because two turns in one invocation and two
+  // turns across a resume look identical here.
   const declared = checkDeclaredMode(phase, runMetadata);
   if (declared !== undefined) return declared;
   const qualifying = agentsWithAtLeastTwoRequests(evidence);

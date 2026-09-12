@@ -260,3 +260,137 @@ describe('fixture-writer: writeCapabilityFixture', () => {
     expect(entries.filter((name) => name.includes('.tmp'))).toEqual([]);
   });
 });
+
+// probes.M10 and status are the two keys nothing judges. Every other key this writer narrows
+// comes from a judge that looked at one run; these two are claims ABOUT a set of runs, so the
+// writer is the only place that can check the set is complete before either lands on disk.
+describe('fixture-writer: derived keys nothing judges (probes.M10 and status)', () => {
+  const ALL_PHASES = ['next-turn', 'resume', 'compaction', 'nested', 'parallel'] as const;
+  const ALL_PASSED = Object.fromEntries(ALL_PHASES.map((phase) => [phase, 'passed'])) as Record<(typeof ALL_PHASES)[number], 'passed'>;
+
+  /** Rewrites the fixture under test with `patch` merged over BASE_FIXTURE. */
+  async function seedFixture(patch: Record<string, unknown>): Promise<void> {
+    await writeFile(fixturePath, `${JSON.stringify({ ...BASE_FIXTURE, ...patch }, null, 2)}\n`, 'utf8');
+  }
+
+  async function refusalCode(judged: Parameters<typeof writeCapabilityFixture>[2]): Promise<unknown> {
+    const error = await writeCapabilityFixture('claude-code', '2.1.266', judged, dir).catch((caught: unknown) => caught);
+    return error instanceof RouterError ? error.code : error;
+  }
+
+  test('probes.M10 passed is refused while any single lifecycle phase is not passed', async () => {
+    // Four of five on disk. M10 claims the upstream model held through EVERY transition, and the
+    // fifth phase was never measured, so nothing has established the conjunction.
+    for (const held of ALL_PHASES) {
+      await seedFixture({ lifecycle: { ...ALL_PASSED, [held]: 'pending' } });
+      const code = await refusalCode({ runId: 'run-m10', scaffoldDeclared: true, probes: { M10: 'passed' } });
+      expect({ held, code }).toEqual({ held, code: 'fixture-writer-m10-requires-all-phases' });
+    }
+  });
+
+  test('the refusal names the phases that are not passed, not just that something is missing', async () => {
+    await seedFixture({ lifecycle: { ...ALL_PASSED, resume: 'pending', nested: 'failed' } });
+    const error = await writeCapabilityFixture(
+      'claude-code',
+      '2.1.266',
+      { runId: 'run-m10-named', scaffoldDeclared: true, probes: { M10: 'passed' } },
+      dir,
+    ).catch((caught: unknown) => caught);
+    expect((error as RouterError).message).toContain('resume');
+    expect((error as RouterError).message).toContain('nested');
+    expect((error as RouterError).message).not.toContain('parallel');
+  });
+
+  test('probes.M10 passed writes when the fifth phase arrives in the same write', async () => {
+    // No single run exercises all five phases, so the last phase and the aggregate legitimately
+    // land together: four already measured on disk, the fifth judged by the run doing this write.
+    await seedFixture({ lifecycle: { ...ALL_PASSED, parallel: 'pending' } });
+    await writeCapabilityFixture(
+      'claude-code',
+      '2.1.266',
+      { runId: 'run-m10-last', scaffoldDeclared: true, probes: { M10: 'passed' }, lifecycle: { parallel: 'passed' } },
+      dir,
+    );
+
+    const after = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>;
+    expect((after.probes as Record<string, string>).M10).toBe('passed');
+    expect(after.lifecycle).toEqual({ ...ALL_PASSED });
+    expect(after.diagnostics as string[]).toContainEqual(expect.stringMatching(/^measured:M10=passed;run=run-m10-last;at=\d{4}-\d{2}-\d{2}T/));
+  });
+
+  test('probes.M10 failed or pending is always writable: only the aggregate claim needs the set', async () => {
+    for (const result of ['failed', 'pending'] as const) {
+      await seedFixture({ lifecycle: { ...ALL_PASSED, resume: 'pending' } });
+      await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-m10-neg', scaffoldDeclared: true, probes: { M10: result } }, dir);
+      const after = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>;
+      expect((after.probes as Record<string, string>).M10).toBe(result);
+    }
+  });
+
+  const SUPPORTED_ON_DISK = {
+    probes: { ...BASE_FIXTURE.probes, 'M3-A': 'passed', M10: 'passed' },
+    lifecycle: { ...ALL_PASSED },
+    parentPromptPosition: 'after-native-context-v2',
+  };
+
+  test('status supported writes when every measurement it claims is already on disk', async () => {
+    await seedFixture(SUPPORTED_ON_DISK);
+    await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-status', scaffoldDeclared: true, status: 'supported' }, dir);
+
+    const after = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>;
+    expect(after.status).toBe('supported');
+    expect(after.diagnostics as string[]).toContainEqual(expect.stringMatching(/^measured:status=supported;run=run-status;at=\d{4}-\d{2}-\d{2}T/));
+  });
+
+  test('status supported is refused while probes.M10 is not passed', async () => {
+    await seedFixture({ ...SUPPORTED_ON_DISK, probes: { ...SUPPORTED_ON_DISK.probes, M10: 'pending' } });
+    expect(await refusalCode({ runId: 'run-status-m10', scaffoldDeclared: true, status: 'supported' })).toBe('fixture-writer-status-requires-measurements');
+  });
+
+  test('status supported is refused while probes.M3-A is not passed', async () => {
+    await seedFixture({ ...SUPPORTED_ON_DISK, probes: { ...SUPPORTED_ON_DISK.probes, 'M3-A': 'pending' } });
+    expect(await refusalCode({ runId: 'run-status-m3a', scaffoldDeclared: true, status: 'supported' })).toBe('fixture-writer-status-requires-measurements');
+  });
+
+  test('status supported is refused while a lifecycle phase or parentPromptPosition is missing', async () => {
+    await seedFixture({ ...SUPPORTED_ON_DISK, lifecycle: { ...ALL_PASSED, nested: 'pending' } });
+    expect(await refusalCode({ runId: 'run-status-phase', scaffoldDeclared: true, status: 'supported' })).toBe('fixture-writer-status-requires-measurements');
+
+    const { parentPromptPosition, ...withoutPosition } = SUPPORTED_ON_DISK;
+    expect(parentPromptPosition).toBe('after-native-context-v2'); // the field really was there to remove
+    await seedFixture(withoutPosition);
+    expect(await refusalCode({ runId: 'run-status-prompt', scaffoldDeclared: true, status: 'supported' })).toBe('fixture-writer-status-requires-measurements');
+  });
+
+  test('demoting status to pending is always allowed, whatever the measurements say', async () => {
+    await seedFixture({ status: 'supported' }); // every probe and phase still pending underneath
+    await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-demote', scaffoldDeclared: true, status: 'pending' }, dir);
+
+    const after = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>;
+    expect(after.status).toBe('pending');
+    expect(after.diagnostics as string[]).toContainEqual(expect.stringMatching(/^measured:status=pending;run=run-demote;at=/));
+  });
+
+  test('a status value outside supported and pending is refused', async () => {
+    const judged = { runId: 'run-status-bad', scaffoldDeclared: true, status: 'unsupported' } as unknown as Parameters<typeof writeCapabilityFixture>[2];
+    expect(await refusalCode(judged)).toBe('fixture-writer-invalid-status');
+  });
+
+  test('a scaffolded run can write neither probes.M10 passed nor status supported', async () => {
+    // Same reasoning as the lifecycle pass the existing guard already refuses: this run's children
+    // were routed by the scaffolded correlation gate, not by what the fixture describes, so it
+    // cannot be the evidence behind either aggregate claim. Both would otherwise slip past the
+    // existing guard, which only inspects lifecycle keys, probes.M1 and the correlation fields.
+    await seedFixture(SUPPORTED_ON_DISK);
+    const scaffolded = { runId: 'run-scaffold-agg', scaffoldDeclared: true, scaffoldedPaths: ['probes.M1'] };
+
+    expect(await refusalCode({ ...scaffolded, probes: { M10: 'passed' } })).toBe('fixture-writer-correlation-scaffold');
+    expect(await refusalCode({ ...scaffolded, status: 'supported' })).toBe('fixture-writer-correlation-scaffold');
+
+    // The fixture is untouched by either refusal.
+    const after = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>;
+    expect(after.status).toBe(BASE_FIXTURE.status);
+    expect((after.probes as Record<string, string>).M10).toBe('passed'); // seeded, never rewritten
+    expect(after.diagnostics).toBeUndefined();
+  });
+});

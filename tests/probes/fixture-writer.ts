@@ -31,9 +31,24 @@ export interface JudgedFixtureUpdate {
   // fixture-writer-correlation-requires-m1 guard below.
   correlation?: boolean;
   correlationEntropy?: ProbeResult;
+  // The fixture's top-level verdict. 'supported' is the strongest claim this file can write, so
+  // it is gated on every measurement behind it; 'pending' is a demotion and always allowed.
+  // 'unsupported' is deliberately not writable here: nothing in a probe run establishes it.
+  status?: 'supported' | 'pending';
 }
 
-const JUDGED_ALLOWED_KEYS = new Set<string>(['runId', 'scaffoldDeclared', 'scaffoldedPaths', 'probes', 'lifecycle', 'correlation', 'correlationEntropy']);
+const JUDGED_ALLOWED_KEYS = new Set<string>([
+  'runId',
+  'scaffoldDeclared',
+  'scaffoldedPaths',
+  'probes',
+  'lifecycle',
+  'correlation',
+  'correlationEntropy',
+  'status',
+]);
+
+const LIFECYCLE_PHASES: readonly LifecyclePhase[] = ['next-turn', 'resume', 'compaction', 'nested', 'parallel'];
 
 // The three profile fields that together open the router's correlation channel
 // (src/adapters/capabilities.ts's claude-correlation gate). A run that scaffolded any of them
@@ -49,7 +64,7 @@ function assertNoForeignKeys(judged: Record<string, unknown>): void {
     if (!JUDGED_ALLOWED_KEYS.has(key)) {
       throw new RouterError(
         'fixture-writer-forbidden-key',
-        `refusing to write judged.${key}: only runId, scaffoldDeclared, scaffoldedPaths, probes, lifecycle, correlation and correlationEntropy may be supplied`,
+        `refusing to write judged.${key}: only runId, scaffoldDeclared, scaffoldedPaths, probes, lifecycle, correlation, correlationEntropy and status may be supplied`,
       );
     }
   }
@@ -82,12 +97,12 @@ export interface WriteCapabilityFixtureOptions {
 
 /**
  * Narrows exactly the probe keys present in judged.probes, the lifecycle keys present in
- * judged.lifecycle, and judged.correlation / judged.correlationEntropy when supplied, on
- * `<client>-<version>.json`. Appends one diagnostics line per narrowed key
+ * judged.lifecycle, judged.correlation / judged.correlationEntropy, and judged.status when
+ * supplied, on `<client>-<version>.json`. Appends one diagnostics line per narrowed key
  * (`measured:<key>=<value>;run=<runId>;at=<ISO date>`, or `measured:lifecycle.<phase>=...` for a
  * lifecycle phase), and writes atomically via a temp file + rename. Every other field on the
- * fixture -- status, client, version, adapterMarkerPosition, every probe/lifecycle key not named
- * in `judged` -- is carried over byte-for-byte unchanged.
+ * fixture -- client, version, adapterMarkerPosition, parentPromptPosition, every probe/lifecycle
+ * key not named in `judged` -- is carried over byte-for-byte unchanged.
  */
 export async function writeCapabilityFixture(
   client: ClientId,
@@ -133,8 +148,15 @@ export async function writeCapabilityFixture(
     }
     correlationKeys.push('correlationEntropy');
   }
-  if (probeKeys.length === 0 && lifecycleKeys.length === 0 && correlationKeys.length === 0) {
-    throw new RouterError('fixture-writer-nothing-to-write', 'judged.probes, judged.lifecycle and the correlation fields are all empty; nothing to narrow');
+  const statusKeys: string[] = [];
+  if (judged.status !== undefined) {
+    if (judged.status !== 'supported' && judged.status !== 'pending') {
+      throw new RouterError('fixture-writer-invalid-status', `judged.status is ${JSON.stringify(judged.status)}, not 'supported' or 'pending'`);
+    }
+    statusKeys.push('status');
+  }
+  if (probeKeys.length === 0 && lifecycleKeys.length === 0 && correlationKeys.length === 0 && statusKeys.length === 0) {
+    throw new RouterError('fixture-writer-nothing-to-write', 'judged.probes, judged.lifecycle, the correlation fields and judged.status are all empty; nothing to narrow');
   }
 
   // A scaffolded correlation gate changes routing itself: the child that survived the phase was
@@ -146,11 +168,17 @@ export async function writeCapabilityFixture(
   // even with correlation open came out negative for real.
   const scaffoldedCorrelationPaths = (judged.scaffoldedPaths ?? []).filter((path) => CORRELATION_GATE_PATHS.has(path));
   if (scaffoldedCorrelationPaths.length > 0) {
+    // probes.M10 and status=supported are here for the same reason, one step removed: both are
+    // claims about a SET of runs, and the existing entries above only catch a scaffolded run
+    // writing its own phase. A scaffolded run writing just the aggregate, over phases earlier
+    // runs measured honestly, would otherwise slip through.
     const refusedKeys = [
       ...lifecycleKeys.filter((key) => judged.lifecycle?.[key as LifecyclePhase] === 'passed').map((key) => `lifecycle.${key}=passed`),
       ...(judged.probes?.M1 === 'passed' ? ['probes.M1=passed'] : []),
+      ...(judged.probes?.M10 === 'passed' ? ['probes.M10=passed'] : []),
       ...(judged.correlation === true ? ['correlation=true'] : []),
       ...(judged.correlationEntropy === 'passed' ? ['correlationEntropy=passed'] : []),
+      ...(judged.status === 'supported' ? ['status=supported'] : []),
     ];
     if (refusedKeys.length > 0) {
       throw new RouterError(
@@ -204,6 +232,37 @@ export async function writeCapabilityFixture(
     nextLifecycle[key] = judged.lifecycle?.[key as LifecyclePhase] as ProbeResult;
   }
 
+  // probes.M10 is the aggregate claim that the upstream model stayed stable through EVERY
+  // lifecycle transition, and no judge produces it: each phase judge already enforces drift and
+  // forwarding for its own run, so the aggregate is exactly the conjunction of the five phases.
+  // No single run exercises all five, which is why the phases are read from disk and from this
+  // write together -- the last phase and the aggregate may legitimately land in one call.
+  // 'failed' and 'pending' need none of this: a negative aggregate claims nothing.
+  const phasesNotPassed = LIFECYCLE_PHASES.filter((phase) => nextLifecycle[phase] !== 'passed');
+  if (judged.probes?.M10 === 'passed' && phasesNotPassed.length > 0) {
+    throw new RouterError(
+      'fixture-writer-m10-requires-all-phases',
+      `refusing to write probes.M10=passed: M10 is the conjunction of all five lifecycle phases, and these are not passed on disk or in this write: ${phasesNotPassed.join(', ')}`,
+    );
+  }
+
+  // status='supported' is the fixture's strongest claim, and like M10 nothing judges it. It is
+  // every measurement behind the profile at once, so it may only follow them, never lead.
+  if (judged.status === 'supported') {
+    const missing = [
+      ...(nextProbes['M3-A'] === 'passed' ? [] : ['probes.M3-A']),
+      ...(nextProbes.M10 === 'passed' ? [] : ['probes.M10']),
+      ...phasesNotPassed.map((phase) => `lifecycle.${phase}`),
+      ...(typeof fixture.parentPromptPosition === 'string' && fixture.parentPromptPosition.length > 0 ? [] : ['parentPromptPosition']),
+    ];
+    if (missing.length > 0) {
+      throw new RouterError(
+        'fixture-writer-status-requires-measurements',
+        `refusing to write status=supported: these are not established on disk or in this write: ${missing.join(', ')}`,
+      );
+    }
+  }
+
   const now = options.now ?? (() => new Date());
   const at = now().toISOString();
   const existingDiagnostics = Array.isArray(fixture.diagnostics)
@@ -214,6 +273,7 @@ export async function writeCapabilityFixture(
     ...probeKeys.map((key) => `measured:${key}=${String(judged.probes?.[key])};run=${judged.runId};at=${at}`),
     ...lifecycleKeys.map((key) => `measured:lifecycle.${key}=${String(judged.lifecycle?.[key as LifecyclePhase])};run=${judged.runId};at=${at}`),
     ...correlationKeys.map((key) => `measured:${key}=${correlationValue(key)};run=${judged.runId};at=${at}`),
+    ...statusKeys.map((key) => `measured:${key}=${String(judged.status)};run=${judged.runId};at=${at}`),
   ];
 
   // Only the keys named in `judged` ever change; every other key on `fixture` is carried over
@@ -222,6 +282,7 @@ export async function writeCapabilityFixture(
   // existing key keeps its original position in the file, so the diff stays a value change.
   const nextFixture: Record<string, unknown> = {
     ...fixture,
+    ...(judged.status !== undefined ? { status: judged.status } : {}),
     ...(judged.correlation !== undefined ? { correlation: judged.correlation } : {}),
     ...(judged.correlationEntropy !== undefined ? { correlationEntropy: judged.correlationEntropy } : {}),
     probes: nextProbes,

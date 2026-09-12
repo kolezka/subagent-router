@@ -14,13 +14,16 @@
 // version the run OBSERVED (tests/fixtures/generator-proofs), whose byte sites are re-checked
 // against the binary it cites before any pass is reported.
 //
-// Usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir> [<generator-proofs-dir>]
+// The 'resume' lifecycle phase is judged the same way, from capture/invocation-boundary.json plus
+// the resume-inspection record for the observed version (tests/fixtures/resume-proofs).
+//
+// Usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir> [<generator-proofs-dir>] [<resume-proofs-dir>]
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LifecyclePhase } from '../../src/core/types';
 import { extractM3AEvidence, judgeM3A, readRunCapture } from './evidence-m3a';
 import type { CapturedPair } from './evidence-m3a';
-import { extractLifecycleEvidence, judgeLifecyclePhase, readRunManifest } from './evidence-m10';
+import { extractLifecycleEvidence, judgeLifecyclePhase, readInvocationBoundary, readRunManifest } from './evidence-m10';
 import { extractFreshnessEvidence, judgeM10Freshness } from './evidence-freshness';
 import type {
   DelegationConsumeRecord,
@@ -31,6 +34,7 @@ import type {
 } from './evidence-freshness';
 import { analyzeIdSample, collectAgentIds, judgeM1 } from './evidence-m1';
 import { loadGeneratorProof, verifyGeneratorProofAgainstBinary } from './generator-proof';
+import { loadResumeProof, verifyResumeProofAgainstBinary } from './resume-proof';
 import type { M1SampleReport } from './m1-sample-report';
 import type { ProbeResult } from '../../src/core/types';
 
@@ -161,6 +165,9 @@ const LIFECYCLE_PHASES: readonly LifecyclePhase[] = ['next-turn', 'resume', 'com
 // synthetic proof and a small stand-in binary instead of the real pinned client.
 const DEFAULT_GENERATOR_PROOFS_DIR = join(import.meta.dir, '..', 'fixtures', 'generator-proofs');
 
+// Same arrangement for the resume-inspection records the 'resume' lifecycle branch needs.
+const DEFAULT_RESUME_PROOFS_DIR = join(import.meta.dir, '..', 'fixtures', 'resume-proofs');
+
 // One boolean field of M3APairEvidence (see evidence-m3a.ts), excluding `seq`/`agentId` -- never
 // surfaced per-pair here (that would carry an agentId), only aggregated into a count below.
 const M3A_PAIR_BOOLEAN_KEYS = [
@@ -210,8 +217,14 @@ export interface RunJudgement {
  * judgeM10Freshness, or buildM1SampleReport, exactly as a human reading this directory's capture/
  * files by hand would conclude.
  */
-export async function judgeRun(runDir: string, fixturesDir: string, generatorProofsDir: string = DEFAULT_GENERATOR_PROOFS_DIR): Promise<RunJudgement> {
+export async function judgeRun(
+  runDir: string,
+  fixturesDir: string,
+  generatorProofsDir: string = DEFAULT_GENERATOR_PROOFS_DIR,
+  resumeProofsDir: string = DEFAULT_RESUME_PROOFS_DIR,
+): Promise<RunJudgement> {
   const capture = await readRunCapture(runDir);
+  const observedVersion = capture.clientVersionFile ?? 'unknown';
 
   const m3aEvidence = await extractM3AEvidence(capture, fixturesDir);
   const pairsTrueCounts = {} as Record<(typeof M3A_PAIR_BOOLEAN_KEYS)[number], number>;
@@ -221,9 +234,23 @@ export async function judgeRun(runDir: string, fixturesDir: string, generatorPro
 
   const runManifest = await readRunManifest(runDir);
   const lifecycleEvidence = extractLifecycleEvidence(capture);
+
+  // The 'resume' branch alone needs these. Same rule as the generator proof: the record is looked
+  // up by the version the run OBSERVED, and its recorded byte sites are re-checked against the
+  // binary it cites, this run, before that record may settle anything.
+  const invocationBoundary = await readInvocationBoundary(runDir);
+  const resumeProof = await loadResumeProof('claude-code', observedVersion, resumeProofsDir);
+  const resumeProofVerification = resumeProof === undefined ? undefined : await verifyResumeProofAgainstBinary(resumeProof);
+  const lifecycleOptions = {
+    observedVersion,
+    ...(invocationBoundary !== undefined ? { invocationBoundary } : {}),
+    ...(resumeProof !== undefined ? { resumeProof } : {}),
+    ...(resumeProofVerification !== undefined ? { resumeProofVerification } : {}),
+  };
+
   const lifecycle = {} as Record<LifecyclePhase, { result: string; diagnostic?: string }>;
   for (const phase of LIFECYCLE_PHASES) {
-    const judgement = judgeLifecyclePhase(phase, lifecycleEvidence, runManifest);
+    const judgement = judgeLifecyclePhase(phase, lifecycleEvidence, runManifest, lifecycleOptions);
     lifecycle[phase] = { result: judgement.result, ...(judgement.diagnostic !== undefined ? { diagnostic: judgement.diagnostic } : {}) };
   }
   const freshnessCapture = await readFreshnessCapture(runDir, capture.pairs);
@@ -231,7 +258,7 @@ export async function judgeRun(runDir: string, fixturesDir: string, generatorPro
 
   // No client-version file means the run never observed one, so no proof can be matched to it.
   // 'unknown' keeps the missing-proof diagnostic readable rather than naming an empty version.
-  const m1Sample = await buildSingleRunM1Sample(runDir, capture.clientVersionFile ?? 'unknown', generatorProofsDir);
+  const m1Sample = await buildSingleRunM1Sample(runDir, observedVersion, generatorProofsDir);
   const m1Result = m1Sample.verdict.result;
   const proofDroveTheVerdict = m1Sample.proof.source === 'generator-inspection';
 
@@ -263,12 +290,12 @@ export async function judgeRun(runDir: string, fixturesDir: string, generatorPro
 }
 
 if (import.meta.main) {
-  const [runDir, fixturesDir, generatorProofsDir] = process.argv.slice(2);
+  const [runDir, fixturesDir, generatorProofsDir, resumeProofsDir] = process.argv.slice(2);
   if (runDir === undefined || fixturesDir === undefined) {
-    process.stderr.write('usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir> [<generator-proofs-dir>]\n');
+    process.stderr.write('usage: bun run tests/probes/judge-run.ts <run-dir> <fixtures-dir> [<generator-proofs-dir>] [<resume-proofs-dir>]\n');
     process.exitCode = 2;
   } else {
-    judgeRun(runDir, fixturesDir, generatorProofsDir ?? DEFAULT_GENERATOR_PROOFS_DIR)
+    judgeRun(runDir, fixturesDir, generatorProofsDir ?? DEFAULT_GENERATOR_PROOFS_DIR, resumeProofsDir ?? DEFAULT_RESUME_PROOFS_DIR)
       .then((report) => {
         process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
       })

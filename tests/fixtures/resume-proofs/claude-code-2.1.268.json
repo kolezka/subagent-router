@@ -1,0 +1,37 @@
+{
+  "client": "claude-code",
+  "version": "2.1.268",
+  "method": "dd",
+  "binaryPath": "/Users/me/.local/share/claude/versions/2.1.268",
+  "inspectedAt": "2026-09-12T00:00:00.000Z",
+  "claim": "ordinary-resume-never-continues-a-child",
+  "continuationPath": "takeover-handoff",
+  "continuationPathMeasured": false,
+  "sites": [
+    {
+      "name": "restore-on-mount",
+      "offset": 185008581,
+      "literal": "restoreOnMount(){let{initialMessages:w,session:P,taskRegistry:ee,storageV5:ae,credentials:ge,store:Se,scope:ke,messageQueue:xe}=this;if(w&&w.length>0){"
+    },
+    {
+      "name": "adopt-gate",
+      "offset": 185012344,
+      "literal": "if(!pl()||LM()!==ee){t(\"[adopt] deferred resume skipped: takeover released or replaced during MCP-settle wait\");return}"
+    },
+    {
+      "name": "orphan-gate",
+      "offset": 185013713,
+      "literal": "if(!pl()||LM()!==P){t(\"[orphan-resume] deferred auto-resume skipped: takeover released or replaced during MCP-settle wait\");return}"
+    },
+    {
+      "name": "orphan-continue",
+      "offset": 185013899,
+      "literal": "$3({agentId:ke.agentId,prompt:ke.description,continueInterruptedTurn:!0"
+    },
+    {
+      "name": "resume-override",
+      "offset": 179658459,
+      "literal": "agentId:ro(q.agentId),agentContext:We,abortController:q.abortController,replHydration:{kind:\"resume\"}"
+    }
+  ]
+}

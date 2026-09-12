@@ -327,6 +327,17 @@ if [ "$MODE" = "resume" ]; then
     exit "$CLI1_EXIT"
   fi
   echo "exit-inv1=$CLI1_EXIT"
+  # Where invocation 1's captures stop. Nothing in a request says which CLI invocation produced
+  # it, so the resume judge splits each agent's requests at this seq: at or below it is
+  # pre-boundary, above it is post-boundary. Taken here, after invocation 1 has finished writing
+  # and before invocation 2 writes anything. Leading zeros are stripped because JSON rejects 007
+  # and bash printf %d reads 008 as a bad octal number; %s then writes the plain digits.
+  BOUNDARY_SEQ="$(/bin/ls -1 "$RUN/capture" 2>/dev/null \
+    | /usr/bin/sed -n 's/^\([0-9][0-9]*\)-.*\.json$/\1/p' \
+    | /usr/bin/sort -n | /usr/bin/tail -n 1 | /usr/bin/sed 's/^0*//')"
+  [ -z "$BOUNDARY_SEQ" ] && BOUNDARY_SEQ=0
+  printf '{ "afterSeq": %s }\n' "$BOUNDARY_SEQ" > "$RUN/capture/invocation-boundary.json"
+  echo "boundary-after-seq=$BOUNDARY_SEQ"
   (
     cd "$WORK" || exit 1
     env -i \

@@ -3,7 +3,10 @@
 // server), plus a hermetic end-to-end test for evidence-freshness.ts driving a REAL
 // createHandler and a REAL runClaudeSubagentStartHook, wired together in-process (an injected
 // fetch that calls the handler directly -- no socket, no real claude/opencode/codex).
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runClaudeSubagentStartHook } from '../../src/transport/claude-hook';
 import { createHandler, signFreshDelegation } from '../../src/transport/handler';
 import type { CapabilityProfile, FetchLike, FreshDelegationEnvelope } from '../../src/core/types';
@@ -11,6 +14,10 @@ import { configFixture, FIXTURE_MODEL_ID, snapshotFixture } from '../support/fix
 import type { CapturedHttpMessage, CapturedPair, CapturedUnforwardedRequest, RunCapture } from './evidence-m3a';
 import { COMPACTION_SUMMARY_PREFIX, extractLifecycleEvidence, judgeLifecyclePhase, summarizeM10 } from './evidence-m10';
 import type { RunManifest } from './evidence-m10';
+import { loadResumeProof, verifyResumeProofAgainstBinary } from './resume-proof';
+import type { ResumeProof } from './resume-proof';
+import type { ProofSiteVerification } from './proof-sites';
+import { SYNTHETIC_RESUME_SITES, writeSyntheticResumeBinary, writeSyntheticResumeProof } from '../support/resume-proof-fixture';
 import { extractFreshnessEvidence, hashNonce, judgeM10Freshness } from './evidence-freshness';
 import type { DelegationConsumeRecord, DelegationRegisterRecord, DelegationReplayRecord, FreshnessCapture, InstanceFetchRecord } from './evidence-freshness';
 
@@ -237,6 +244,134 @@ describe('evidence-m10: extractLifecycleEvidence + judgeLifecyclePhase', () => {
   test('summarize-m10-never-spreads-a-pass', () => {
     const summary = summarizeM10({ 'next-turn': 'passed' });
     expect(summary).toEqual({ 'next-turn': 'passed', resume: 'pending', compaction: 'pending', nested: 'pending', parallel: 'pending' });
+  });
+});
+
+// ---------- resume: the invocation boundary and the no-continuation proof ----------
+
+// On Claude Code 2.1.268 an ordinary `claude -c` resume re-delegates and every child gets a
+// fresh id, so no pre-boundary child is ever seen again. That leaves the resume phase with no
+// continuation to measure, which is why the fresh-only branch needs the dd-verified record
+// before it may pass. The crossing branch stays the direct measurement: if a future client does
+// continue a child, that evidence alone decides the verdict and no proof is consulted.
+describe('evidence-m10: judgeLifecyclePhase resume across the invocation boundary', () => {
+  const RESUME_RUN = manifest({ mode: 'resume', phasesExercised: ['resume'] });
+  const VERSION = '9.9.9';
+
+  let proofDir = '';
+  let goodProof: ResumeProof;
+  let goodVerification: ProofSiteVerification;
+  let shiftedProof: ResumeProof;
+  let shiftedVerification: ProofSiteVerification;
+
+  beforeAll(async () => {
+    proofDir = await mkdtemp(join(tmpdir(), 'subagent-router-resume-judge-'));
+    const binaryPath = join(proofDir, 'fake-client-binary');
+    await writeSyntheticResumeBinary(binaryPath);
+
+    await writeSyntheticResumeProof(proofDir, { binaryPath, version: VERSION });
+    goodProof = (await loadResumeProof('claude-code', VERSION, proofDir))!;
+    goodVerification = await verifyResumeProofAgainstBinary(goodProof);
+
+    // Same binary, one site's recorded offset moved a byte: the record no longer describes the
+    // binary this run used, which must never read as a verified proof.
+    const shifted = SYNTHETIC_RESUME_SITES.map((site) => (site.name === 'adopt-gate' ? { ...site, offset: site.offset + 1 } : site));
+    await writeSyntheticResumeProof(proofDir, { binaryPath, version: '9.9.8', sites: shifted });
+    shiftedProof = (await loadResumeProof('claude-code', '9.9.8', proofDir))!;
+    shiftedVerification = await verifyResumeProofAgainstBinary(shiftedProof);
+  });
+
+  afterAll(async () => {
+    await rm(proofDir, { recursive: true, force: true });
+  });
+
+  // One child talking on both sides of the boundary: a real continuation.
+  const crossing = () =>
+    extractLifecycleEvidence(
+      capture([
+        pair(1, 'agent-kept', { upstreamModel: 'gateway/fast-worker' }),
+        pair(3, 'agent-kept', { upstreamModel: 'gateway/fast-worker' }),
+      ]),
+    );
+
+  // The measured 2.1.268 shape: the pre-boundary child never speaks again and the resumed parent
+  // delegates to a brand new id.
+  const freshOnly = () =>
+    extractLifecycleEvidence(
+      capture([
+        pair(1, 'agent-before', { upstreamModel: 'gateway/fast-worker' }),
+        pair(3, 'agent-after', { upstreamModel: 'gateway/smart-worker' }),
+      ]),
+    );
+
+  test('a child with requests on both sides of the boundary passes on that measurement alone, no proof consulted', () => {
+    const judgement = judgeLifecyclePhase('resume', crossing(), RESUME_RUN, { invocationBoundary: { afterSeq: 2 }, observedVersion: VERSION });
+    expect(judgement.result).toBe('passed');
+  });
+
+  test('fresh delegations only, with no recorded proof for the observed version, is pending', () => {
+    const judgement = judgeLifecyclePhase('resume', freshOnly(), RESUME_RUN, { invocationBoundary: { afterSeq: 2 }, observedVersion: VERSION });
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain(`resume-no-continuation-proof-for-${VERSION}`);
+  });
+
+  test('fresh delegations only, backed by a byte-verified proof, passes and says what was and was not measured', () => {
+    const judgement = judgeLifecyclePhase('resume', freshOnly(), RESUME_RUN, {
+      invocationBoundary: { afterSeq: 2 },
+      observedVersion: VERSION,
+      resumeProof: goodProof,
+      resumeProofVerification: goodVerification,
+    });
+    expect(judgement.result).toBe('passed');
+    expect(judgement.diagnostic).toBe(
+      `resume-fresh-delegations-only: 1 post-boundary children, none continuing a pre-boundary id, per the dd-verified proof for ${VERSION} (5/5 sites re-checked); takeover handoff unmeasured and fail-closed`,
+    );
+  });
+
+  test('a proof whose recorded bytes are not at those offsets any more is pending, named by site', () => {
+    const judgement = judgeLifecyclePhase('resume', freshOnly(), RESUME_RUN, {
+      invocationBoundary: { afterSeq: 2 },
+      observedVersion: '9.9.8',
+      resumeProof: shiftedProof,
+      resumeProofVerification: shiftedVerification,
+    });
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain('resume-proof-site-mismatch:adopt-gate');
+  });
+
+  test('a post-boundary child that was never forwarded fails, proof or no proof', () => {
+    // The handler refused the fresh child's only request, so the capture holds a pre-handler
+    // record with no upstream record beside it. checkDriftAndForwarding alone would skip this
+    // one (it never inspects an agent's first request), so the fresh branch checks every request.
+    const evidence = extractLifecycleEvidence(
+      capture([pair(1, 'agent-before', { upstreamModel: 'gateway/fast-worker' })], [refused(3, 'agent-after')]),
+    );
+    const judgement = judgeLifecyclePhase('resume', evidence, RESUME_RUN, {
+      invocationBoundary: { afterSeq: 2 },
+      observedVersion: VERSION,
+      resumeProof: goodProof,
+      resumeProofVerification: goodVerification,
+    });
+    expect(judgement.result).toBe('failed');
+    expect(judgement.diagnostic).toContain('resume-post-boundary-child-not-forwarded');
+  });
+
+  test('without an invocation boundary the phase is pending, even with a crossing child and a verified proof', () => {
+    // Nothing in a request says which CLI invocation produced it. Without the file the launcher
+    // writes between the two, "spanning the resume" cannot be told from "two turns in one run".
+    const judgement = judgeLifecyclePhase('resume', crossing(), RESUME_RUN, {
+      observedVersion: VERSION,
+      resumeProof: goodProof,
+      resumeProofVerification: goodVerification,
+    });
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain('resume-requires-invocation-boundary');
+  });
+
+  test('a boundary after every captured request leaves no post-boundary child to judge', () => {
+    const judgement = judgeLifecyclePhase('resume', crossing(), RESUME_RUN, { invocationBoundary: { afterSeq: 99 }, observedVersion: VERSION });
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain('resume-no-post-boundary-children');
   });
 });
 

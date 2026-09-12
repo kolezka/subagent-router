@@ -324,6 +324,40 @@ test("resume mode rejects PROBE_FRESHNESS_HOOK=production inside the resume bloc
   expect(rejectIndex).toBeLessThan(script.lastIndexOf('if is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then'));
 });
 
+test("resume mode records the invocation boundary between its two invocations, and nowhere else", () => {
+  // The resume judge splits each agent's requests at this seq, so the number has to be taken
+  // after invocation 1 has finished writing captures and before invocation 2 starts writing any.
+  // Written anywhere else it would describe a boundary that never existed.
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  const resumeBlockGuard = script.lastIndexOf('if [ "$MODE" = "resume" ]; then');
+  expect(resumeBlockGuard).toBeGreaterThan(-1);
+
+  // Exactly one write, and it is inside the resume block: no other mode has two invocations, so
+  // a boundary file anywhere else would be a seq split nothing produced.
+  const writes = script.match(/invocation-boundary\.json/g) ?? [];
+  expect(writes).toHaveLength(1);
+  const writeIndex = script.indexOf("invocation-boundary.json");
+  expect(writeIndex).toBeGreaterThan(resumeBlockGuard);
+
+  // Between the two invocations: after invocation 1's exit code is captured, before the flags
+  // that only appear in invocation 2.
+  const firstInvocationDone = script.indexOf("CLI1_EXIT=$?", resumeBlockGuard);
+  const secondInvocation = script.indexOf('-c -p "$PROMPT2"', resumeBlockGuard);
+  expect(firstInvocationDone).toBeGreaterThan(resumeBlockGuard);
+  expect(secondInvocation).toBeGreaterThan(firstInvocationDone);
+  expect(writeIndex).toBeGreaterThan(firstInvocationDone);
+  expect(writeIndex).toBeLessThan(secondInvocation);
+
+  // The seq itself: highest NNN prefix among the numbered capture files at that moment, with
+  // leading zeros stripped (JSON rejects 007, and bash printf %d reads 008 as a bad octal).
+  const boundaryBlock = script.slice(firstInvocationDone, secondInvocation);
+  expect(boundaryBlock).toContain('"afterSeq"');
+  expect(boundaryBlock).toContain("BOUNDARY_SEQ=0");
+  expect(boundaryBlock).toMatch(/sort -n/);
+  expect(boundaryBlock).toMatch(/tail -n 1/);
+  expect(boundaryBlock).toMatch(/printf '\{ "afterSeq": %s \}/);
+});
+
 test("nested mode is accepted at mode validation (fails later at fake-client version observation, same as handler mode would)", () => {
   // nested shares handler mode's is_handler_like branch, which needs a real `claude --version`
   // to observe the client version before it can start the bun fixture. This fixture's fake

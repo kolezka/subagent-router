@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { extractLifecycleEvidence, judgeLifecyclePhase, readRunManifest } from './evidence-m10';
+import { extractLifecycleEvidence, judgeLifecyclePhase, readInvocationBoundary, readRunManifest } from './evidence-m10';
 import type { RunManifest } from './evidence-m10';
 import type { CapturedPair, RunCapture } from './evidence-m3a';
 
@@ -71,6 +71,52 @@ describe('readRunManifest: correlationScaffold', () => {
       expect(await readRunManifest(dir)).toEqual({ mode: 'compaction', phasesExercised: ['compaction'], freshnessHook: 'production', correlationScaffold: true });
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('readInvocationBoundary', () => {
+  async function boundaryDir(contents?: string): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'subagent-router-invocation-boundary-'));
+    await mkdir(join(dir, 'capture'), { recursive: true });
+    if (contents !== undefined) await writeFile(join(dir, 'capture', 'invocation-boundary.json'), contents, 'utf8');
+    return dir;
+  }
+
+  test('reads afterSeq from the file the resume launcher writes between its two invocations', async () => {
+    const dir = await boundaryDir('{ "afterSeq": 12 }\n');
+    try {
+      expect(await readInvocationBoundary(dir)).toEqual({ afterSeq: 12 });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('zero is a real boundary, not an absent one: it means invocation 1 wrote no numbered capture', async () => {
+    const dir = await boundaryDir('{ "afterSeq": 0 }\n');
+    try {
+      expect(await readInvocationBoundary(dir)).toEqual({ afterSeq: 0 });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('an absent, unparseable or non-integer boundary reads as undefined, never as a guessed split', async () => {
+    const cases: ReadonlyArray<{ label: string; contents?: string }> = [
+      { label: 'absent' },
+      { label: 'not json', contents: 'not json at all' },
+      { label: 'missing field', contents: '{}' },
+      { label: 'string', contents: '{ "afterSeq": "12" }' },
+      { label: 'fractional', contents: '{ "afterSeq": 1.5 }' },
+      { label: 'negative', contents: '{ "afterSeq": -1 }' },
+    ];
+    for (const { label, contents } of cases) {
+      const dir = await boundaryDir(contents);
+      try {
+        expect({ label, boundary: await readInvocationBoundary(dir) }).toEqual({ label, boundary: undefined });
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     }
   });
 });
@@ -203,10 +249,19 @@ describe('judgeLifecyclePhase: nested', () => {
 });
 
 describe('judgeLifecyclePhase: resume', () => {
-  test('passes under mode resume when an agent has two forwarded requests', () => {
+  test('passes under mode resume when an agent carries its id across the invocation boundary', () => {
+    // Both agents have one request on each side of seq 2, so both really were continued. That is
+    // the direct measurement, and it settles the phase without any recorded proof.
+    const evidence = extractLifecycleEvidence(runCapture(TWO_AGENTS_TWO_REQUESTS_INTERLEAVED));
+    const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', ['resume']), { invocationBoundary: { afterSeq: 2 } });
+    expect(judgement.result).toBe('passed');
+  });
+
+  test('the same two-request evidence is pending without the boundary file, however it is declared', () => {
     const evidence = extractLifecycleEvidence(runCapture(TWO_AGENTS_TWO_REQUESTS_INTERLEAVED));
     const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', ['resume']));
-    expect(judgement.result).toBe('passed');
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain('resume-requires-invocation-boundary');
   });
 
   test('stays pending under mode next-turn with identical evidence -- declared mode is the only thing distinguishing resume from next-turn', () => {
@@ -223,11 +278,22 @@ describe('judgeLifecyclePhase: resume', () => {
     expect(judgement.diagnostic).toBe('resume-not-declared: the run manifest does not declare resume as an exercised phase');
   });
 
-  test('stays pending when no agent has two requests, even under a correctly declared mode and phase', () => {
-    const oneEach: readonly CapturedPair[] = [pair(1, 'agent-alpha', 'gateway/fast-worker'), pair(2, 'agent-beta', 'gateway/smart-worker')];
-    const evidence = extractLifecycleEvidence(runCapture(oneEach));
-    const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', ['resume']));
+  test('two requests per agent entirely before the boundary is not a resume, however many there are', () => {
+    // The regression this branch exists for. Counting requests cannot distinguish "two turns
+    // across a resume" from "two turns inside invocation 1", and the old predicate passed the
+    // second on the strength of the declared mode alone. With every request at or below the
+    // boundary, the resumed invocation delegated nothing and there is nothing to judge.
+    const evidence = extractLifecycleEvidence(runCapture(TWO_AGENTS_TWO_REQUESTS_INTERLEAVED));
+    const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', ['resume']), { invocationBoundary: { afterSeq: 4 } });
     expect(judgement.result).toBe('pending');
-    expect(judgement.diagnostic).toBe('resume-insufficient-requests: no agent has two routed requests spanning the declared boundary');
+    expect(judgement.diagnostic).toContain('resume-no-post-boundary-children');
+  });
+
+  test('a fresh child after the boundary needs the recorded proof: routing alone never certifies it', () => {
+    const freshOnly: readonly CapturedPair[] = [pair(1, 'agent-alpha', 'gateway/fast-worker'), pair(2, 'agent-beta', 'gateway/smart-worker')];
+    const evidence = extractLifecycleEvidence(runCapture(freshOnly));
+    const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', ['resume']), { invocationBoundary: { afterSeq: 1 }, observedVersion: '2.1.268' });
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain('resume-no-continuation-proof-for-2.1.268');
   });
 });
