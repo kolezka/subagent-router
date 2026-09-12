@@ -37,6 +37,16 @@ describe('evidence-m3a: readRunCapture + extractM3AEvidence + judgeM3A', () => {
     expect(judgeM3A(evidence)).toBe('passed');
   });
 
+  test('startup passthrough may acquire the configured upstream base path', async () => {
+    await writeSyntheticRunCapture(dir);
+    const startup = { captureRequestId: 'startup', url: '/api/hello', headers: {}, body: {} };
+    await writeFile(join(dir, 'capture', '004-pre-handler.json'), JSON.stringify(startup));
+    await writeFile(join(dir, 'capture', '005-post-handler-upstream.json'), JSON.stringify({ ...startup, url: 'http://127.0.0.1:1/v1/api/hello' }));
+    const capture = await readRunCapture(dir);
+    expect(capture.invalidEvidence).toEqual([]);
+    expect(capture.pairs).toHaveLength(2);
+  });
+
   test('pairs interleaved captures by request correlation id, not adjacent sequence number', async () => {
     await writeSyntheticRunCapture(dir, { includePair: false });
     const captureDir = join(dir, 'capture');

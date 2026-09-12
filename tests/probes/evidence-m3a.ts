@@ -197,7 +197,10 @@ export async function readRunCapture(runDir: string): Promise<RunCapture> {
       invalidEvidence.push(`capture-child-id-mismatch:pre=${pre.seq},post=${post.seq}`);
       return;
     }
-    if (endpointPath(pre.message.url) !== endpointPath(post.message.url)) {
+    const prePath = endpointPath(pre.message.url);
+    const postPath = endpointPath(post.message.url);
+    // Startup passthrough can gain the upstream base path; message evidence cannot change kind.
+    if ((prePath === '/v1/messages' || postPath === '/v1/messages') && prePath !== postPath) {
       invalidEvidence.push(`capture-endpoint-mismatch:pre=${pre.seq},post=${post.seq}`);
       return;
     }
