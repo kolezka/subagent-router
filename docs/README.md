@@ -150,6 +150,23 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   on that run because post-compaction requests are not first-message envelopes, which is expected
   and does not touch the layout claim. This is not a support promotion; details in
   [transport/GAPS.md](transport/GAPS.md).
+- 2026-09-12: `M1` is `passed` for 2.1.268, and `lifecycle.compaction` is `passed` with it. A
+  generator proof for the pinned binary now exists
+  ([../tests/fixtures/generator-proofs/claude-code-2.1.268.json](../tests/fixtures/generator-proofs/claude-code-2.1.268.json)):
+  four dd-verified byte-exact sites, which `judgeM1` re-reads against that binary on every run, so
+  a pass needs the proof to still describe the binary, a collision-free sample of at least two ids
+  matching `^a[0-9a-f]{16}$`, and a generator drawing at least 64 bits. Run `compaction-sbnVo0`
+  supplied the sample and narrowed `probes.M1: passed`, `correlation: true` and
+  `correlationEntropy: passed`. Run `compaction-3slJXF` then repeated the failed compaction run on
+  that real profile with no correlation scaffold (`correlationScaffold: false`): both children
+  compacted three times each, every post-compaction request was forwarded on the child's own
+  upstream model, nothing was refused, the parent decoded `PARENT_FINAL_OK`, and
+  `writeCapabilityFixture` narrowed `lifecycle.compaction: passed` into
+  [../tests/fixtures/capabilities/claude-code-2.1.268.json](../tests/fixtures/capabilities/claude-code-2.1.268.json).
+  The bindings behind that pass are in-memory and idle-expiring, and production builds no
+  correlation store until the profile is fully measured, so nothing changes for a running router
+  yet; details in [transport/GAPS.md](transport/GAPS.md). `status` and `lifecycle.resume` stay
+  `pending` and no profile is `supported`.
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 

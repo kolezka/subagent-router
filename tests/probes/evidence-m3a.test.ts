@@ -196,7 +196,7 @@ describe('evidence-m3a: readRunCapture + extractM3AEvidence + judgeM3A', () => {
 
 describe('evidence-m3a: layout awareness (after-native-context-v2)', () => {
   test('a v2 capture judged with the v2 profile passes on all six booleans', async () => {
-    await writeSyntheticRunCapture(dir, { layout: 'v2', clientVersion: '2.1.268' });
+    await writeSyntheticRunCapture(dir, { layout: 'v2', clientVersion: '2.1.268', profileBase: 'real' });
     const capture = await readRunCapture(dir);
     expect(capture.profileRaw.parentPromptPosition).toBe('after-native-context-v2');
 
@@ -215,7 +215,7 @@ describe('evidence-m3a: layout awareness (after-native-context-v2)', () => {
   });
 
   test('the same v2 capture judged with a v1 profile is pending, never passed: nothing about that claim was measured', async () => {
-    await writeSyntheticRunCapture(dir, { layout: 'v2', clientVersion: '2.1.268', profilePatch: { parentPromptPosition: 'after-native-context-v1' } });
+    await writeSyntheticRunCapture(dir, { layout: 'v2', clientVersion: '2.1.268', profileBase: 'real', profilePatch: { parentPromptPosition: 'after-native-context-v1' } });
     const capture = await readRunCapture(dir);
     const evidence = await extractM3AEvidence(capture, FIXTURES);
     expect(judgeM3A(evidence)).toBe('pending');
@@ -223,7 +223,7 @@ describe('evidence-m3a: layout awareness (after-native-context-v2)', () => {
   });
 
   test('a v1 capture judged with a v2 profile is pending, never passed', async () => {
-    await writeSyntheticRunCapture(dir, { layout: 'v1', clientVersion: '2.1.268', profilePatch: { parentPromptPosition: 'after-native-context-v2' } });
+    await writeSyntheticRunCapture(dir, { layout: 'v1', clientVersion: '2.1.268', profileBase: 'real', profilePatch: { parentPromptPosition: 'after-native-context-v2' } });
     const capture = await readRunCapture(dir);
     const evidence = await extractM3AEvidence(capture, FIXTURES);
     expect(judgeM3A(evidence)).toBe('pending');
@@ -231,14 +231,14 @@ describe('evidence-m3a: layout awareness (after-native-context-v2)', () => {
   });
 
   test('under v2 both client-owned prefix blocks must be byte identical and match their grammars', async () => {
-    await writeSyntheticRunCapture(dir, { layout: 'v2', clientVersion: '2.1.268', mutateBlock0Upstream: true });
+    await writeSyntheticRunCapture(dir, { layout: 'v2', clientVersion: '2.1.268', profileBase: 'real', mutateBlock0Upstream: true });
     const mutated = await extractM3AEvidence(await readRunCapture(dir), FIXTURES);
     expect(mutated.pairs[0]?.block0ByteIdentical).toBe(false);
     expect(judgeM3A(mutated)).toBe('failed');
 
     const dir2 = await mkdtemp(join(tmpdir(), 'subagent-router-m3a-evidence-v2-'));
     try {
-      await writeSyntheticRunCapture(dir2, { layout: 'v2', clientVersion: '2.1.268', useNonScaffoldBlock0: true });
+      await writeSyntheticRunCapture(dir2, { layout: 'v2', clientVersion: '2.1.268', profileBase: 'real', useNonScaffoldBlock0: true });
       const evidence2 = await extractM3AEvidence(await readRunCapture(dir2), FIXTURES);
       expect(evidence2.pairs[0]?.block0MatchesScaffold).toBe(false);
       expect(judgeM3A(evidence2)).toBe('failed');

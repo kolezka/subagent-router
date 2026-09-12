@@ -1,13 +1,14 @@
-// M1 (identifier entropy) statistical-sample analyzer. Reads agent ids out of run captures and
-// describes their observed variety -- length, alphabet, per-position Shannon entropy -- as a
-// PURE function of the id strings themselves. This measures the sample only. It never has access
-// to the id generator's real source of randomness, so it can never be mistaken for the separate
-// generator-entropy proof the spec requires (see judgeM1 in run.ts and the coordinator ruling in
-// this file's originating brief: a statistical sample proves variety only, never generator
-// entropy). Nothing here reads or forwards the captured native context text.
+// M1 (identifier entropy): the statistical-sample analyzer and the M1 judge that composes it
+// with a generator-inspection proof. The analyzer describes a sample's observed variety --
+// length, alphabet, per-position Shannon entropy -- as a PURE function of the id strings, and
+// measures the sample only: it never sees the generator's real source of randomness. That is why
+// it can fail M1 but never pass it. judgeM1 at the bottom of this file is the single home of the
+// verdict, and it passes only when generator-proof.ts's evidence, re-checked against the client
+// binary, backs the sample. Nothing here reads or forwards the captured native context text.
 import { readdir, readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { EntropyProof } from './run';
+import type { GeneratorProof, GeneratorProofSiteVerification } from './generator-proof';
 import type { ProbeResult } from '../../src/core/types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -138,7 +139,7 @@ function shannonEntropyBits(counts: readonly number[], total: number): number {
  *
  * This measures observed variety in the given sample only. It has no access to the generator
  * that produced the ids, so it can never be read as proof of the generator's real entropy
- * source -- see buildEntropyProof and judgeM1Sample below, and judgeM1 in run.ts.
+ * source -- see buildEntropyProof, judgeM1Sample and judgeM1 below.
  */
 export function analyzeIdSample(ids: readonly string[]): IdSampleAnalysis {
   const sampleCount = ids.length;
@@ -204,7 +205,7 @@ export type SampleEntropyProof = EntropyProof & {
 };
 
 /**
- * Turns an IdSampleAnalysis into the EntropyProof shape judgeM1 (run.ts) accepts, honestly
+ * Turns an IdSampleAnalysis into the EntropyProof shape judgeM1 below accepts, honestly
  * labeled as sample-based and NOT generator-inspected. generatorInspected is hardcoded false
  * here on purpose: no analysis over the sample alone can ever establish it, only a separate,
  * out-of-band review of the id generator's implementation can.
@@ -221,10 +222,12 @@ export function buildEntropyProof(analysis: IdSampleAnalysis): SampleEntropyProo
 }
 
 export interface M1SampleVerdict {
-  // Never 'passed': no combination of analysis + proof inputs produces it, by construction --
-  // a statistical sample can prove contradiction (collisions, or a large sample whose measured
-  // entropy is provably too low) but never the positive generator-entropy claim M1 requires.
-  result: Exclude<ProbeResult, 'passed'>;
+  // This was `Exclude<ProbeResult, 'passed'>`. While a statistical sample was M1's only evidence,
+  // no combination of inputs could produce a pass and the type said so at compile time. judgeM1
+  // below returns this same shape and now CAN pass, backed by a generator-inspection proof bound
+  // to the client binary, so the exclusion had to go. judgeM1Sample itself still has no 'passed'
+  // branch -- that is now a runtime invariant a test locks, not a type-level one.
+  result: ProbeResult;
   diagnostic: string;
 }
 
@@ -265,5 +268,154 @@ export function judgeM1Sample(analysis: IdSampleAnalysis, proof: EntropyProof): 
       `m1-sample-pending: ${analysis.sampleCount} sampled ids, ${analysis.distinctCount} distinct, ` +
       `~${analysis.totalEntropyBitsEstimate.toFixed(2)} bits estimated (proof.generatorInspected=${String(proof.generatorInspected)}); ` +
       'no separate generator-entropy proof exists yet -- sample variety alone can never certify M1',
+  };
+}
+
+// ---------- generator-inspection proof + the M1 judge ----------
+
+export type GeneratorEntropyProof = EntropyProof & {
+  source: 'generator-inspection';
+  distinctCount: number;
+  totalEntropyBitsEstimate: number;
+  generatorInspected: true;
+  bits: number;
+  version: string;
+  // 'n/m': how many of the proof's recorded byte sites still matched the cited binary this run.
+  sitesVerified: string;
+};
+
+export type M1EntropyProof = SampleEntropyProof | GeneratorEntropyProof;
+
+/**
+ * The proof M1 can actually be certified from: the generator's own bit count and entropy source,
+ * read out of a pinned binary and re-checked against its bytes this run, with the sample's own
+ * measurements kept alongside rather than replaced. generatorInspected is true here because a
+ * human really did inspect the generator, which is exactly what buildEntropyProof cannot claim.
+ */
+export function buildGeneratorEntropyProof(
+  analysis: IdSampleAnalysis,
+  proof: GeneratorProof,
+  verification: GeneratorProofSiteVerification,
+): GeneratorEntropyProof {
+  return {
+    source: 'generator-inspection',
+    sampleCount: analysis.sampleCount,
+    distinctCount: analysis.distinctCount,
+    totalEntropyBitsEstimate: analysis.totalEntropyBitsEstimate,
+    generatorInspected: true,
+    bits: proof.bits,
+    version: proof.version,
+    sitesVerified: `${verification.sitesVerified}/${verification.sitesTotal}`,
+  };
+}
+
+export interface JudgeM1Input {
+  analysis: IdSampleAnalysis;
+  // The same ids the analysis was built from, needed for the id-shape check the analysis does
+  // not do (it measures variety per position, not conformance to a declared format).
+  ids: readonly string[];
+  // The client version the run actually observed (capture/client-version), so a missing proof
+  // can name the version nobody has inspected yet.
+  observedVersion: string;
+  generatorProof?: GeneratorProof;
+  siteVerification?: GeneratorProofSiteVerification;
+}
+
+export interface M1Verdict extends M1SampleVerdict {
+  proof: M1EntropyProof;
+}
+
+const REQUIRED_ENTROPY_BITS = 64;
+const MIN_SAMPLE_FOR_PASS = 2;
+
+/**
+ * The single home of the M1 verdict. Everything a pass needs, in order:
+ *
+ *  1. the sample must not contradict the claim (no collision, distinctCount === sampleCount, and
+ *     no large sample whose format is provably under 64 bits) -- else 'failed';
+ *  2. a generator-inspection proof must exist for the version this run observed;
+ *  3. every sampled id must match that proof's declared id shape;
+ *  4. the proof's recorded byte sites must still match the binary it cites, checked this run;
+ *  5. the generator must draw at least 64 bits, and the sample must hold at least two ids.
+ *
+ * Anything short of all five is 'pending' with a diagnostic naming what is missing. A sample can
+ * still 'fail' M1 on its own; it can never pass it on its own. run.ts used to carry a second
+ * judgeM1 over capture-gateway aggregate counts; it was removed when this one landed, so there
+ * is one M1 judge rather than two that could disagree.
+ */
+export function judgeM1(input: JudgeM1Input): M1Verdict {
+  const { analysis, ids, observedVersion, generatorProof, siteVerification } = input;
+
+  const sampleProof = buildEntropyProof(analysis);
+  const sampleVerdict = judgeM1Sample(analysis, sampleProof);
+  if (sampleVerdict.result === 'failed') return { ...sampleVerdict, proof: sampleProof };
+
+  if (generatorProof === undefined) {
+    return {
+      result: 'pending',
+      diagnostic:
+        `m1-no-generator-proof-for-${observedVersion}: no generator-inspection record exists for this client version, ` +
+        `so ${analysis.sampleCount} sampled ids show variety only`,
+      proof: sampleProof,
+    };
+  }
+
+  const idShape = new RegExp(generatorProof.idPattern);
+  const offShapeCount = ids.filter((id) => !idShape.test(id)).length;
+  if (offShapeCount > 0) {
+    return {
+      result: 'pending',
+      diagnostic:
+        `m1-id-shape-mismatch: ${offShapeCount} of ${ids.length} sampled ids do not match the proof id pattern ` +
+        `${generatorProof.idPattern}, so the proof does not describe the ids this run actually saw`,
+      proof: sampleProof,
+    };
+  }
+
+  if (siteVerification === undefined || !siteVerification.binaryPresent) {
+    return {
+      result: 'pending',
+      diagnostic:
+        'm1-proof-binary-absent: the binary this proof cites could not be read this run, so its ' +
+        `${generatorProof.sites.length} recorded sites stay unverified and the proof is a version string only`,
+      proof: sampleProof,
+    };
+  }
+  if (siteVerification.mismatchedSites.length > 0) {
+    return {
+      result: 'pending',
+      diagnostic:
+        `m1-proof-site-mismatch:${siteVerification.mismatchedSites.join(',')} -- the recorded bytes are not at those ` +
+        'offsets in the cited binary, so this proof does not describe the binary this run used',
+      proof: sampleProof,
+    };
+  }
+
+  // Past this point the proof is bound to real bytes, so it is the honest proof to report even
+  // for the two remaining pending outcomes below.
+  const verifiedProof = buildGeneratorEntropyProof(analysis, generatorProof, siteVerification);
+
+  if (generatorProof.bits < REQUIRED_ENTROPY_BITS) {
+    return {
+      result: 'pending',
+      diagnostic: `m1-generator-proof-under-64-bits: the inspected generator draws ${generatorProof.bits} bits from ${generatorProof.entropySource}, under the required ${REQUIRED_ENTROPY_BITS}`,
+      proof: verifiedProof,
+    };
+  }
+  if (analysis.sampleCount < MIN_SAMPLE_FOR_PASS) {
+    return {
+      result: 'pending',
+      diagnostic: `m1-sample-too-small: ${analysis.sampleCount} sampled id(s), under the ${MIN_SAMPLE_FOR_PASS} a distinctness claim needs`,
+      proof: verifiedProof,
+    };
+  }
+
+  return {
+    result: 'passed',
+    diagnostic:
+      `m1-passed: ${analysis.sampleCount} distinct ids all matching ${generatorProof.idPattern}, generated from ` +
+      `${generatorProof.bits} bits of ${generatorProof.entropySource} per the ${generatorProof.method}-verified proof for ` +
+      `${generatorProof.version} (${verifiedProof.sitesVerified} sites re-checked against the cited binary this run)`,
+    proof: verifiedProof,
   };
 }

@@ -7,6 +7,7 @@
 //
 // Usage: bun run tests/probes/m1-sample-report.ts <run-dir-glob> [<run-dir-glob> ...]
 import { analyzeIdSample, buildEntropyProof, collectAgentIds, judgeM1Sample } from './evidence-m1';
+import type { M1EntropyProof, M1SampleVerdict } from './evidence-m1';
 
 function expandGlobs(patterns: readonly string[], cwd: string): string[] {
   const dirs = new Set<string>();
@@ -32,8 +33,10 @@ export interface M1SampleReport {
   alphabet: string[];
   positionEntropyBits: number[];
   totalEntropyBitsEstimate: number;
-  proof: ReturnType<typeof buildEntropyProof>;
-  verdict: ReturnType<typeof judgeM1Sample>;
+  // Either proof shape: this multi-run report always builds the sample-only one, while
+  // judge-run.ts's single-run version of this same report can carry a generator-inspection proof.
+  proof: M1EntropyProof;
+  verdict: M1SampleVerdict;
 }
 
 /**

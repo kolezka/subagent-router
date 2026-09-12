@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { DEFAULT_REPLY_TEXT, startCaptureGateway } from '../support/capture-gateway';
 import type { CapturedRequest } from '../support/capture-gateway';
-import { isolatedHarnessEnv, judgeCodexDeny, judgeM1, judgeOpencodeHook, parseProbeArgs, summarizeEvidence, summarizeLifecycle } from './run';
+import { isolatedHarnessEnv, judgeCodexDeny, judgeOpencodeHook, parseProbeArgs, summarizeEvidence, summarizeLifecycle } from './run';
+import { analyzeIdSample, judgeM1 } from './evidence-m1';
 
 describe('capture gateway', () => {
   test('rejestruje model, nagłówek agenta i marker dziecka z body', async () => {
@@ -94,33 +95,30 @@ describe('summarizeEvidence', () => {
 });
 
 describe('probe evidence judges (fail-closed)', () => {
+  // judgeM1 lives in evidence-m1.ts, the single home of the M1 verdict. run.ts used to carry a
+  // second judgeM1 over capture-gateway aggregate counts alone; it was removed when the real
+  // generator-inspection judge landed, and these two tests keep guarding the same invariant it
+  // encoded: no amount of observed id variety substitutes for the generator proof.
   test('rejects-m1-identifier-variety-without-entropy-evidence', () => {
-    const evidence = summarizeEvidence([
-      capturedRequest({ agentId: 'agent-1', isChild: true }),
-      capturedRequest({ agentId: 'agent-2', isChild: true }),
-      capturedRequest({ agentId: 'agent-3', isChild: true }),
-    ]);
-    expect(evidence.distinctAgentIds).toBe(3);
-    expect(judgeM1(evidence, undefined)).toBe('pending');
-    expect(judgeM1(evidence, { source: 'crypto-random', sampleCount: 1 })).toBe('failed');
-    // sampleCount matching distinctAgentIds is still just an aggregate count match, not
-    // proof of real identity continuity or generator entropy, so this can never pass.
-    expect(judgeM1(evidence, { source: 'crypto-random', sampleCount: 3 })).toBe('pending');
+    const ids = ['a0f1e2d3c4b5a697', 'a1b2c3d4e5f60718', 'a29384756abcdef0'];
+    const analysis = analyzeIdSample(ids);
+    expect(analysis.distinctCount).toBe(3);
+
+    const verdict = judgeM1({ analysis, ids, observedVersion: '2.1.266' });
+    expect(verdict.result).toBe('pending');
+    expect(verdict.diagnostic).toContain('m1-no-generator-proof-for-2.1.266');
   });
 
   test('never-certifies-m1-passed-from-aggregate-counts-alone', () => {
-    // judgeM1 has no way to verify an EntropyProof is real: source is an unchecked string
-    // and sampleCount is an unchecked number, so no combination of inputs may reach 'passed'.
-    const emptyEvidence = { childRequests: 0, distinctAgentIds: 0, requestsByModel: {} };
-    expect(judgeM1(emptyEvidence, { source: '', sampleCount: 0 })).toBe('pending');
-    expect(judgeM1(emptyEvidence, { source: 'crypto-random', sampleCount: 0 })).toBe('pending');
-    const threeAgents = summarizeEvidence([
-      capturedRequest({ agentId: 'agent-1', isChild: true }),
-      capturedRequest({ agentId: 'agent-2', isChild: true }),
-      capturedRequest({ agentId: 'agent-3', isChild: true }),
-    ]);
-    expect(judgeM1(threeAgents, { source: 'crypto-random', sampleCount: 3 })).toBe('pending');
-    expect(judgeM1(threeAgents, { source: 'crypto-random', sampleCount: 100 })).toBe('pending');
+    // An empty sample and a clean ten-id sample (below minSampleForClaim, so no sample
+    // contradiction branch fires either) both stay pending while no generator proof exists.
+    const empty = judgeM1({ analysis: analyzeIdSample([]), ids: [], observedVersion: '2.1.266' });
+    expect(empty.result).not.toBe('passed');
+
+    const ids = Array.from({ length: 10 }, (_, index) => `a${(index * 0x1234_5678_9abc + 0xfedc_ba98).toString(16).padStart(16, '0')}`);
+    const verdict = judgeM1({ analysis: analyzeIdSample(ids), ids, observedVersion: '2.1.266' });
+    expect(verdict.result).toBe('pending');
+    expect(verdict.result).not.toBe('passed');
   });
 
   test('requires-opencode-hook-invocation-and-effective-model', () => {

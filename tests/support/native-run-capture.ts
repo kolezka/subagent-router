@@ -8,7 +8,12 @@
 // "everything genuine" shape.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { loadCapabilityProfile } from '../../src/adapters/capabilities';
+import type { ParentPromptPosition } from '../../src/core/types';
+import { realLayoutProfile } from '../probes/native-claude-handler';
 import { nativeContextBlockV1, nativeInstructionsBlockV2 } from './native-layout';
+
+const CAPABILITIES_FIXTURES = join(import.meta.dir, '..', 'fixtures', 'capabilities');
 
 export function syntheticMarkerLine(alias: string): string {
   return `<subagent-router v="1" model="${alias}"/>`;
@@ -58,6 +63,18 @@ export interface SyntheticRunCaptureOptions {
   // Overrides the version reported in the pre-handler request's user-agent header, independent
   // of clientVersion/profile.version, to create a mismatch.
   userAgentVersion?: string;
+  // Where the captured profile record comes from.
+  //
+  // 'synthetic' (default): the self-contained literal below. Cheap, and right for a capture whose
+  // clientVersion has no real fixture, but every measured field in it is a COPY that goes stale
+  // the moment the real fixture is narrowed. A copy that drifts shows up in extractM3AEvidence as
+  // an undeclared divergence and silently turns scaffoldDeclared false.
+  //
+  // 'real': the real claude-code-<clientVersion>.json fixture with realLayoutProfile's declared
+  // layout overrides on top, exactly as a PROBE_PROFILE_BASE=real run builds it. Every field the
+  // scaffold does not override then tracks the fixture by construction, so the only divergence is
+  // the declared scaffold and no later narrowing of a measured value can break the capture.
+  profileBase?: 'synthetic' | 'real';
   // Shallow-merged over the built profile object, applied last (so e.g. { version:
   // 'synthetic-hermetic' } overrides the profile's own version field).
   profilePatch?: Record<string, unknown>;
@@ -76,7 +93,8 @@ export async function writeSyntheticRunCapture(runDir: string, options: Syntheti
   const captureDir = join(runDir, 'capture');
   await mkdir(captureDir, { recursive: true });
 
-  const profile: Record<string, unknown> = {
+  const layoutPosition: ParentPromptPosition = layout === 'v2' ? 'after-native-context-v2' : 'after-native-context-v1';
+  const syntheticProfile: Record<string, unknown> = {
     client: 'claude-code',
     version: clientVersion,
     status: 'supported',
@@ -86,9 +104,14 @@ export async function writeSyntheticRunCapture(runDir: string, options: Syntheti
     adapterMarkerPosition: 'unknown',
     probes: { M10: 'passed', 'M3-A': 'passed' },
     lifecycle: { 'next-turn': 'passed', resume: 'passed', compaction: 'passed', nested: 'passed', parallel: 'passed' },
-    parentPromptPosition: layout === 'v2' ? 'after-native-context-v2' : 'after-native-context-v1',
-    ...options.profilePatch,
+    parentPromptPosition: layoutPosition,
   };
+  let baseProfile: Record<string, unknown> = syntheticProfile;
+  if (options.profileBase === 'real') {
+    const realFixture = await loadCapabilityProfile('claude-code', clientVersion, CAPABILITIES_FIXTURES);
+    baseProfile = realLayoutProfile(realFixture, layoutPosition) as unknown as Record<string, unknown>;
+  }
+  const profile: Record<string, unknown> = { ...baseProfile, ...options.profilePatch };
   await writeJson(join(captureDir, '001-profile.json'), profile);
 
   if (options.includeScaffoldManifest !== false) {

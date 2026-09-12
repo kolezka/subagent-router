@@ -82,32 +82,26 @@ export interface EntropyProof {
   // Optional fields carried by a statistical-sample proof (see evidence-m1.ts's
   // buildEntropyProof). distinctCount and totalEntropyBitsEstimate are the sample's own
   // measurements; generatorInspected is only ever true when a human has directly linked the id
-  // generator to a real >=64-bit entropy source (e.g. reading the compiled client bundle) --
+  // generator to a real >=64-bit entropy source by reading the compiled client bundle --
   // a statistical sample can never set it true on its own. limitation names why a sample-based
   // proof falls short.
   distinctCount?: number;
   totalEntropyBitsEstimate?: number;
   generatorInspected?: boolean;
   limitation?: string;
+  // Carried only by a generator-inspection proof (evidence-m1.ts's buildGeneratorEntropyProof):
+  // the generator's own bit count, the client version it was read out of, and how many of the
+  // proof's recorded byte sites still matched that binary, as 'n/m'.
+  bits?: number;
+  version?: string;
+  sitesVerified?: string;
 }
 
-/**
- * M1 (identifier variety/correlation) requires real entropy proof, not just distinct-looking
- * agent ids. Without a proof object there is nothing measured yet, so this fails closed to
- * 'pending' rather than assuming the variety observed is genuine entropy.
- */
-export function judgeM1(evidence: Evidence, entropyProof: EntropyProof | undefined): ProbeResult {
-  if (entropyProof === undefined) return 'pending';
-  if (entropyProof.sampleCount < evidence.distinctAgentIds) return 'failed';
-  // A proof that explicitly declares the generator was never inspected can never certify M1,
-  // no matter what else it claims: sample-based variety is not generator-entropy proof. This
-  // is redundant with the fact that no branch below ever returns 'passed' either, but it locks
-  // the intent explicitly so a future added 'passed' branch cannot accidentally bypass it.
-  if (entropyProof.generatorInspected === false) return 'pending';
-  // Aggregate counts alone cannot prove the required native behavior: sampleCount and
-  // distinctAgentIds matching is not identity-continuity or generator-entropy proof.
-  return 'pending';
-}
+// judgeM1 used to live here, judging M1 from capture-gateway aggregate counts (childRequests,
+// distinctAgentIds) plus an unchecked EntropyProof, and could never return 'passed'. It was
+// removed when the real judge landed in evidence-m1.ts: that one reads the run's own id sample
+// and a generator-inspection proof re-checked against the client binary, and it is the single
+// home of the M1 verdict so two judges can never disagree about the same run.
 
 export interface OpencodeHookEvidence {
   hookRegistered: boolean;

@@ -1196,15 +1196,37 @@ describe('correlation scaffold (PROBE_CORRELATION_SCAFFOLD=1, opt-in)', () => {
 
     // The property extractM3AEvidence relies on: a scaffolded run's manifest must still declare
     // every path its profile actually diverges on, or the run can never judge past 'pending'.
+    //
+    // The base is the real fixture with the three gate fields pinned to their closed values.
+    // Taking them as the fixture happens to have them would make the non-vacuity checks below
+    // depend on what 2.1.268 was last narrowed to: once a real run measures correlation true, the
+    // scaffold stops diverging on it and the check passes while proving nothing. Pinned closed,
+    // these assertions are about the scaffold.
     const realFixture = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
-    const scaffolded = realLayoutProfile(realFixture, 'after-native-context-v2', true);
-    const diverged = diffCapturedAgainstReal(scaffolded as unknown as Record<string, unknown>, realFixture as unknown as Record<string, unknown>);
-    const declared = new Set(scaffoldOverriddenPaths(true));
+    const closedGateBase: CapabilityProfile = {
+      ...realFixture,
+      correlation: false,
+      correlationEntropy: 'pending',
+      probes: { ...realFixture.probes, M1: 'pending' },
+    };
+    const asRecord = (profile: CapabilityProfile): Record<string, unknown> => profile as unknown as Record<string, unknown>;
 
-    expect(diverged.filter((path) => !pathIsDeclared(path, declared))).toEqual([]);
-    expect(diverged).toContain('correlation'); // non-vacuous: the real fixture has correlation false
-    // And the UNSCAFFOLDED list would not have covered it, so the extra declaration is load-bearing.
-    expect(diverged.filter((path) => !pathIsDeclared(path, new Set(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS)))).toContain('correlation');
+    const scaffolded = realLayoutProfile(closedGateBase, 'after-native-context-v2', true);
+    const unscaffolded = realLayoutProfile(closedGateBase, 'after-native-context-v2');
+
+    // The scaffold moves exactly the three correlation paths, no more and no fewer.
+    expect(diffCapturedAgainstReal(asRecord(scaffolded), asRecord(unscaffolded)).sort()).toEqual([...CORRELATION_SCAFFOLD_OVERRIDDEN_PATHS].sort());
+
+    // Every path the scaffolded profile diverges on from its base is covered by the declared list.
+    const diverged = diffCapturedAgainstReal(asRecord(scaffolded), asRecord(closedGateBase));
+    expect(diverged.filter((path) => !pathIsDeclared(path, new Set(scaffoldOverriddenPaths(true))))).toEqual([]);
+    for (const path of CORRELATION_SCAFFOLD_OVERRIDDEN_PATHS) expect(diverged).toContain(path);
+
+    // And the UNSCAFFOLDED list covers none of the three, so the extra declarations are the only
+    // thing keeping a scaffolded run judgeable: each one is load-bearing.
+    expect(diverged.filter((path) => !pathIsDeclared(path, new Set(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS))).sort()).toEqual(
+      [...CORRELATION_SCAFFOLD_OVERRIDDEN_PATHS].sort(),
+    );
   });
 });
 

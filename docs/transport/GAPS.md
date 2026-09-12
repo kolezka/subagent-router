@@ -411,7 +411,10 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   post-handler-upstream record at all), and the parent's `tool_result` for each child carries
   `API Error: 422 {"error":{"code":"missing-selection"}}`. `judgeLifecyclePhase('compaction')`
   returns `failed` with `compaction-later-request-not-forwarded`, and `lifecycle.compaction` is
-  recorded `failed` for 2.1.268. The marker-only path does not survive a compaction.
+  recorded `failed` for 2.1.268. The marker-only path does not survive a compaction. That
+  recorded verdict is historical, true only until 2026-09-12: this bullet stays the marker-only
+  measurement, and the fixture now records `lifecycle.compaction: passed` from a scaffold-free run
+  on the real profile, see the compaction pass bullet at the end of this file.
 
   What did survive: the post-compaction request carried the same `x-claude-code-agent-id` as before
   the boundary. A correlation binding keyed on that id is therefore the only known way to keep a
@@ -467,6 +470,9 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   mechanism built, RED first, and it is an operator decision: the operator has twice answered
   "idk" on M1. So the evidence above is recorded here and changes nothing in
   [../../tests/fixtures/capabilities/claude-code-2.1.268.json](../../tests/fixtures/capabilities/claude-code-2.1.268.json).
+  The clause that no mechanism can record a generator proof is historical, true only until
+  2026-09-12: the mechanism now exists and `M1` is `passed` for 2.1.268, see the M1 pass bullet at
+  the end of this file.
 
 - **Compaction under the agent-id correlation channel keeps both children on their upstream models
   on 2.1.268, and the pass is conditional on `M1`, so nothing is narrowed.** [verified] run
@@ -488,8 +494,9 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   `lifecycle.compaction: passed` for this run and reports `correlationScaffold: true`.
 
   Why this is NOT narrowed: the pass is conditional on `M1`. `writeCapabilityFixture` in
-  [../../tests/probes/fixture-writer.ts](../../tests/probes/fixture-writer.ts) now refuses to narrow
-  any lifecycle phase to `passed` from a run whose declared scaffold paths include `probes.M1`,
+  [../../tests/probes/fixture-writer.ts](../../tests/probes/fixture-writer.ts) now refuses to write
+  any gate-opening value (a lifecycle phase `passed`, `probes.M1: passed`, `correlation: true` or
+  `correlationEntropy: passed`) from a run whose declared scaffold paths include `probes.M1`,
   `correlation` or `correlationEntropy`, with the diagnostic `fixture-writer-correlation-scaffold`.
   So
   [../../tests/fixtures/capabilities/claude-code-2.1.268.json](../../tests/fixtures/capabilities/claude-code-2.1.268.json)
@@ -504,5 +511,67 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   `m3a-layout-envelope-mismatch: 10 of 20 child pairs`, because post-compaction requests have a
   compacted shape rather than the three-block first-message envelope. That is expected and says
   nothing about the layout claim; `M3-A` was measured on run `handler-yXSP4o`.
+
+- **`M1` is `passed` for 2.1.268: a version-bound generator proof exists, and the judge re-reads it
+  against the cited binary on every run.** [verified] `writeCapabilityFixture` narrowed
+  `probes.M1: passed`, `correlation: true` and `correlationEntropy: passed` into
+  [../../tests/fixtures/capabilities/claude-code-2.1.268.json](../../tests/fixtures/capabilities/claude-code-2.1.268.json)
+  from run `compaction-sbnVo0`, one `diagnostics` line per key (`measured:M1=passed`,
+  `measured:correlation=true`, `measured:correlationEntropy=passed`).
+
+  The mechanism the bullet above called missing is
+  [../../tests/fixtures/generator-proofs/claude-code-2.1.268.json](../../tests/fixtures/generator-proofs/claude-code-2.1.268.json),
+  which records the dd-verified sites with byte-exact offsets: the generator at 159684381
+  (`` let t=xn(8).toString("hex");return e?`a${e}-${t}`:`a${t}` ``), the
+  `randomBytes as xn}from"crypto"` import at 159683454, the spawn site
+  `Rn=U?.agentId?U.agentId:ty()` at 168068125, and the header attachment
+  `"x-claude-code-agent-id":_Mn(L.agentId)` at 166326486. These offsets differ slightly from the
+  ones quoted in the bullet above; the proof's are the byte-exact ones, and they are what the judge
+  checks.
+
+  `judgeM1` in [../../tests/probes/evidence-m1.ts](../../tests/probes/evidence-m1.ts) passes only
+  when all of this holds together: a proof exists for the client version the run observed, every
+  recorded site re-reads byte-exact from the cited binary during the judge run, the sampled ids
+  match `^a[0-9a-f]{16}$` with no collision and number at least two, and the generator draws at
+  least 64 bits. Anything short of that is `pending`; a sample can still fail M1 on its own, it can
+  never pass it on its own. On `compaction-sbnVo0` the judge reported 4 of 4 sites verified.
+  Negative control: shifting one recorded offset by a single byte gives
+  `m1-proof-site-mismatch:generator` and `pending`.
+
+  2.1.267 has no proof on purpose, because its compaction-continuity clause is unmeasured, so `M1`
+  stays `pending` there.
+
+- **`lifecycle.compaction` is `passed` for 2.1.268 on the REAL profile, with no correlation
+  scaffold.** [verified] run `tests/probes/.runs/compaction-3slJXF` (2026-09-12): the same pinned
+  binary and the same compaction mode as the failed `compaction-sbnVo0`, but against the narrowed
+  fixture above rather than a scaffolded claim. The run manifest records
+  `correlationScaffold: false`, and the declared scaffold paths are only the standard `status`,
+  `probes.M10`, `probes.M3-A`, `lifecycle.*` and `parentPromptPosition`. The correlation channel was
+  live from the fixture, not scaffolded.
+
+  Both children compacted three times each (three `compact_boundary` lines per child transcript).
+  Every post-compaction request (4 messages, history replaced, opening with the continuation
+  wrapper, no marker) was forwarded on the child's own upstream model: prefix ad015a on
+  `gateway/smart-worker`, prefix ab4f4f on `gateway/fast-worker`. 31 pre records and 31 post
+  records, so nothing was refused, and the parent decoded `PARENT_FINAL_OK`.
+  [../../tests/probes/judge-run.ts](../../tests/probes/judge-run.ts) returned
+  `compaction: passed`, and `writeCapabilityFixture` narrowed exactly `lifecycle.compaction: passed`
+  into the fixture with a `diagnostics` line naming the run; the earlier
+  `measured:lifecycle.compaction=failed;run=compaction-sbnVo0` line is preserved beside it.
+
+- **What the correlation channel costs in production, and what it cannot do.** [verified] direct
+  read of [../../src/adapters/correlation.ts](../../src/adapters/correlation.ts) and
+  `correlationStoreFor` in [../../src/transport/handler.ts](../../src/transport/handler.ts).
+  - Bindings live in memory, in a `Map` inside `CorrelationStore`, under an idle TTL of
+    `FRESHNESS_WINDOW_MS` that is refreshed on every use. A router restart drops every binding, and
+    a child whose next request falls outside the window is unbound again.
+  - The store is built only when the operator config sets `harness.claudeCode.correlation: auto`
+    and `assertCapability(profile, 'claude-correlation', { freshDelegation: false })` passes. With
+    no known lifecycle phase that call requires `status: supported` plus all five lifecycle phases
+    `passed`, so production gets no store at all until the profile is fully measured. It gets none
+    today.
+  - Every failure mode of the channel is a refusal, never a misroute: a marker that disagrees with
+    an existing binding throws `correlation-conflict` out of `bind` and is returned as a 422, and a
+    request carrying neither a marker nor a binding is refused `missing-selection`.
 
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

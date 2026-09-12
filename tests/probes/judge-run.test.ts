@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { judgeRun } from './judge-run';
 import { writeSyntheticRunCapture } from '../support/native-run-capture';
+import { SYNTHETIC_SITES, syntheticAgentIds, writeSyntheticGeneratorBinary, writeSyntheticGeneratorProof } from '../support/generator-proof-fixture';
 
 const FIXTURES = join(import.meta.dir, '..', 'fixtures', 'capabilities');
 
@@ -127,5 +128,87 @@ describe('judgeRun', () => {
     // actual seq numbers on disk, never assume a register present anywhere is good enough.
     expect(report.freshness.result).toBe('failed');
     expect(report.freshness.diagnostic).toContain('register-missing-or-late');
+  });
+});
+
+// Every test below passes an explicit generator-proofs directory holding a synthetic proof and a
+// few-hundred-byte stand-in binary. Nothing here ever opens the real pinned client binary.
+describe('judgeRun: probes.M1 and correlationEntropy', () => {
+  // A second child capture, so a run carries two distinct ids rather than the builder's one.
+  async function writeExtraChild(runDir: string, agentId: string): Promise<void> {
+    await writeFile(
+      join(runDir, 'capture', '005-child.json'),
+      JSON.stringify({ url: '/v1/messages', headers: { 'x-claude-code-agent-id': agentId }, body: { model: 'probe-parent-model', messages: [] } }),
+      'utf8',
+    );
+  }
+
+  async function setUpProofs(runDir: string, version: string, sites = SYNTHETIC_SITES, binaryName = 'fake-client-binary'): Promise<string> {
+    const binaryPath = join(runDir, binaryName);
+    await writeSyntheticGeneratorBinary(binaryPath);
+    const proofsDir = join(runDir, 'proofs');
+    await mkdir(proofsDir, { recursive: true });
+    await writeSyntheticGeneratorProof(proofsDir, { binaryPath, version, sites });
+    return proofsDir;
+  }
+
+  test('M1 stays pending with no generator proof for the observed client version, and correlationEntropy follows it', async () => {
+    await writeSyntheticRunCapture(dir, { clientVersion: '2.1.266' });
+    const emptyProofs = join(dir, 'proofs');
+    await mkdir(emptyProofs, { recursive: true });
+
+    const report = await judgeRun(dir, FIXTURES, emptyProofs);
+
+    expect(report.probes.M1).toBe('pending');
+    expect(report.correlationEntropy).toBe('pending');
+    expect(report.m1Sample.verdict.diagnostic).toContain('m1-no-generator-proof-for-2.1.266');
+    expect(report.m1Sample.proof.source).toBe('statistical-sample');
+  });
+
+  test('M1 passes when a verified generator proof for the observed version backs a clean, well-shaped id sample', async () => {
+    const [first, second] = syntheticAgentIds(2) as [string, string];
+    await writeSyntheticRunCapture(dir, { clientVersion: '2.1.268', agentId: first });
+    await writeExtraChild(dir, second);
+    const proofsDir = await setUpProofs(dir, '2.1.268');
+
+    const report = await judgeRun(dir, FIXTURES, proofsDir);
+
+    expect(report.probes.M1).toBe('passed');
+    expect(report.correlationEntropy).toBe('passed');
+    expect(report.m1Sample.sampleCount).toBe(2);
+    expect(report.m1Sample.proof.source).toBe('generator-inspection');
+    expect(report.m1Sample.proof.generatorInspected).toBe(true);
+    expect(report.m1Sample.proof.bits).toBe(64);
+    expect(report.m1Sample.proof.version).toBe('2.1.268');
+    expect(report.m1Sample.proof.sitesVerified).toBe('4/4');
+    // The pass changes nothing about the redaction posture: no raw agent id in the report.
+    expect(JSON.stringify(report)).not.toContain(first);
+    expect(JSON.stringify(report)).not.toContain(second);
+  });
+
+  test('a proof site that no longer matches the binary keeps M1 pending and names the site', async () => {
+    const [first, second] = syntheticAgentIds(2) as [string, string];
+    await writeSyntheticRunCapture(dir, { clientVersion: '2.1.268', agentId: first });
+    await writeExtraChild(dir, second);
+    const shifted = SYNTHETIC_SITES.map((site) => (site.name === 'spawn' ? { ...site, offset: site.offset + 1 } : site));
+    const proofsDir = await setUpProofs(dir, '2.1.268', shifted);
+
+    const report = await judgeRun(dir, FIXTURES, proofsDir);
+
+    expect(report.probes.M1).toBe('pending');
+    expect(report.correlationEntropy).toBe('pending');
+    expect(report.m1Sample.verdict.diagnostic).toContain('m1-proof-site-mismatch:spawn');
+  });
+
+  test('an id that does not match the proof id pattern keeps M1 pending even with every site verified', async () => {
+    // The builder's default id 'agent-synthetic-1' is not the a+16-hex shape the proof declares.
+    await writeSyntheticRunCapture(dir, { clientVersion: '2.1.268' });
+    await writeExtraChild(dir, syntheticAgentIds(1)[0] as string);
+    const proofsDir = await setUpProofs(dir, '2.1.268');
+
+    const report = await judgeRun(dir, FIXTURES, proofsDir);
+
+    expect(report.probes.M1).toBe('pending');
+    expect(report.m1Sample.verdict.diagnostic).toContain('m1-id-shape-mismatch');
   });
 });
