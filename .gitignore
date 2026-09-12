@@ -2,6 +2,7 @@
 .env.*
 node_modules/
 dist/
+.build-history/
 coverage/
 .DS_Store
 /tests/probes/.runs/
