@@ -8,33 +8,76 @@ import { runClaudeSubagentStartHook } from '../../src/transport/claude-hook';
 import { createHandler, signFreshDelegation } from '../../src/transport/handler';
 import type { CapabilityProfile, FetchLike, FreshDelegationEnvelope } from '../../src/core/types';
 import { configFixture, FIXTURE_MODEL_ID, snapshotFixture } from '../support/fixtures';
-import type { CapturedPair, RunCapture } from './evidence-m3a';
-import { extractLifecycleEvidence, judgeLifecyclePhase, summarizeM10 } from './evidence-m10';
+import type { CapturedHttpMessage, CapturedPair, CapturedUnforwardedRequest, RunCapture } from './evidence-m3a';
+import { COMPACTION_SUMMARY_PREFIX, extractLifecycleEvidence, judgeLifecyclePhase, summarizeM10 } from './evidence-m10';
 import type { RunManifest } from './evidence-m10';
 import { extractFreshnessEvidence, hashNonce, judgeM10Freshness } from './evidence-freshness';
 import type { DelegationConsumeRecord, DelegationRegisterRecord, DelegationReplayRecord, FreshnessCapture, InstanceFetchRecord } from './evidence-freshness';
 
 // ---------- lifecycle: hand-built captures, no disk, no live server ----------
 
-function pair(seq: number, agentId: string, opts: { upstreamModel?: string; clientModel?: string; parentAgentId?: string; compactBoundary?: boolean } = {}): CapturedPair {
-  const preHeaders: Record<string, string> = { 'x-claude-code-agent-id': agentId };
-  if (opts.parentAgentId !== undefined) preHeaders['x-claude-code-parent-agent-id'] = opts.parentAgentId;
-  const preBody: Record<string, unknown> = { model: opts.clientModel ?? 'probe-parent-model' };
-  if (opts.compactBoundary === true) preBody.marker = 'compact_boundary';
+// How pair() spells a compaction signal in the pre-handler body. 'wrapper-string' is what the
+// real client sends after a compaction: one user message whose content is a plain string opening
+// with COMPACTION_SUMMARY_PREFIX. 'wrapper-blocks' is the same wrapper as a text block. The other
+// two are negative controls: the transcript-only 'compact_boundary' literal, which never reaches a
+// request body, and the wrapper quoted mid-sentence, which is someone talking about a compaction
+// rather than one happening.
+type CompactionSignal = 'wrapper-string' | 'wrapper-blocks' | 'legacy-marker' | 'wrapper-mid-text';
+
+const SUMMARY_WRAPPER = `${COMPACTION_SUMMARY_PREFIX} The summary below covers the earlier portion of the conversation.\n\nThe child had read one file and reported back.`;
+
+function applyCompactionSignal(body: Record<string, unknown>, signal: CompactionSignal): void {
+  if (signal === 'legacy-marker') {
+    body.marker = 'compact_boundary';
+    body.messages = [{ role: 'user', content: 'carry on' }];
+    return;
+  }
+  const content =
+    signal === 'wrapper-string'
+      ? SUMMARY_WRAPPER
+      : signal === 'wrapper-blocks'
+        ? [{ type: 'text', text: SUMMARY_WRAPPER }]
+        : [{ type: 'text', text: `The operator asked what "${SUMMARY_WRAPPER}" means.` }];
+  body.messages = [{ role: 'user', content }];
+}
+
+interface PreOptions {
+  clientModel?: string;
+  parentAgentId?: string;
+  compactBoundary?: boolean;
+  compactionSignal?: CompactionSignal;
+}
+
+function pre(agentId: string, opts: PreOptions): CapturedHttpMessage {
+  const headers: Record<string, string> = { 'x-claude-code-agent-id': agentId };
+  if (opts.parentAgentId !== undefined) headers['x-claude-code-parent-agent-id'] = opts.parentAgentId;
+  const body: Record<string, unknown> = { model: opts.clientModel ?? 'probe-parent-model' };
+  const signal = opts.compactionSignal ?? (opts.compactBoundary === true ? 'wrapper-string' : undefined);
+  if (signal !== undefined) applyCompactionSignal(body, signal);
+  return { url: '/v1/messages', headers, body };
+}
+
+function pair(seq: number, agentId: string, opts: PreOptions & { upstreamModel: string }): CapturedPair {
   return {
     seq,
     agentId,
-    pre: { url: '/v1/messages', headers: preHeaders, body: preBody },
+    pre: pre(agentId, opts),
     post: {
       url: 'http://127.0.0.1:1/v1/messages',
       headers: { 'x-claude-code-agent-id': agentId },
-      body: opts.upstreamModel !== undefined ? { model: opts.upstreamModel } : {},
+      body: { model: opts.upstreamModel },
     },
   };
 }
 
-function capture(pairs: CapturedPair[]): RunCapture {
-  return { runDir: 'in-memory', profileRaw: {}, pairs, hookAgentIds: new Set() };
+// A request the handler refused: the capture holds its pre-handler record and no upstream record
+// at all, which is what a 422 missing-selection actually looks like on disk.
+function refused(seq: number, agentId: string, opts: PreOptions = {}): CapturedUnforwardedRequest {
+  return { seq, agentId, pre: pre(agentId, opts) };
+}
+
+function capture(pairs: CapturedPair[], unforwarded: CapturedUnforwardedRequest[] = []): RunCapture {
+  return { runDir: 'in-memory', profileRaw: {}, pairs, unforwarded, hookAgentIds: new Set() };
 }
 
 function manifest(patch: Partial<RunManifest> = {}): RunManifest {
@@ -108,6 +151,81 @@ describe('evidence-m10: extractLifecycleEvidence + judgeLifecyclePhase', () => {
 
     // Positive control: identical evidence, only the declared mode differs.
     expect(judgeLifecyclePhase('compaction', evidence, manifest({ mode: 'compaction', phasesExercised: ['compaction'] })).result).toBe('passed');
+  });
+
+  const compactionRun = manifest({ mode: 'compaction', phasesExercised: ['compaction'] });
+
+  test('lifecycle-compaction-passes-on-a-later-continuation-wrapper-in-string-content', () => {
+    // The real shape on the wire: after a compaction the child's next request opens with one
+    // user message whose content is a plain string, not an array of blocks.
+    const cap = capture([
+      pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' }),
+      pair(2, 'agent-1', { upstreamModel: 'gateway/fast-worker', compactionSignal: 'wrapper-string' }),
+    ]);
+    const preBody = cap.pairs[1]!.pre.body as { messages: Array<{ content: unknown }> };
+    expect(typeof preBody.messages[0]!.content).toBe('string');
+    expect(judgeLifecyclePhase('compaction', extractLifecycleEvidence(cap), compactionRun).result).toBe('passed');
+  });
+
+  test('lifecycle-compaction-passes-on-a-later-continuation-wrapper-in-a-text-block', () => {
+    const cap = capture([
+      pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' }),
+      pair(2, 'agent-1', { upstreamModel: 'gateway/fast-worker', compactionSignal: 'wrapper-blocks' }),
+    ]);
+    expect(judgeLifecyclePhase('compaction', extractLifecycleEvidence(cap), compactionRun).result).toBe('passed');
+  });
+
+  test('lifecycle-compaction-pending-on-the-transcript-only-compact-boundary-literal', () => {
+    // The literal lives in the transcript, never in a request body, so a body carrying it and
+    // nothing else is not evidence that a compaction happened on this wire.
+    const cap = capture([
+      pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' }),
+      pair(2, 'agent-1', { upstreamModel: 'gateway/fast-worker', compactionSignal: 'legacy-marker' }),
+    ]);
+    const judgement = judgeLifecyclePhase('compaction', extractLifecycleEvidence(cap), compactionRun);
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain('compaction-requires-observed-compact-boundary');
+  });
+
+  test('lifecycle-compaction-pending-when-the-wrapper-is-not-at-the-start-of-the-text', () => {
+    // Quoted mid-sentence: someone talking about a compaction, not a compacted history.
+    const cap = capture([
+      pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' }),
+      pair(2, 'agent-1', { upstreamModel: 'gateway/fast-worker', compactionSignal: 'wrapper-mid-text' }),
+    ]);
+    const judgement = judgeLifecyclePhase('compaction', extractLifecycleEvidence(cap), compactionRun);
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain('compaction-requires-observed-compact-boundary');
+  });
+
+  test('lifecycle-compaction-fails-when-the-post-compaction-request-is-refused', () => {
+    // The measured 2.1.268 shape. The compacted history dropped the channel-A marker, the handler
+    // refused the child's next request with 422 missing-selection, and a refused request is never
+    // forwarded, so the capture holds a pre-handler record with no upstream record beside it.
+    const cap = capture(
+      [pair(1, 'agent-1', { upstreamModel: 'gateway/fast-worker' })],
+      [refused(2, 'agent-1', { compactionSignal: 'wrapper-string' })],
+    );
+    const evidence = extractLifecycleEvidence(cap);
+    expect(evidence.get('agent-1')!.map((e) => e.seq)).toEqual([1, 2]);
+    const judgement = judgeLifecyclePhase('compaction', evidence, compactionRun);
+    expect(judgement.result).toBe('failed');
+    expect(judgement.diagnostic).toContain('compaction-later-request-not-forwarded');
+  });
+
+  test('lifecycle-compaction-does-not-count-a-refused-first-request-as-a-later-request', () => {
+    // laterRequestNotForwarded deliberately skips entry 0: an agent whose very first observed
+    // request was refused was never routed at all, which is not the same failure as losing a
+    // child that was already routed.
+    const cap = capture(
+      [pair(2, 'agent-1', { upstreamModel: 'gateway/fast-worker', compactionSignal: 'wrapper-string' })],
+      [refused(1, 'agent-1', { compactionSignal: 'wrapper-string' })],
+    );
+    const evidence = extractLifecycleEvidence(cap);
+    const list = evidence.get('agent-1')!;
+    expect(list.map((e) => e.seq)).toEqual([1, 2]);
+    expect(list[0]!.upstreamModel).toBeUndefined();
+    expect(judgeLifecyclePhase('compaction', evidence, compactionRun).result).toBe('passed');
   });
 
   test('lifecycle-pending-when-phase-not-declared', () => {

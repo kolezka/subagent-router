@@ -101,6 +101,21 @@ describe('evidence-m3a: readRunCapture + extractM3AEvidence + judgeM3A', () => {
     expect(diverged).not.toContain('diagnostics');
   });
 
+  test('reads-a-refused-request-into-unforwarded-without-disturbing-pairs', async () => {
+    // A request the handler refused has a pre-handler record and no upstream record. It must not
+    // become a pair (nothing was forwarded), and it must not vanish either: dropping it is what
+    // hid the lost-child failure from the lifecycle judge.
+    await writeSyntheticRunCapture(dir, { agentId: 'agent-refused', includeRefusedRequest: true });
+    const capture = await readRunCapture(dir);
+    expect(capture.pairs).toHaveLength(1);
+    expect(capture.pairs[0]!.seq).toBe(2);
+    expect(capture.unforwarded).toHaveLength(1);
+    expect(capture.unforwarded[0]!.seq).toBe(4);
+    expect(capture.unforwarded[0]!.agentId).toBe('agent-refused');
+    // M3-A reads pairs only, so its verdict is untouched by the refused request.
+    expect(judgeM3A(await extractM3AEvidence(capture, FIXTURES))).toBe('passed');
+  });
+
   test('pending-when-no-child-pairs', async () => {
     await writeSyntheticRunCapture(dir, { includePair: false });
     const capture = await readRunCapture(dir);

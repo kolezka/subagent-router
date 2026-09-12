@@ -36,6 +36,9 @@ export interface SyntheticRunCaptureOptions {
   // false: write no NNN-pre-handler.json / post-handler-upstream.json pair at all -- exercises
   // the "no child pairs" path.
   includePair?: boolean;
+  // true: write one extra 004-pre-handler.json with no 005-post-handler-upstream.json beside it,
+  // which is what a request the handler refused (422, never forwarded) looks like on disk.
+  includeRefusedRequest?: boolean;
   // false: omit the NNN-profile-scaffold.json sibling entirely.
   includeScaffoldManifest?: boolean;
   // Overrides the manifest's declared paths. Defaults to DEFAULT_SCAFFOLD_OVERRIDDEN_PATHS.
@@ -129,6 +132,11 @@ export async function writeSyntheticRunCapture(runDir: string, options: Syntheti
   };
   const postBody = { model: 'gateway/fast-worker', messages: [userMessage(postPrefixBlocks, postPayload)] };
   await writeJson(join(captureDir, '003-post-handler-upstream.json'), { url: 'http://127.0.0.1:1/v1/messages', headers: postHeaders, body: postBody });
+
+  if (options.includeRefusedRequest === true) {
+    const refusedBody = { model: 'probe-parent-model', messages: [userMessage(prefixBlocks, promptLine)] };
+    await writeJson(join(captureDir, '004-pre-handler.json'), { url: '/v1/messages', headers: preHeaders, body: refusedBody });
+  }
 
   if (options.includeHookRecord !== false) {
     const hook = {
