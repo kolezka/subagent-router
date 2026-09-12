@@ -1,0 +1,5 @@
+{
+  "description": "Review the implementation for correctness.",
+  "subagent_type": "general-purpose",
+  "prompt": "<subagent-router v=\"1\" model=\"sol\"/>\nReview the implementation for correctness. Report only actionable findings."
+}

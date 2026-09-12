@@ -6,6 +6,7 @@ import type {
   CapabilityProfile,
   ClientId,
   LifecyclePhase,
+  ParentPromptPosition,
   ProbeResult,
   TransportCapabilityProfile,
   TrustedLifecycleContext,
@@ -118,6 +119,7 @@ async function readFixtureFile(path: string, fixtureName: string): Promise<ReadF
 const PROBE_RESULTS: readonly ProbeResult[] = ['passed', 'failed', 'pending'];
 const PROFILE_STATUSES: readonly CapabilityProfile['status'][] = ['pending', 'supported', 'unsupported'];
 const MARKER_POSITIONS: readonly CapabilityProfile['adapterMarkerPosition'][] = ['system', 'first-user', 'b2', 'unknown'];
+const PARENT_PROMPT_POSITIONS: readonly ParentPromptPosition[] = ['first-text', 'after-native-context-v1', 'after-native-context-v2'];
 
 function isProbeResult(value: unknown): value is ProbeResult {
   return typeof value === 'string' && (PROBE_RESULTS as readonly string[]).includes(value);
@@ -161,6 +163,13 @@ function validateCapabilityProfile(value: unknown, client: ClientId, version: st
   if (typeof record.adapterMarkerPosition !== 'string' || !MARKER_POSITIONS.includes(record.adapterMarkerPosition as CapabilityProfile['adapterMarkerPosition'])) {
     throw schemaError(fixtureName, 'adapterMarkerPosition is missing or invalid');
   }
+  let parentPromptPosition: ParentPromptPosition | undefined;
+  if (record.parentPromptPosition !== undefined) {
+    if (typeof record.parentPromptPosition !== 'string' || !PARENT_PROMPT_POSITIONS.includes(record.parentPromptPosition as ParentPromptPosition)) {
+      throw schemaError(fixtureName, 'parentPromptPosition is invalid');
+    }
+    parentPromptPosition = record.parentPromptPosition as ParentPromptPosition;
+  }
   if (typeof record.probes !== 'object' || record.probes === null) {
     throw schemaError(fixtureName, 'probes is missing or not an object');
   }
@@ -200,6 +209,7 @@ function validateCapabilityProfile(value: unknown, client: ClientId, version: st
     correlationEntropy: record.correlationEntropy,
     fork: record.fork,
     adapterMarkerPosition: record.adapterMarkerPosition as CapabilityProfile['adapterMarkerPosition'],
+    ...(parentPromptPosition !== undefined ? { parentPromptPosition } : {}),
     probes,
     lifecycle,
     ...(diagnostics !== undefined ? { diagnostics } : {}),

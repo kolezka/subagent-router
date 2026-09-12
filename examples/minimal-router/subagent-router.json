@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "modelSource": {
+    "sourceId": "operator-gateway",
+    "baseUrlEnv": "ROUTER_GATEWAY_URL",
+    "endpointPath": "/v1/models",
+    "authEnv": "ROUTER_MODELS_AUTH",
+    "headersEnv": [],
+    "timeoutMs": 10000,
+    "fetchLimit": 1000,
+    "staleAfterSeconds": 86400
+  },
+  "modelOverrides": {
+    "gpt-5.6-terra": {
+      "alias": "terra",
+      "description": "Fast implementation worker.",
+      "enabled": true
+    },
+    "gpt-5.6-sol": {
+      "alias": "sol",
+      "description": "Independent review worker.",
+      "enabled": true
+    }
+  },
+  "roles": {},
+  "defaults": {
+    "child": null,
+    "unmarkedSubagent": "error"
+  },
+  "agentRoots": {
+    "claude-code": { "configRoot": null },
+    "opencode": { "configRoot": null },
+    "codex": { "configRoot": null }
+  },
+  "gateway": {
+    "urlEnv": "ROUTER_GATEWAY_URL",
+    "headersEnv": ["ROUTER_GATEWAY_HEADERS"]
+  },
+  "harness": {
+    "claudeCode": { "correlation": "auto", "secretEnv": "ROUTER_SECRET" },
+    "opencode": { "providerId": "operator-gateway" },
+    "codex": { "emitModelCatalog": false }
+  }
+}

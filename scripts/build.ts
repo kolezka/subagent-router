@@ -15,11 +15,15 @@
  *     advertised `types` path; and `bunx tsc` would fetch whatever version the registry serves
  *     today instead of the one in the lockfile.
  */
-import { chmod, cp, mkdir, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { chmod, cp, mkdir, readdir, rename } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { basename, dirname, join, resolve } from 'node:path';
 
 const ROOT = join(import.meta.dir, '..');
-const DIST = join(ROOT, 'dist');
+const BUILD_OUTPUT_DIR = process.env.BUILD_OUTPUT_DIR;
+const USE_DEFAULT_DESTINATION = BUILD_OUTPUT_DIR === undefined;
+const DIST = USE_DEFAULT_DESTINATION ? join(ROOT, 'dist') : resolve(ROOT, BUILD_OUTPUT_DIR);
+const BUILD_HISTORY = join(ROOT, '.build-history');
 
 interface Entrypoint {
   /** Source module, relative to the repository root. */
@@ -66,6 +70,21 @@ async function assertSourcesPresent(): Promise<void> {
   }
 }
 
+async function prepareDestination(): Promise<void> {
+  if (basename(DIST) !== 'dist') fail(`build: output directory must be named dist, got ${DIST}`);
+  try {
+    const entries = await readdir(DIST);
+    if (entries.length > 0) {
+      if (!USE_DEFAULT_DESTINATION) fail(`build: output directory must be new or empty, refusing to overwrite ${DIST}`);
+      await mkdir(BUILD_HISTORY, { recursive: true });
+      await rename(DIST, join(BUILD_HISTORY, `dist-${Date.now()}-${randomUUID()}`));
+    }
+  } catch (error) {
+    if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+  }
+  await mkdir(DIST, { recursive: true });
+}
+
 async function bundle(entry: Entrypoint): Promise<void> {
   const result = await Bun.build({
     entrypoints: [join(ROOT, entry.source)],
@@ -97,7 +116,7 @@ async function emitDeclarations(): Promise<void> {
   if (!(await Bun.file(tsc).exists())) {
     fail('build: node_modules/.bin/tsc is missing. Run `bun install` first; the build never fetches a compiler.');
   }
-  const proc = Bun.spawn([tsc, '-p', join(ROOT, 'tsconfig.build.json')], {
+  const proc = Bun.spawn([tsc, '-p', join(ROOT, 'tsconfig.build.json'), '--outDir', join(DIST, 'types')], {
     cwd: ROOT,
     stdout: 'pipe',
     stderr: 'pipe',
@@ -123,8 +142,7 @@ async function copyCapabilityProfiles(): Promise<void> {
 
 async function main(): Promise<void> {
   await assertSourcesPresent();
-  await rm(DIST, { recursive: true, force: true });
-  await mkdir(DIST, { recursive: true });
+  await prepareDestination();
 
   for (const entry of ENTRYPOINTS) await bundle(entry);
   await emitDeclarations();

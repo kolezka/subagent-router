@@ -1,4 +1,4 @@
-import type { CapabilityProfile } from '../core/types';
+import type { CapabilityProfile, ParentPromptPosition } from '../core/types';
 
 export type ParsedMarker = { kind: 'parent'; alias: string } | { kind: 'adapter'; role: string; agent: string; token: string };
 
@@ -174,6 +174,90 @@ async function scanSystemAdapterMarkers(
   return hits;
 }
 
+// Native context scaffold, layout v1, as measured on Claude Code 2.1.266: the client puts its
+// own context (memory files, date) into text block 0 of the first user message as one or more
+// complete <system-reminder> sections, and the parent's delegation prompt into block 1. Only
+// the boundaries are pinned here: the wrapper lines, the harness lead-in sentence and at least
+// one "# name" context header per section. Nothing may precede the first opener or follow the
+// last closer except blank lines, and sections never nest. This is format recognition of a
+// public wrapper, not authentication; the trust model of channel A is unchanged.
+const NATIVE_CONTEXT_OPEN = '<system-reminder>';
+const NATIVE_CONTEXT_CLOSE = '</system-reminder>';
+const NATIVE_CONTEXT_LEAD_IN = "As you answer the user's questions, you can use the following context:";
+const NATIVE_CONTEXT_HEADER = /^# [A-Za-z]/;
+
+export function isNativeContextScaffoldV1(text: string): boolean {
+  const lines = text.split('\n');
+  let index = 0;
+  let sections = 0;
+  while (index < lines.length) {
+    // Blank lines are allowed before, between and after sections; never inside the grammar
+    // as anything else.
+    if (lines[index] === '') {
+      index += 1;
+      continue;
+    }
+    if (lines[index] !== NATIVE_CONTEXT_OPEN || lines[index + 1] !== NATIVE_CONTEXT_LEAD_IN) return false;
+    index += 2;
+    let headers = 0;
+    let closed = false;
+    for (; index < lines.length; index += 1) {
+      const line = lines[index] as string;
+      if (line === NATIVE_CONTEXT_CLOSE) {
+        closed = true;
+        index += 1;
+        break;
+      }
+      if (line.includes(NATIVE_CONTEXT_OPEN) || line.includes(NATIVE_CONTEXT_CLOSE)) return false;
+      if (NATIVE_CONTEXT_HEADER.test(line)) headers += 1;
+    }
+    if (!closed || headers === 0) return false;
+    sections += 1;
+  }
+  return sections > 0;
+}
+
+// Native instructions block, layout v2, as measured on Claude Code 2.1.268: the client moves its
+// own context scaffold down to text block 1 and puts the operator's instruction files into block
+// 0 as exactly ONE complete <system-reminder> section, leaving the parent's delegation prompt in
+// block 2. Only the boundaries are pinned: the wrapper lines, the instructions lead-in and at
+// least one "# name" header inside. The lead-in is matched as a PREFIX because the real client
+// continues that same line with further sentences. Nothing may precede the opener or follow the
+// closer except blank lines, the section never nests, and there is never more than one of them.
+// Format recognition of a public wrapper, not authentication; the trust model of channel A is
+// unchanged.
+const NATIVE_INSTRUCTIONS_LEAD_IN = 'Codebase and user instructions are shown below.';
+
+export function isNativeInstructionsBlockV2(text: string): boolean {
+  const lines = text.split('\n');
+  let index = 0;
+  while (index < lines.length && lines[index] === '') index += 1;
+  if (lines[index] !== NATIVE_CONTEXT_OPEN) return false;
+  const leadIn = lines[index + 1];
+  if (leadIn === undefined || !leadIn.startsWith(NATIVE_INSTRUCTIONS_LEAD_IN)) return false;
+  index += 2;
+
+  let headers = 0;
+  let closed = false;
+  for (; index < lines.length; index += 1) {
+    const line = lines[index] as string;
+    if (line === NATIVE_CONTEXT_CLOSE) {
+      closed = true;
+      index += 1;
+      break;
+    }
+    if (line.includes(NATIVE_CONTEXT_OPEN) || line.includes(NATIVE_CONTEXT_CLOSE)) return false;
+    if (NATIVE_CONTEXT_HEADER.test(line)) headers += 1;
+  }
+  if (!closed || headers === 0) return false;
+
+  // Exactly one section: past the closer only blank lines are part of the grammar.
+  for (; index < lines.length; index += 1) {
+    if (lines[index] !== '') return false;
+  }
+  return true;
+}
+
 function firstAuthorizedUserMessage(messages: unknown): { message: Record<string, unknown>; index: number } | undefined {
   if (!Array.isArray(messages)) return undefined;
   for (let i = 0; i < messages.length; i += 1) {
@@ -224,6 +308,7 @@ export async function extractMarkers(
   agentId: string | undefined,
   secret: string | undefined,
   adapterMarkerPosition: CapabilityProfile['adapterMarkerPosition'] = 'system',
+  parentPromptPosition: ParentPromptPosition = 'first-text',
 ): Promise<ExtractedMarkers> {
   const stripped = structuredClone(body);
   const totalMarkerLines = countMarkerLines(body);
@@ -306,10 +391,12 @@ export async function extractMarkers(
       }
     }
 
+    let legacyLineWasMarker = false;
     if (text !== undefined && updateStrippedText) {
       const line = firstLine(text);
       const classification = await classifyPositionTwo(line, agentId, secret, adapterMarkerPosition);
       if (classification) {
+        legacyLineWasMarker = true;
         if (classification.kind === 'parent' && classification.alias !== undefined) {
           explicitAliases.push(classification.alias);
           accepted += 1;
@@ -322,6 +409,63 @@ export async function extractMarkers(
           }
         } else if (classification.kind === 'invalid') {
           if (markerError === undefined) markerError = 'invalid-marker';
+        }
+      }
+    }
+
+    // Alternate parent-only slot: exactly the measured two-text-block envelope, block 0 a
+    // recognized native context scaffold, marker on the first line of block 1. The legacy
+    // slot keeps precedence; block 0 is forwarded untouched; signed adapter markers are never
+    // honoured here regardless of adapterMarkerPosition.
+    if (!legacyLineWasMarker && parentPromptPosition === 'after-native-context-v1' && Array.isArray(content) && content.length === 2) {
+      const [contextBlock, payloadBlock] = content;
+      if (isTextBlock(contextBlock) && isTextBlock(payloadBlock) && isNativeContextScaffoldV1(contextBlock.text)) {
+        const parsed = parseMarker(firstLine(payloadBlock.text));
+        if (parsed === 'invalid') {
+          if (markerError === undefined) markerError = 'invalid-marker';
+        } else if (parsed !== null && parsed.kind === 'parent') {
+          explicitAliases.push(parsed.alias);
+          accepted += 1;
+          const strippedMessages = stripped.messages;
+          if (Array.isArray(strippedMessages)) {
+            const target = strippedMessages[userHit.index];
+            const targetContent = typeof target === 'object' && target !== null ? (target as Record<string, unknown>).content : undefined;
+            const targetPayload = Array.isArray(targetContent) ? targetContent[1] : undefined;
+            if (isTextBlock(targetPayload)) (targetPayload as { text: string }).text = stripFirstLine(payloadBlock.text);
+          }
+        }
+      }
+    }
+
+    // Alternate parent-only slot, layout v2: exactly the measured three-text-block envelope --
+    // block 0 the recognized operator-instructions block, block 1 the same recognized context
+    // scaffold v1 pins, marker on the first line of block 2. Every other rule is v1's: the legacy
+    // slot keeps precedence, blocks 0 and 1 are forwarded untouched, and signed adapter markers
+    // are never honoured here regardless of adapterMarkerPosition. Each layout matches only its
+    // own block count, so a v1 profile never reads a three-block message and a v2 profile never
+    // reads a two-block one.
+    if (!legacyLineWasMarker && parentPromptPosition === 'after-native-context-v2' && Array.isArray(content) && content.length === 3) {
+      const [instructionsBlock, contextBlock, payloadBlock] = content;
+      if (
+        isTextBlock(instructionsBlock) &&
+        isTextBlock(contextBlock) &&
+        isTextBlock(payloadBlock) &&
+        isNativeInstructionsBlockV2(instructionsBlock.text) &&
+        isNativeContextScaffoldV1(contextBlock.text)
+      ) {
+        const parsed = parseMarker(firstLine(payloadBlock.text));
+        if (parsed === 'invalid') {
+          if (markerError === undefined) markerError = 'invalid-marker';
+        } else if (parsed !== null && parsed.kind === 'parent') {
+          explicitAliases.push(parsed.alias);
+          accepted += 1;
+          const strippedMessages = stripped.messages;
+          if (Array.isArray(strippedMessages)) {
+            const target = strippedMessages[userHit.index];
+            const targetContent = typeof target === 'object' && target !== null ? (target as Record<string, unknown>).content : undefined;
+            const targetPayload = Array.isArray(targetContent) ? targetContent[2] : undefined;
+            if (isTextBlock(targetPayload)) (targetPayload as { text: string }).text = stripFirstLine(payloadBlock.text);
+          }
         }
       }
     }

@@ -1,38 +1,43 @@
-# Dokumentacja
+# Documentation
 
-Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja pierwszego PoC. Pełne wsparcie natywnych klientów wymaga osobnych pomiarów.
+`subagent-router` now provides a working packaged Claude Code router. The supported Claude Code 2.1.268 and 2.1.269 profiles route selected children to distinct configured upstream models while preserving the parent model and exercised child lifecycle continuity.
 
-## Aktualny stan
+Start with the [minimal two-model example](../examples/minimal-router/README.md). It uses `terra` and `sol` aliases, environment-only gateway settings, and `bun run build`.
 
-- Specyfikacja: [pełny draft routingu modeli subagentów](superpowers/specs/2026-09-06-subagent-model-routing-design.md), rewizja 5 z 2026-09-08. Zachowuje wymagania, decyzje D1-D11, pomiary M1-M10 i kontrakty katalogu, read-only ról oraz CLI. Doprecyzowuje granice router / KB / gateway / przyszły runtime, transparentny transport bez obowiązkowego AI SDK i bramki walidacji runtime adapterów. Rewizja 5 wskazuje zewnętrzną bramę, docelowo `9router` lub OmniRoute, jako właściciela rozmowy z dostawcą i zakazuje zależności od `@the-next-ai/ai-gateway`. Nie opisuje zaimplementowanego runtime ani ponownie wykonanych pomiarów.
-- Plan implementacji: [plan TDD routingu modeli subagentów](superpowers/plans/2026-09-06-subagent-model-routing.md), rewizja 3 z 2026-09-08, nadal draft do przeglądu. Zachowuje identyfikatory i zależności piętnastu zadań z cyklem RED/GREEN/REFACTOR oraz metodę `superpowers:subagent-driven-development`. Rozdziela zakresy modułów i mapuje doprecyzowane wymagania na sekcje specu, zadania i testy. Wykonanie trwa. Pierwszym celem jest pion HTTP dla Claude Code; pozostałe zadania pozostają w planie.
-- Kod rdzenia, atomowego store, adaptera markerów i handlera HTTP istnieje. Wyniki lokalne nie są dowodem wsparcia realnego klienta.
-- [Instrukcja PoC](poc.md): lokalne demo i konfiguracja zewnętrznej bramy.
-- CLI (`src/cli/*`, `src/agents/export.ts`) is implemented locally: read-only inspection plus
-  writes (`models sync`, `models describe`, `config export`, `doctor --connect`, `serve`). See
-  [cli/README.md](cli/README.md). Native client integration remains unmeasured; see
-  [cli/GAPS.md](cli/GAPS.md).
+## Run the packaged router
 
-## Mapa dokumentacji
+Build the package, then start the bundled CLI with an operator-owned configuration:
 
-- [CONVENTIONS.md](CONVENTIONS.md): zasady statusów, dowodów i linkowania.
-- [gateways/cliproxyapi.md](gateways/cliproxyapi.md): kontrakt HTTP CLIProxyAPI i testy loopback; natywne wsparcie klienta nadal pending.
-- [cli/](cli/README.md): documentation block (README, CONTRACTS, INVARIANTS, GAPS, OPERATIONS) for
-  `src/cli/*` and `src/agents/export.ts`.
-- [core/](core/README.md), [catalog/](catalog/README.md), [agents/](agents/README.md),
-  [transport/](transport/README.md): the same five-file documentation block for those source
-  directories, from a separate integration slice.
-- Every block above carries `verified_against` with the commit its claims were checked against
-  (file by file, test by test); a later commit is not covered until the stamp is refreshed.
-- [measurements/claude-code-2.1.263-partial.md](measurements/claude-code-2.1.263-partial.md):
-  przegląd historycznych artefaktów parent/child dla Claude Code 2.1.263. To jest przegląd
-  zapisanych danych, nie nowy pomiar natywny ani promocja wsparcia; M1, M3/M3-B2, M4, M10 i
-  freshness pozostają niepotwierdzone.
-- `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
-- `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
+```bash
+bun run build
+bun dist/cli.js serve \
+  --config <operator-config> \
+  --claude-version 2.1.269 \
+  --host 127.0.0.1 \
+  --port <port>
+```
 
-## Docelowe bloki po wdrożeniu
+The configuration, its adjacent `models.lock.json` snapshot, and the configured gateway must already exist. The command does not create credentials or modify native client configuration.
 
-Dopiero gdy powstanie działający, zweryfikowany blok, jego dokumentacja będzie zawierać pięć plików: `README`, `CONTRACTS`, `INVARIANTS`, `GAPS` i `OPERATIONS`. W razie potrzeb może dojść `DECISIONS`. `cli/`, `core/`, `catalog/`, `agents/` i `transport/` (opisane powyżej) są takimi blokami; każdy ma `verified_against` ze sprawdzonym commitem.
+Builds are non-destructive. A custom `BUILD_OUTPUT_DIR` must name a new or empty `dist` directory. Repeated default builds archive the previous `dist` under ignored `.build-history`.
 
-Te bloki nie są tworzone dla samego draftu. Nie zastępują ich spekulatywne opisy ani deklaracje weryfikacji nieistniejącego kodu.
+## Reproduce the local packaged check
+
+The opt-in loopback check starts the built `dist/cli.js serve` package and uses a scripted local provider. It verifies routing and lifecycle behavior, not paid-model quality.
+
+```bash
+PROBE_PACKAGED_SERVE=1 \
+PROBE_PACKAGED_CAPABILITY_PROFILE=/absolute/path/to/claude-code-2.1.268.json \
+PROBE_CLAUDE_BIN=/absolute/path/to/claude/versions/2.1.268 \
+PROBE_PHASES_EXERCISED=resume \
+PROBE_RESUME_EXISTING_CHILD=1 \
+bash tests/probes/native-claude-run.sh resume
+```
+
+## Current evidence and limits
+
+On 2026-09-12, packaged-serve checks exercised `handler-ezphM0`, `next-turn-iscAxQ`, `nested-IWrTVw`, `compaction-Sroc4G`, and accepted resume `resume-0FieA7`. They used the pinned real Claude Code 2.1.268 client, recording proxy, built package, Bun raw fetch transport, and scripted loopback upstream. Each recorded expected routing, completion, executable identity, and capture pairing. The resume check observed the same child ids on both sides of the parent resume through native `SendMessage`; M3-A and explicit zero scaffold declaration also passed.
+
+Direct native checks were recorded separately in `resume-3STpCB`, `next-turn-RKA2N4`, `nested-a4QSXS`, and `compaction-WH9nKg`. They establish the measured 2.1.268 profile for the exercised routes. Claude Code 2.1.269 was subsequently checked with the same driver: `next-turn-wqfgz6` (next-turn and parallel), `nested-eHKU2Q`, `compaction-ffSI2i`, and `resume-bEB1Q3` passed through packaged `serve`. No routing-code change was required. M2 is failed on 2.1.268 and unmeasured on 2.1.269; M3, M3-B2, M4, M10-freshness, and their dependent channels remain closed. Correlation bindings are in memory, expire after idle TTL, and do not survive a router restart.
+
+See [transport/GAPS.md](transport/GAPS.md) for boundaries and historical measurements, and [cli/README.md](cli/README.md) for the command reference.
