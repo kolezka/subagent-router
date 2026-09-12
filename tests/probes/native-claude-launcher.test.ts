@@ -419,6 +419,12 @@ test("compaction mode's child scripting reuses the forced-Read channel with more
   expect(script.indexOf("PROBE_CHILD_READ_ROUNDS=2")).toBeGreaterThan(dispatchGuard);
   expect(script.match(/PROBE_CHILD_READ_ROUNDS=/g) ?? []).toHaveLength(1); // never leaks into another mode
 
+  // The client does not estimate context from the transcript, it sums the usage on the last
+  // assistant message carrying one, so the reported usage is what actually moves the estimate.
+  // 5000 clears the roughly 800 token threshold with margin and stays well under the window.
+  expect(script.indexOf("PROBE_CHILD_USAGE_INPUT_TOKENS=5000")).toBeGreaterThan(dispatchGuard);
+  expect(script.match(/^\s+PROBE_CHILD_USAGE_INPUT_TOKENS=/gm) ?? []).toHaveLength(1); // compaction only
+
   // The Read tool must actually be grantable for both forced-Read modes, via one shared predicate.
   expect(script).toContain('uses_child_read() { [ "$MODE" = "next-turn" ] || [ "$MODE" = "compaction" ]; }');
   expect(script).toContain("if uses_child_read; then\n  ALLOW_JSON='[\"Agent\", \"Read\"]'");
