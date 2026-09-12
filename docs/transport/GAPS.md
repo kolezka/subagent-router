@@ -354,4 +354,28 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   the lifecycle phase unknown, `assertCapability` still requires all five phases `passed`, so
   `resume` and `compaction` keep the path closed for 2.1.268 even once `status` and `M10` move.
 
+- **M2 is `failed` for 2.1.268: the `Agent` tool's `model` parameter rejects a full model id
+  before any child request is made.** [verified] four `delegate` runs on 2026-09-11 against the
+  pinned binary `/Users/me/.local/share/claude/versions/2.1.268` (every parent request reports
+  `claude-cli/2.1.268`), via the plain capture gateway `tests/probes/native-claude-gateway.mjs`,
+  which gained one opt-in knob, `PROBE_AGENT_MODEL`, that puts a value into the scripted `Agent`
+  call's `model` parameter. Control without the knob (`delegate-TPrwMe`): both children ran and
+  their `clientModel` came from the agent frontmatter aliases (`claude-haiku-4-5-20251001`,
+  `claude-sonnet-5`). Positive control with the alias `haiku` in the parameter (`delegate-J6ctNL`):
+  both children ran on `claude-haiku-4-5-20251001`, so the parameter does override frontmatter.
+  Full ids (`delegate-8EiyAy` with `gateway/probe-full-id`, `delegate-IiHhdB` with
+  `claude-haiku-4-5-20251001`): the client returned a `tool_result` with `is_error: true` and
+  `InputValidationError ... "code": "invalid_value", "values": ["sonnet","opus","haiku","fable"],
+  "path": ["model"]` for both calls, `subagent_stats.spawned` 0, zero child requests captured,
+  parent still decoded `PARENT_ROUNDTRIP_OK`. The rejection is local schema validation, not an
+  upstream error: the tool schema in the captured request declares `model` as an enum of those four
+  aliases, and the same enum is in the binary (`Y(["sonnet","opus","haiku","fable"]).optional()` at
+  offset 168183014). So the spec's M2 question is answered negatively: a parent cannot select an
+  arbitrary upstream model natively, `clientModel` is limited to alias classes, and the router's
+  marker channel remains the only per-child model selection path. `writeCapabilityFixture` set
+  exactly `probes.M2: failed` in
+  [../../tests/fixtures/capabilities/claude-code-2.1.268.json](../../tests/fixtures/capabilities/claude-code-2.1.268.json)
+  with one `diagnostics` entry naming both failing runs. Not measured: whether frontmatter `model`
+  accepts a full id (the docs say yes; M2 as specified is about the call parameter), and 2.1.267.
+
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

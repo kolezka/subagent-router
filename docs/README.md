@@ -107,6 +107,14 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   other than the already-passing `M3-A` stay `pending`, so this is not a support promotion, and the
   production `claude-marker` gate still refuses 2.1.268 child requests at the `status` check. Full
   capture detail in [transport/GAPS.md](transport/GAPS.md).
+- 2026-09-11: `M2` measured `failed` for 2.1.268. The `Agent` tool's `model` parameter is a
+  schema enum of four aliases; a full model id (`gateway/probe-full-id`, `claude-haiku-4-5-20251001`)
+  is rejected client-side with `InputValidationError` and no child is spawned, while the alias
+  `haiku` in the same parameter does override the agent frontmatter. So native per-child model
+  selection is limited to alias classes and the marker channel stays the only arbitrary-model path.
+  `writeCapabilityFixture` set exactly `probes.M2: failed` in
+  [../tests/fixtures/capabilities/claude-code-2.1.268.json](../tests/fixtures/capabilities/claude-code-2.1.268.json);
+  nothing else changed. Details in [transport/GAPS.md](transport/GAPS.md).
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 
