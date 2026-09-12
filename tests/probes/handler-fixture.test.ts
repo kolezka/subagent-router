@@ -970,3 +970,177 @@ describe('channel-A handler fixture: routed-child usage reporting (childUsageInp
     expect(usageOf(behindFirst)).toEqual({ input_tokens: 8, output_tokens: 1 });
   });
 });
+
+describe('channel-A handler fixture: compaction summarizer replies (answerCompactionSummaries, opt-in)', () => {
+  const READ_FILE = '/tmp/probe-child-read-fixture.txt';
+
+  // The shape the client's reactive compactor actually sends, as observed on 2.1.268: the routed
+  // child's own model and agent id, the pending tool_result still attached, and a text block
+  // carrying the compaction prompt appended to that same user message.
+  const COMPACTION_PROMPT =
+    'CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\nProvide an <analysis> block, then a <summary> block.';
+
+  function childRequest(alias: string, agentId: string): Request {
+    return new Request('http://router.local/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-claude-code-agent-id': agentId },
+      body: JSON.stringify(buildChildRequest(alias, 'task')),
+    });
+  }
+
+  function messageStartOf(events: Array<{ event: string; data: Record<string, unknown> }>): Record<string, unknown> {
+    const start = events.find((e) => e.event === 'message_start');
+    if (start === undefined) throw new Error('no message_start event in stream');
+    return (start.data as { message: Record<string, unknown> }).message;
+  }
+
+  function continuationBody(alias: string, toolUseId: string, trailingText?: string): Record<string, unknown> {
+    const base = buildChildRequest(alias, 'task') as { messages: unknown[] };
+    const userContent: unknown[] = [{ type: 'tool_result', tool_use_id: toolUseId, content: [{ type: 'text', text: 'file contents' }] }];
+    if (trailingText !== undefined) userContent.push({ type: 'text', text: trailingText });
+    return {
+      ...base,
+      messages: [
+        ...base.messages,
+        { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: { file_path: READ_FILE } }] },
+        { role: 'user', content: userContent },
+      ],
+    };
+  }
+
+  function continuation(alias: string, agentId: string, toolUseId: string, trailingText?: string): Request {
+    return new Request('http://router.local/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-claude-code-agent-id': agentId },
+      body: JSON.stringify(continuationBody(alias, toolUseId, trailingText)),
+    });
+  }
+
+  test('default inert: a summarizer-shaped request with the option absent still gets the forced Read tool_use', async () => {
+    // This is the behaviour that killed the measurement, kept on purpose so every existing mode
+    // stays byte-identical. Only the opt-in changes it.
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const agentId = 'agent-summary-absent';
+    const { handler } = await createHandlerFixture({ childReadFilePath: READ_FILE, childReadRounds: 4 });
+
+    const first = await decodeSse(await handler(childRequest(agent.alias, agentId)));
+    const firstId = reassembleToolUseBlocks(first)[0]!.id;
+
+    const summarizer = await decodeSse(await handler(continuation(agent.alias, agentId, firstId, COMPACTION_PROMPT)));
+    expect(reassembleToolUseBlocks(summarizer)).toHaveLength(1); // a Read, exactly as before
+    expect(textOf(summarizer)).not.toContain('<summary>');
+  });
+
+  test('when enabled, the summarizer gets a text summary and no tool_use, and the request is still captured', async () => {
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const agentId = 'agent-summary-enabled';
+    const { handler, seen } = await createHandlerFixture({
+      childReadFilePath: READ_FILE,
+      childReadRounds: 4,
+      answerCompactionSummaries: true,
+    });
+
+    const first = await decodeSse(await handler(childRequest(agent.alias, agentId)));
+    const firstId = reassembleToolUseBlocks(first)[0]!.id;
+
+    const summarizer = await decodeSse(await handler(continuation(agent.alias, agentId, firstId, COMPACTION_PROMPT)));
+    expect(reassembleToolUseBlocks(summarizer)).toHaveLength(0); // the compactor rejects a tool_use reply
+    expect(textOf(summarizer)).toContain('<summary>');
+    expect(textOf(summarizer)).toContain('PROBE_COMPACTION_SUMMARY');
+    expect(textOf(summarizer)).toContain('<analysis>');
+    expect(stopReasonOf(summarizer)).toBe('end_turn');
+    // The model must survive untouched, same reason the usage tests give: a model matching an
+    // internal client constant makes the assistant message get ignored.
+    expect(messageStartOf(summarizer).model).toBe(agent.upstreamModel);
+
+    // Answered like any other upstream request, so the run's pre/post capture pair covers it.
+    expect(seen).toHaveLength(2);
+    expect(seen[1]?.headers['x-claude-code-agent-id']).toBe(agentId);
+    expect(seen[1]?.body.model).toBe(agent.upstreamModel);
+  });
+
+  test('answering a summarizer neither consumes a Read round nor clears the pending tool_use', async () => {
+    // The compactor forks the child's turn, so the child's own next request still answers the SAME
+    // pending id. With 2 rounds configured the echo must land on the third normal request; had the
+    // summarizer counted as a round it would arrive one request early, and had it cleared the
+    // pending id the child's next request would be treated as a fresh first one instead.
+    const agent = CHANNEL_A_AGENTS[1]!;
+    const agentId = 'agent-summary-bookkeeping';
+    const { handler } = await createHandlerFixture({
+      childReadFilePath: READ_FILE,
+      childReadRounds: 2,
+      answerCompactionSummaries: true,
+    });
+
+    const first = await decodeSse(await handler(childRequest(agent.alias, agentId)));
+    const firstId = reassembleToolUseBlocks(first)[0]!.id;
+
+    await decodeSse(await handler(continuation(agent.alias, agentId, firstId, COMPACTION_PROMPT)));
+
+    // The child's own turn resumes against the id issued before the fork.
+    const second = await decodeSse(await handler(continuation(agent.alias, agentId, firstId)));
+    const secondUses = reassembleToolUseBlocks(second);
+    expect(secondUses).toHaveLength(1); // round 1 of 2, not the echo
+    expect(secondUses[0]!.id).not.toBe(firstId);
+
+    const third = await decodeSse(await handler(continuation(agent.alias, agentId, secondUses[0]!.id)));
+    expect(reassembleToolUseBlocks(third)).toHaveLength(0); // round 2 of 2: the echo, right on time
+    expect(textOf(third)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+  });
+
+  test('with a single round, the pending id still resolves to the echo after a summarizer', async () => {
+    // Sharpest form of the "pending survives" check: a cleared pending would make this a fresh
+    // first request and produce another tool_use instead of the echo.
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const agentId = 'agent-summary-pending';
+    const { handler } = await createHandlerFixture({ childReadFilePath: READ_FILE, answerCompactionSummaries: true });
+
+    const first = await decodeSse(await handler(childRequest(agent.alias, agentId)));
+    const firstId = reassembleToolUseBlocks(first)[0]!.id;
+
+    await decodeSse(await handler(continuation(agent.alias, agentId, firstId, COMPACTION_PROMPT)));
+
+    const second = await decodeSse(await handler(continuation(agent.alias, agentId, firstId)));
+    expect(reassembleToolUseBlocks(second)).toHaveLength(0);
+    expect(textOf(second)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+  });
+
+  test('a normal child request is unaffected when the option is enabled', async () => {
+    // The detector is the last user message's text blocks, so an ordinary answered Read round,
+    // which carries a tool_result and no text block, must keep its existing behaviour.
+    const agent = CHANNEL_A_AGENTS[1]!;
+    const agentId = 'agent-summary-normal';
+    const { handler } = await createHandlerFixture({
+      childReadFilePath: READ_FILE,
+      childReadRounds: 3,
+      answerCompactionSummaries: true,
+    });
+
+    const first = await decodeSse(await handler(childRequest(agent.alias, agentId)));
+    expect(reassembleToolUseBlocks(first)).toHaveLength(1);
+    const firstId = reassembleToolUseBlocks(first)[0]!.id;
+
+    const second = await decodeSse(await handler(continuation(agent.alias, agentId, firstId)));
+    expect(reassembleToolUseBlocks(second)).toHaveLength(1); // still the forced Read flow
+    expect(textOf(second)).not.toContain('<summary>');
+  });
+
+  test('a trailing text block that is not the compaction prompt is not treated as a summarizer', async () => {
+    // Both literals are required. A user turn that merely carries text must not be able to make the
+    // fixture skip a Read round.
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const agentId = 'agent-summary-foreign-text';
+    const { handler } = await createHandlerFixture({
+      childReadFilePath: READ_FILE,
+      childReadRounds: 3,
+      answerCompactionSummaries: true,
+    });
+
+    const first = await decodeSse(await handler(childRequest(agent.alias, agentId)));
+    const firstId = reassembleToolUseBlocks(first)[0]!.id;
+
+    const notSummarizer = await decodeSse(await handler(continuation(agent.alias, agentId, firstId, 'please keep going')));
+    expect(reassembleToolUseBlocks(notSummarizer)).toHaveLength(1);
+    expect(textOf(notSummarizer)).not.toContain('<summary>');
+  });
+});

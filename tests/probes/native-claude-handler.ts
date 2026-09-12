@@ -198,6 +198,16 @@ export interface HandlerFixtureOptions {
   // the large usage applies from the first reply, byte-identical to before this option existed.
   // Counted per agent id from the same map childReadRounds uses, never by request order.
   childUsageRampAfterRounds?: number;
+  // Opt-in (the launcher's `compaction` mode only): answer the client's own compaction summarizer
+  // with text instead of the next forced Read. When the reactive compactor fires it sends a request
+  // that looks exactly like an answered Read round (same agent id, same model, the pending
+  // tool_result still attached) but whose last user message carries the compaction prompt. The
+  // compactor then takes the last assistant message that has a text block, so a tool_use-only reply
+  // is rejected as "empty summary text" and no compact_boundary is ever produced. This request is a
+  // fork of the child's turn, not part of it, so answering it must not consume a Read round or
+  // clear that agent's pending tool_use. Absent (the default), a summarizer request falls through
+  // to the existing forced-Read path exactly as before.
+  answerCompactionSummaries?: boolean;
   // Opt-in (the launcher's `resume` mode only): when a parent turn arrives whose tool_results
   // are all for ids this fixture already finalized, treat it as a resumed session replaying the
   // prior round's history and force a FRESH Agent delegation (new tool_use ids) instead of ending
@@ -380,6 +390,38 @@ function extractToolResultsWithIndex(body: Record<string, unknown>): ExtractedTo
   return results;
 }
 
+// Both literals come from the client's own compaction prompt, as observed on Claude Code 2.1.268:
+// the instruction line the compactor prepends, and the tag it asks the summary to be wrapped in.
+// They are the whole detector, so a future client rewording stops matching and the fixture answers
+// a summarizer with a tool_use again -- which the client reports as "empty summary text", never as
+// a quietly passing run.
+const COMPACTION_PROMPT_MARKERS = ['Respond with TEXT ONLY', '<summary>'] as const;
+
+// The compaction summarizer request arrives on the routed child's own model and agent id, with the
+// pending tool_result still attached, so only the last user message's text blocks distinguish it
+// from an ordinary answered Read round.
+function isCompactionSummaryRequest(body: Record<string, unknown>): boolean {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (!isRecord(message) || message.role !== 'user') continue;
+    const content = message.content;
+    if (!Array.isArray(content)) return false;
+    return content.some((block) => {
+      if (!isRecord(block) || block.type !== 'text' || typeof block.text !== 'string') return false;
+      const text = block.text;
+      return COMPACTION_PROMPT_MARKERS.every((marker) => text.includes(marker));
+    });
+  }
+  return false;
+}
+
+// What the fixture summarises a routed child's conversation to. The <analysis> then <summary>
+// shape is what the client's compaction prompt asks for; it trims the first text block and reads
+// the <summary> one, so both tags have to be here.
+const COMPACTION_SUMMARY_TEXT =
+  '<analysis>probe</analysis>\n<summary>PROBE_COMPACTION_SUMMARY: routed child conversation summarised by the loopback fixture.</summary>';
+
 // True when a user-role message (a genuine new turn, not another tool_result) follows the given
 // message index. This is the resume signal: a retried final request ends at its tool_results,
 // while a resumed session replays those tool_results and then sends a fresh user turn.
@@ -528,6 +570,15 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
       const childInputTokens = () => childUsageFor(childAgentId);
       const childEcho = () =>
         new Response(textSse(body.model, `CHILD_SAW_MODEL=${String(body.model)}`, childInputTokens()), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+
+      // Compaction summarizer (answerCompactionSummaries set, the launcher's `compaction` mode
+      // only): answered here, ahead of every other child branch, because the compactor forks the
+      // child's turn rather than advancing it. Falling through would consume a Read round and clear
+      // the pending tool_use, so the child's own next request would arrive with a tool_result this
+      // fixture no longer recognises. Nothing is recorded or cleared on this path on purpose.
+      if (options.answerCompactionSummaries === true && isCompactionSummaryRequest(body)) {
+        return new Response(textSse(body.model, COMPACTION_SUMMARY_TEXT, childInputTokens()), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }
 
       // Nested delegation (nestedDelegatingAgent set, the launcher's `nested` mode only): the
       // FIRST routed request from the delegating child (matched by its forwarded model, keyed by
@@ -736,6 +787,11 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   const parsedChildUsageRampAfterRounds = Number.parseInt(process.env.PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS ?? '', 10);
   const childUsageRampAfterRounds = Number.isInteger(parsedChildUsageRampAfterRounds) && parsedChildUsageRampAfterRounds > 0 ? parsedChildUsageRampAfterRounds : undefined;
 
+  // Opt-in (the launcher's compaction mode only): answer the client's compaction summarizer with
+  // text instead of the next forced Read. See HandlerFixtureOptions.answerCompactionSummaries for
+  // why a tool_use reply there kills the compaction. Empty/unset for every other mode.
+  const answerCompactionSummaries = process.env.PROBE_ANSWER_COMPACTION_SUMMARIES === '1';
+
   // Opt-in (the launcher's resume mode only): lets a resumed parent turn re-delegate instead of
   // ending. See HandlerFixtureOptions.resumeReDelegate for why this must never be inferred from
   // request shape. Empty/unset for every other mode.
@@ -777,6 +833,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
     ...(childReadRounds !== undefined ? { childReadRounds } : {}),
     ...(childUsageInputTokens !== undefined ? { childUsageInputTokens } : {}),
     ...(childUsageRampAfterRounds !== undefined ? { childUsageRampAfterRounds } : {}),
+    ...(answerCompactionSummaries ? { answerCompactionSummaries: true } : {}),
     ...(resumeReDelegate ? { resumeReDelegate: true } : {}),
     ...(nestedDelegatingAgent !== undefined ? { nestedDelegatingAgent } : {}),
   });
