@@ -329,6 +329,13 @@ fi
 # actually drops the fire threshold to roughly 800 tokens counted over conversation messages.
 # DISABLE_COMPACT and DISABLE_AUTO_COMPACT must stay UNSET here: auto-compaction is opt-out only,
 # so naming either of them at all would turn off the very thing this mode exists to measure.
+#
+# This branch also asks the client to write its own debug log, because a run that produces no
+# compact_boundary cannot otherwise be told apart from one where the decision never fired. The
+# client logs "autocompact: tokens=N level=..." at every check: level=compact means the decision
+# fired and the failure is downstream, level=ok means the injected usage never moved the estimate,
+# and no line at all means the check never ran. The log sink is pinned inside $RUN so it stays
+# with the rest of the run's evidence; the client rotates to cli-debug.1.txt in the same dir.
 if [ "$MODE" = "compaction" ]; then
   # Same reasoning as resume: this branch carries no SUBAGENT_ROUTER_SECRET, so running the
   # production freshness hook here would silently drop the secret the hook needs to sign a
@@ -353,6 +360,7 @@ if [ "$MODE" = "compaction" ]; then
       CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000 \
       CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1 \
       "$TIMEOUT" 90 "$CLAUDE_BIN" \
+        --debug-file "$RUN/cli-debug.txt" \
         -p "$PROMPT" --output-format json \
       >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
   )

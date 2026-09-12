@@ -408,6 +408,30 @@ test("compaction mode sets both auto-compaction env vars for the client and neve
   expect(script).not.toMatch(/DISABLE_AUTO_COMPACT=/);
 });
 
+test("compaction mode alone asks the client for a debug log, pinned inside the run dir", () => {
+  // The autocompact decision line only reaches disk when the client's debug logging is on, and
+  // --debug-file both turns it on and chooses the sink. It must stay scoped to this branch: every
+  // other mode would gain an unrelated log file and a behaviour change it was never measured with.
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+
+  const compactionBranch = script.lastIndexOf('if [ "$MODE" = "compaction" ]; then');
+  expect(compactionBranch).toBeGreaterThan(-1);
+  const branchEnd = script.indexOf("\nelif is_handler_like", compactionBranch);
+  expect(branchEnd).toBeGreaterThan(compactionBranch);
+  const branch = script.slice(compactionBranch, branchEnd);
+
+  expect(branch).toContain('--debug-file "$RUN/cli-debug.txt"');
+  // Anchored to the continuation-line indentation, so the prose above the branch that names the
+  // flag is not counted as a use. Exactly one use, and it is the one inside this branch.
+  expect(script.match(/^\s+--debug-file /gm) ?? []).toHaveLength(1);
+  expect(script.indexOf('--debug-file "$RUN/cli-debug.txt"')).toBeGreaterThan(compactionBranch);
+  expect(script.indexOf('--debug-file "$RUN/cli-debug.txt"')).toBeLessThan(branchEnd);
+
+  // The sink lives in $RUN next to cli-stderr.txt, never under $HOME or $CLAUDE_CONFIG_DIR where
+  // the isolated run dir would not keep it.
+  expect(script).not.toMatch(/--debug-file "\$(HOMEDIR|CFG|WORK)/);
+});
+
 test("compaction mode's child scripting reuses the forced-Read channel with more than one round", () => {
   const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
   expect(script).toContain("simple|delegate|handler|next-turn|resume|nested|compaction");
