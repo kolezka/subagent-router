@@ -5,7 +5,7 @@ import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RouterError } from '../../src/core/errors';
-import { loadResumeProof, RESUME_NO_CONTINUATION_CLAIM, verifyResumeProofAgainstBinary } from './resume-proof';
+import { loadResumeProof, RESUME_INSPECTION_CLAIM, verifyResumeProofAgainstBinary } from './resume-proof';
 import { SYNTHETIC_RESUME_SITES, writeSyntheticResumeBinary, writeSyntheticResumeProof } from '../support/resume-proof-fixture';
 
 const REAL_PROOFS = join(import.meta.dir, '..', 'fixtures', 'resume-proofs');
@@ -34,8 +34,8 @@ describe('loadResumeProof: the recorded 2.1.268 evidence', () => {
     const proof = await loadOrThrow('claude-code', '2.1.268', REAL_PROOFS);
 
     expect(proof.method).toBe('dd');
-    expect(proof.claim).toBe(RESUME_NO_CONTINUATION_CLAIM);
-    expect(proof.claim).toBe('ordinary-resume-never-continues-a-child');
+    expect(proof.claim).toBe(RESUME_INSPECTION_CLAIM);
+    expect(proof.claim).toBe('takeover-continuation-sites-inspected');
     expect(proof.continuationPath).toBe('takeover-handoff');
     // The one path that continues a child with its old id was read, never exercised. Recording
     // that as false is what keeps the resume verdict honest about its own limit.

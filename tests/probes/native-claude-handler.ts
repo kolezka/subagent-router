@@ -13,6 +13,7 @@
 //
 // Run: RUN_NATIVE_PROBES=1 bun tests/probes/native-claude-handler.ts
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { loadCapabilityProfile } from '../../src/adapters/capabilities';
@@ -249,6 +250,8 @@ export interface HandlerFixtureOptions {
   // child reuses its x-claude-code-agent-id across the boundary is the real client's behavior to
   // prove, never something this fixture synthesizes.
   resumeReDelegate?: boolean;
+  // Use captured child ids with SendMessage, not fresh Agent delegations, after parent resume.
+  resumeExistingChild?: boolean;
   // Opt-in (the launcher's `nested` mode only): names the ONE child agent that is allowed to
   // delegate. When set, the FIRST routed request from that child (identified by its forwarded
   // model landing on that agent's own upstream model, keyed by x-claude-code-agent-id, never by
@@ -368,6 +371,29 @@ function nestedAgentToolUseSse(model: unknown, toolUseId: string, targetAgent: (
     ['message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 10 } }],
     ['message_stop', { type: 'message_stop' }],
   ]);
+}
+
+interface ResumeTarget {
+  agentId: string;
+  model: string;
+  before: number;
+}
+
+function resumeToolSse(model: unknown, targets: readonly ResumeTarget[], stage: 'message' | 'wait'): string {
+  const events: Array<readonly [string, Record<string, unknown>]> = [
+    ['message_start', { type: 'message_start', message: { id: `msg_resume_${stage}`, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }],
+  ];
+  targets.forEach((target, index) => {
+    const input = stage === 'message'
+      ? { to: target.agentId, message: 'Continue the same task and report the model echo.', summary: 'Continue the existing probe child' }
+      : { task_id: target.agentId, block: true, timeout: 10000 };
+    events.push(['content_block_start', { type: 'content_block_start', index, content_block: { type: 'tool_use', id: `toolu_resume_${stage}_${index}`, name: stage === 'message' ? 'SendMessage' : 'TaskOutput', input: {} } }]);
+    events.push(['content_block_delta', { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } }]);
+    events.push(['content_block_stop', { type: 'content_block_stop', index }]);
+  });
+  events.push(['message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 20 } }]);
+  events.push(['message_stop', { type: 'message_stop' }]);
+  return sseFrom(events);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -573,6 +599,9 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
   // a purely shape-based check would re-delegate forever. A resumed session makes exactly one new
   // delegation, then its round completes normally.
   let resumeReDelegated = false;
+  let resumeTargets: ResumeTarget[] = [];
+  let resumeStage: 'message' | 'wait' | undefined;
+  const observedChildIds = new Map<string, string>();
 
   const upstreamFetch: FetchLike = async (request) => {
     const raw = await request.text();
@@ -604,6 +633,7 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
       // Gated on the header, not just on isRoutedChild: only a request the client itself marked as
       // a child may get the inflated usage. undefined leaves every builder on its own default.
       const childAgentId = record.headers['x-claude-code-agent-id'];
+      if (childAgentId !== undefined && !observedChildIds.has(String(body.model))) observedChildIds.set(String(body.model), childAgentId);
       // Read at response-build time, not once per request, so a reply issued after the round
       // counter was bumped below already counts as being past the ramp point.
       const childInputTokens = () => childUsageFor(childAgentId);
@@ -672,6 +702,28 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
       return new Response(childToolUseSse(body.model, toolUseId, options.childReadFilePath, childInputTokens()), { status: 200, headers: { 'content-type': 'text/event-stream' } });
     }
 
+    if (resumeStage !== undefined) {
+      const results = extractToolResults(body);
+      const current = resumeTargets.map((_, index) => results.find((result) => result.toolUseId === `toolu_resume_${resumeStage}_${index}`));
+      if (current.every((result) => result !== undefined)) {
+        if (current.some((result) => result!.isError)) {
+          resumeStage = undefined;
+          return new Response(textSse(body.model, 'PARENT_RESUME_UNAVAILABLE'), { headers: { 'content-type': 'text/event-stream' } });
+        }
+        if (resumeStage === 'message') {
+          resumeStage = 'wait';
+          return new Response(resumeToolSse(body.model, resumeTargets, 'wait'), { headers: { 'content-type': 'text/event-stream' } });
+        }
+        const completed = resumeTargets.every((target, index) => {
+          const echo = `CHILD_SAW_MODEL=${target.model}`;
+          const decoded = current[index]!.textBlocks.some((text) => text.split(/\r?\n/).some((line) => line.trim() === echo));
+          return decoded && seen.filter((item) => item.headers['x-claude-code-agent-id'] === target.agentId).length > target.before;
+        });
+        resumeStage = undefined;
+        return new Response(textSse(body.model, completed ? 'PARENT_FINAL_OK' : 'PARENT_MISMATCH'), { headers: { 'content-type': 'text/event-stream' } });
+      }
+    }
+
     // A parent turn that already carries its children's tool_results must end
     // the turn here (text, never tool_use) or a real client would loop forever
     // re-delegating the same work every turn. Under the resume opt-in, a turn
@@ -682,7 +734,7 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
       body,
       pendingToolUses,
       finalizedToolUses,
-      options.resumeReDelegate === true,
+      options.resumeReDelegate === true || options.resumeExistingChild === true,
       () => resumeReDelegated,
       () => {
         resumeReDelegated = true;
@@ -690,6 +742,15 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
     );
     if (final !== undefined) {
       if (final.reDelegate) {
+        if (options.resumeExistingChild === true) {
+          resumeTargets = CHANNEL_A_AGENTS.flatMap((agent) => {
+            const agentId = observedChildIds.get(agent.upstreamModel);
+            return agentId === undefined ? [] : [{ agentId, model: agent.upstreamModel, before: seen.filter((item) => item.headers['x-claude-code-agent-id'] === agentId).length }];
+          });
+          if (resumeTargets.length !== CHANNEL_A_AGENTS.length) return new Response(textSse(body.model, 'PARENT_RESUME_TARGET_MISSING'), { headers: { 'content-type': 'text/event-stream' } });
+          resumeStage = 'message';
+          return new Response(resumeToolSse(body.model, resumeTargets, 'message'), { headers: { 'content-type': 'text/event-stream' } });
+        }
         return new Response(agentToolUseSse(body.model, pendingToolUses, 'toolu_probe_r1'), { status: 200, headers: { 'content-type': 'text/event-stream' } });
       }
       return new Response(textSse(body.model, final.text), { status: 200, headers: { 'content-type': 'text/event-stream' } });
@@ -754,8 +815,15 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   const OUT = process.env.PROBE_OUT ?? `${import.meta.dir}/.runs/handler-${process.pid}`;
   mkdirSync(OUT, { recursive: true });
   let seq = 0;
-  const rec = (kind: string, o: unknown) =>
-    writeFileSync(`${OUT}/${String(++seq).padStart(3, '0')}-${kind}.json`, JSON.stringify(o, null, 2));
+  let requestSequence = 0;
+  const captureRequestContext = new AsyncLocalStorage<string>();
+  const rec = (kind: string, o: unknown) => {
+    const captureRequestId = captureRequestContext.getStore();
+    const record = (kind === 'pre-handler' || kind === 'post-handler-upstream') && captureRequestId !== undefined && typeof o === 'object' && o !== null
+      ? { ...(o as Record<string, unknown>), captureRequestId }
+      : o;
+    writeFileSync(`${OUT}/${String(++seq).padStart(3, '0')}-${kind}.json`, JSON.stringify(record, null, 2));
+  };
 
   // Recorded through the callback, fired exactly once per real upstreamFetch call
   // with that call's own data -- never by re-reading `seen`'s last element after
@@ -787,6 +855,10 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
       ? realLayoutProfile(await loadCapabilityProfile('claude-code', observedClientVersion, `${import.meta.dir}/../fixtures/capabilities`), layoutPosition, correlationScaffold)
       : syntheticLayoutProfile(observedClientVersion, layoutPosition, correlationScaffold);
   rec('profile', profile);
+  writeFileSync(`${OUT}/route-expectations.json`, JSON.stringify({
+    client: 'claude-code', version: observedClientVersion, parentModel: 'probe-parent-model',
+    childModelsByType: Object.fromEntries(CHANNEL_A_AGENTS.map((agent) => [agent.name, agent.upstreamModel])),
+  }, null, 2));
   // Sibling to NNN-profile.json, same sequence number, written directly (not through rec()) so
   // it never consumes a seq number of its own and shifts every later capture file's numbering.
   writeFileSync(
@@ -842,6 +914,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   // ending. See HandlerFixtureOptions.resumeReDelegate for why this must never be inferred from
   // request shape. Empty/unset for every other mode.
   const resumeReDelegate = process.env.PROBE_RESUME === '1';
+  const resumeExistingChild = process.env.PROBE_RESUME_EXISTING_CHILD === '1';
 
   // Opt-in (the launcher's nested mode only): names the one child allowed to delegate. See
   // HandlerFixtureOptions.nestedDelegatingAgent for why this must never be inferred from request
@@ -881,6 +954,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
     ...(childUsageRampAfterRounds !== undefined ? { childUsageRampAfterRounds } : {}),
     ...(answerCompactionSummaries ? { answerCompactionSummaries: true } : {}),
     ...(resumeReDelegate ? { resumeReDelegate: true } : {}),
+    ...(resumeExistingChild ? { resumeExistingChild: true } : {}),
     ...(nestedDelegatingAgent !== undefined ? { nestedDelegatingAgent } : {}),
   });
   liveHandler = handler;
@@ -888,7 +962,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   const front = http.createServer((req, res) => {
     let raw = '';
     req.on('data', (c) => (raw += c));
-    req.on('end', async () => {
+    req.on('end', () => captureRequestContext.run(`request-${++requestSequence}`, async () => {
       let parsed: unknown = {};
       try {
         parsed = JSON.parse(raw || '{}');
@@ -912,7 +986,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
       }
       res.writeHead(out.status, Object.fromEntries(out.headers.entries()));
       res.end(Buffer.from(await out.arrayBuffer()));
-    });
+    }));
   });
   await new Promise<void>((resolve) => front.listen(0, '127.0.0.1', () => resolve()));
   const port = (front.address() as { port: number }).port;

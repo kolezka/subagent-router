@@ -4,7 +4,7 @@
   "method": "dd",
   "binaryPath": "/Users/me/.local/share/claude/versions/2.1.268",
   "inspectedAt": "2026-09-12T00:00:00.000Z",
-  "claim": "ordinary-resume-never-continues-a-child",
+  "claim": "takeover-continuation-sites-inspected",
   "continuationPath": "takeover-handoff",
   "continuationPathMeasured": false,
   "sites": [

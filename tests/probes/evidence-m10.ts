@@ -8,10 +8,10 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { RunCapture } from './evidence-m3a';
-import { RESUME_NO_CONTINUATION_CLAIM } from './resume-proof';
 import type { ResumeProof } from './resume-proof';
 import type { ProofSiteVerification } from './proof-sites';
 import type { LifecyclePhase, ProbeResult } from '../../src/core/types';
+import { isMessagesEndpointUrl } from './routing-evidence';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -19,10 +19,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 // ---------- run manifest ----------
 
+export type ResumeStrategy = 'message-existing' | 're-delegate' | 'unknown';
+
 export interface RunManifest {
   mode: string;
   phasesExercised: readonly string[];
   freshnessHook: 'production' | 'fake' | 'none';
+  resumeStrategy: ResumeStrategy;
   // Whether the run scaffolded the router's correlation gate open (PROBE_CORRELATION_SCAFFOLD).
   // Anything but a literal true reads as false: a lifecycle pass under that scaffold is
   // conditional on M1 and must never narrow an on-disk fixture (see fixture-writer.ts).
@@ -61,7 +64,9 @@ export async function readRunManifest(runDir: string): Promise<RunManifest | und
     typeof parsed.freshnessHook === 'string' && FRESHNESS_HOOK_VALUES.has(parsed.freshnessHook)
       ? (parsed.freshnessHook as RunManifest['freshnessHook'])
       : 'none';
-  return { mode, phasesExercised, freshnessHook, correlationScaffold: parsed.correlationScaffold === true };
+  const resumeStrategy: ResumeStrategy =
+    parsed.resumeStrategy === 'message-existing' || parsed.resumeStrategy === 're-delegate' ? parsed.resumeStrategy : 'unknown';
+  return { mode, phasesExercised, freshnessHook, resumeStrategy, correlationScaffold: parsed.correlationScaffold === true };
 }
 
 // ---------- invocation boundary ----------
@@ -160,8 +165,9 @@ function hasCompactionContinuationMessage(body: Record<string, unknown>): boolea
  */
 export function extractLifecycleEvidence(capture: RunCapture): LifecycleEvidenceByAgent {
   const byAgent = new Map<string, LifecycleRequestEvidence[]>();
+  if ((capture.invalidEvidence?.length ?? 0) > 0) return byAgent;
   for (const pair of capture.pairs) {
-    if (pair.agentId === undefined) continue;
+    if (pair.agentId === undefined || !isMessagesEndpointUrl(pair.pre.url)) continue;
     const clientModel = typeof pair.pre.body.model === 'string' ? pair.pre.body.model : undefined;
     const upstreamModel = typeof pair.post.body.model === 'string' ? pair.post.body.model : undefined;
     const parentAgentId = pair.pre.headers['x-claude-code-parent-agent-id'];
@@ -177,7 +183,7 @@ export function extractLifecycleEvidence(capture: RunCapture): LifecycleEvidence
     else list.push(entry);
   }
   for (const request of capture.unforwarded) {
-    if (request.agentId === undefined) continue;
+    if (request.agentId === undefined || !isMessagesEndpointUrl(request.pre.url)) continue;
     const clientModel = typeof request.pre.body.model === 'string' ? request.pre.body.model : undefined;
     const parentAgentId = request.pre.headers['x-claude-code-parent-agent-id'];
     const entry: LifecycleRequestEvidence = {
@@ -301,98 +307,60 @@ export interface LifecycleJudgeOptions {
   observedVersion?: string;
   resumeProof?: ResumeProof;
   resumeProofVerification?: ProofSiteVerification;
+  // Parsed only from assistant tool_use blocks in post-boundary parent requests.
+  resumeMessageTargets?: readonly string[];
 }
 
-/**
- * The 'resume' verdict. A resume is two CLI invocations against one session, and nothing in a
- * request says which invocation produced it, so the run has to record the seq where the first one
- * stopped before anything here can be judged.
- *
- * Two shapes can then pass, for different reasons:
- *
- *  - a child with requests on BOTH sides really did keep its id across the resume. That is the
- *    direct measurement and it decides the verdict alone, with no record consulted, so this branch
- *    keeps working if a future client starts continuing children;
- *  - only fresh children after the boundary is the measured Claude Code 2.1.268 behaviour, and on
- *    its own it is indistinguishable from a router that lost every child. It passes only when
- *    every fresh child was routed on every request AND a byte-verified record for this exact
- *    version says this client cannot continue a child at all.
- */
+// Fresh re-delegation is not same-child resume. Matching binary snippets cannot prove a
+// continuation path is unreachable, so only a routed child spanning the boundary can pass.
 function judgeResume(evidence: LifecycleEvidenceByAgent, runMetadata: RunManifest | undefined, options: LifecycleJudgeOptions): LifecycleJudgement {
   const phase: LifecyclePhase = 'resume';
   const declared = checkDeclaredMode(phase, runMetadata);
   if (declared !== undefined) return declared;
 
   const boundary = options.invocationBoundary;
-  if (boundary === undefined) {
+  if (boundary === undefined || !Number.isSafeInteger(boundary.afterSeq) || boundary.afterSeq < 0) {
     return {
       result: 'pending',
-      diagnostic: 'resume-requires-invocation-boundary: the run recorded no capture/invocation-boundary.json, so no request can be placed before or after the resume',
+      diagnostic: 'resume-requires-invocation-boundary: a valid boundary between the two invocations is required',
     };
   }
 
   const crossing: string[] = [];
   const postBoundary: string[] = [];
+  let hasBaseline = false;
   for (const [agentId, list] of evidence) {
-    const hasPre = list.some((entry) => entry.seq <= boundary.afterSeq);
+    const forwardedBefore = list.some((entry) => entry.seq <= boundary.afterSeq && entry.upstreamModel !== undefined);
     const hasPost = list.some((entry) => entry.seq > boundary.afterSeq);
+    if (forwardedBefore) hasBaseline = true;
     if (hasPost) postBoundary.push(agentId);
-    if (hasPre && hasPost) crossing.push(agentId);
+    if (forwardedBefore && hasPost) crossing.push(agentId);
   }
 
   if (postBoundary.length === 0) {
-    return {
-      result: 'pending',
-      diagnostic: `resume-no-post-boundary-children: no routed child issued a request after seq ${boundary.afterSeq}, so the resumed invocation delegated nothing to judge`,
-    };
+    return { result: 'pending', diagnostic: 'resume-no-post-boundary-children: no child request follows the boundary' };
+  }
+  if (!hasBaseline) {
+    return { result: 'pending', diagnostic: 'resume-no-pre-boundary-baseline: no child was forwarded before the boundary' };
   }
 
-  if (crossing.length > 0) {
-    return checkDriftAndForwarding(crossing, evidence, phase) ?? { result: 'passed' };
-  }
-
+  // A healthy continuing child must not hide another child's refusal or model drift.
   const forwarding = checkDriftAndForwarding(postBoundary, evidence, phase) ?? checkEveryRequestForwarded(postBoundary, evidence, phase);
   if (forwarding !== undefined) return forwarding;
-
-  const observedVersion = options.observedVersion ?? 'unknown';
-  const noProof = `resume-no-continuation-proof-for-${observedVersion}`;
-  const proof = options.resumeProof;
-  const verification = options.resumeProofVerification;
-
-  if (proof === undefined) {
+  if (crossing.length === 0) {
     return {
       result: 'pending',
-      diagnostic: `${noProof}: no resume-inspection record exists for this client version, so "no child continued" cannot be told apart from a child the router lost`,
+      diagnostic: `resume-fresh-delegations-only: ${postBoundary.length} post-boundary children have new ids; same-child continuation remains unmeasured`,
     };
   }
-  if (proof.version !== observedVersion) {
-    return { result: 'pending', diagnostic: `${noProof}: the record on hand describes ${proof.version}, not the version this run observed` };
+  if (runMetadata?.resumeStrategy !== 'message-existing') {
+    return { result: 'pending', diagnostic: `resume-requires-message-existing-strategy: got ${JSON.stringify(runMetadata?.resumeStrategy ?? 'unknown')}` };
   }
-  if (proof.claim !== RESUME_NO_CONTINUATION_CLAIM) {
-    return { result: 'pending', diagnostic: `${noProof}: the record claims ${JSON.stringify(proof.claim)}, not ${JSON.stringify(RESUME_NO_CONTINUATION_CLAIM)}` };
+  const targets = new Set(options.resumeMessageTargets ?? []);
+  if (!crossing.every((agentId) => targets.has(agentId))) {
+    return { result: 'pending', diagnostic: 'resume-requires-sendmessage-targets: post-boundary parent tool_use did not target every pre-boundary child id' };
   }
-  if (verification === undefined || !verification.binaryPresent) {
-    return {
-      result: 'pending',
-      diagnostic: `${noProof}: the binary that record cites could not be read this run, so its ${proof.sites.length} recorded sites stay unverified and the record is a version string only`,
-    };
-  }
-  if (verification.mismatchedSites.length > 0) {
-    return {
-      result: 'pending',
-      diagnostic:
-        `resume-proof-site-mismatch:${verification.mismatchedSites.join(',')} -- the recorded bytes are not at those offsets in the ` +
-        'cited binary, so this record does not describe the binary this run used',
-    };
-  }
-
-  return {
-    result: 'passed',
-    diagnostic:
-      `resume-fresh-delegations-only: ${postBoundary.length} post-boundary children, none continuing a pre-boundary id, ` +
-      `per the dd-verified proof for ${proof.version} (${verification.sitesVerified}/${verification.sitesTotal} sites re-checked); ` +
-      'takeover handoff unmeasured and fail-closed',
-  };
+  return { result: 'passed' };
 }
 
 /**

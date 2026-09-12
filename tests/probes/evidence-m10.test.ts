@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { extractLifecycleEvidence, judgeLifecyclePhase, readInvocationBoundary, readRunManifest } from './evidence-m10';
 import type { RunManifest } from './evidence-m10';
 import type { CapturedPair, RunCapture } from './evidence-m3a';
+import { isMessagesEndpointUrl } from './routing-evidence';
 
 function pair(seq: number, agentId: string, upstreamModel: string): CapturedPair {
   return {
@@ -19,13 +20,29 @@ function pair(seq: number, agentId: string, upstreamModel: string): CapturedPair
   };
 }
 
-function runCapture(pairs: readonly CapturedPair[]): RunCapture {
-  return { runDir: '/synthetic', profileRaw: {}, pairs, unforwarded: [], hookAgentIds: new Set() };
+function runCapture(pairs: readonly CapturedPair[], unforwarded: RunCapture['unforwarded'] = []): RunCapture {
+  return { runDir: '/synthetic', profileRaw: {}, pairs, unforwarded, correlationCompleteness: { result: 'passed' }, hookAgentIds: new Set() };
+}
+
+function countTokensPair(seq: number, agentId: string): CapturedPair {
+  return {
+    seq,
+    agentId,
+    pre: { url: '/v1/messages/count_tokens', headers: { 'x-claude-code-agent-id': agentId }, body: { model: 'probe-parent-model' } },
+    post: { url: 'http://upstream.invalid/v1/messages/count_tokens', headers: { 'x-claude-code-agent-id': agentId }, body: { model: 'gateway/fast-worker' } },
+  };
 }
 
 // Two agents, two requests each, genuinely interleaved by seq (A, B, A, B rather than A, A, B,
 // B): agent-alpha at seq 1 and 3, agent-beta at seq 2 and 4, each forwarded to its own stable
 // upstream model on both requests.
+test('message endpoint matching accepts relative and absolute messages paths only', () => {
+  expect(isMessagesEndpointUrl('/v1/messages')).toBe(true);
+  expect(isMessagesEndpointUrl('http://upstream.invalid/v1/messages')).toBe(true);
+  expect(isMessagesEndpointUrl('/v1/messages/count_tokens')).toBe(false);
+  expect(isMessagesEndpointUrl('/other/v1/messages')).toBe(false);
+});
+
 const TWO_AGENTS_TWO_REQUESTS_INTERLEAVED: readonly CapturedPair[] = [
   pair(1, 'agent-alpha', 'gateway/fast-worker'),
   pair(2, 'agent-beta', 'gateway/smart-worker'),
@@ -34,7 +51,7 @@ const TWO_AGENTS_TWO_REQUESTS_INTERLEAVED: readonly CapturedPair[] = [
 ];
 
 function manifest(mode: string, phasesExercised: readonly string[]): RunManifest {
-  return { mode, phasesExercised, freshnessHook: 'fake', correlationScaffold: false };
+  return { mode, phasesExercised, freshnessHook: 'fake', correlationScaffold: false, resumeStrategy: 'unknown' };
 }
 
 describe('readRunManifest: correlationScaffold', () => {
@@ -68,9 +85,20 @@ describe('readRunManifest: correlationScaffold', () => {
   test('the rest of the manifest still parses unchanged alongside the new flag', async () => {
     const dir = await manifestDir({ mode: 'compaction', phasesExercised: ['compaction'], freshnessHook: 'production', correlationScaffold: true });
     try {
-      expect(await readRunManifest(dir)).toEqual({ mode: 'compaction', phasesExercised: ['compaction'], freshnessHook: 'production', correlationScaffold: true });
+      expect(await readRunManifest(dir)).toEqual({ mode: 'compaction', phasesExercised: ['compaction'], freshnessHook: 'production', correlationScaffold: true, resumeStrategy: 'unknown' });
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts only explicit resume strategies and keeps missing or unknown values pending', async () => {
+    for (const [value, expected] of [['message-existing', 'message-existing'], ['re-delegate', 're-delegate'], ['made-up', 'unknown']] as const) {
+      const dir = await manifestDir({ mode: 'resume', phasesExercised: ['resume'], freshnessHook: 'fake', resumeStrategy: value });
+      try {
+        expect((await readRunManifest(dir))?.resumeStrategy).toBe(expected);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     }
   });
 });
@@ -253,15 +281,30 @@ describe('judgeLifecyclePhase: resume', () => {
     // Both agents have one request on each side of seq 2, so both really were continued. That is
     // the direct measurement, and it settles the phase without any recorded proof.
     const evidence = extractLifecycleEvidence(runCapture(TWO_AGENTS_TWO_REQUESTS_INTERLEAVED));
-    const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', ['resume']), { invocationBoundary: { afterSeq: 2 } });
+    const judgement = judgeLifecyclePhase('resume', evidence, { ...manifest('resume', ['resume']), resumeStrategy: 'message-existing' }, { invocationBoundary: { afterSeq: 2 }, resumeMessageTargets: ['agent-alpha', 'agent-beta'] });
     expect(judgement.result).toBe('passed');
   });
+
 
   test('the same two-request evidence is pending without the boundary file, however it is declared', () => {
     const evidence = extractLifecycleEvidence(runCapture(TWO_AGENTS_TWO_REQUESTS_INTERLEAVED));
     const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', ['resume']));
     expect(judgement.result).toBe('pending');
     expect(judgement.diagnostic).toContain('resume-requires-invocation-boundary');
+  });
+
+  test('does not treat a post-boundary count_tokens request as a resumed child request', () => {
+    const evidence = extractLifecycleEvidence(runCapture([pair(1, 'agent-alpha', 'gateway/fast-worker'), countTokensPair(3, 'agent-alpha')]));
+    const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', ['resume']), { invocationBoundary: { afterSeq: 1 } });
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain('resume-no-post-boundary-children');
+  });
+
+  test('does not count count_tokens as the second request of a next-turn child', () => {
+    const evidence = extractLifecycleEvidence(runCapture([pair(1, 'agent-alpha', 'gateway/fast-worker'), countTokensPair(2, 'agent-alpha')]));
+    const judgement = judgeLifecyclePhase('next-turn', evidence, manifest('next-turn', ['next-turn']));
+    expect(judgement.result).toBe('pending');
+    expect(judgement.diagnostic).toContain('next-turn-insufficient-requests');
   });
 
   test('stays pending under mode next-turn with identical evidence -- declared mode is the only thing distinguishing resume from next-turn', () => {
@@ -289,11 +332,11 @@ describe('judgeLifecyclePhase: resume', () => {
     expect(judgement.diagnostic).toContain('resume-no-post-boundary-children');
   });
 
-  test('a fresh child after the boundary needs the recorded proof: routing alone never certifies it', () => {
+  test('a fresh child after the boundary does not certify same-child resume', () => {
     const freshOnly: readonly CapturedPair[] = [pair(1, 'agent-alpha', 'gateway/fast-worker'), pair(2, 'agent-beta', 'gateway/smart-worker')];
     const evidence = extractLifecycleEvidence(runCapture(freshOnly));
     const judgement = judgeLifecyclePhase('resume', evidence, manifest('resume', ['resume']), { invocationBoundary: { afterSeq: 1 }, observedVersion: '2.1.268' });
     expect(judgement.result).toBe('pending');
-    expect(judgement.diagnostic).toContain('resume-no-continuation-proof-for-2.1.268');
+    expect(judgement.diagnostic).toContain('resume-fresh-delegations-only');
   });
 });

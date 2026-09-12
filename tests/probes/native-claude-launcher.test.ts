@@ -5,6 +5,7 @@
 // the substitution is asserted first, not assumed.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -34,6 +35,7 @@ const fixtureHome = join(fixtureRoot, "outer-home");
 const fakeClaudePath = join(fixtureRoot, "fake-claude");
 // Second test double, used only to prove PROBE_CLAUDE_BIN actually redirects which binary runs.
 const fakeClaude2Path = join(fixtureRoot, "fake-claude-2");
+const replaceableClaudePath = join(fixtureRoot, "replaceable-claude");
 // A same-named decoy on PATH: a bare PROBE_CLAUDE_BIN must never reach it.
 const decoyBinDir = join(fixtureRoot, "decoy-bin");
 const decoyClaudePath = join(decoyBinDir, "fake-claude-2");
@@ -41,6 +43,7 @@ const decoyClaudePath = join(decoyBinDir, "fake-claude-2");
 const pinnedLinkPath = join(fixtureRoot, "pinned-claude-link");
 // Seam dir holding a fake `timeout`, which runs between the launcher fixing its argv and exec.
 const seamBinDir = join(fixtureRoot, "seam-bin");
+const replacementSeamBinDir = join(fixtureRoot, "replacement-seam-bin");
 const notExecutablePath = join(fixtureRoot, "not-executable-client");
 const failingReadlinkPath = join(fixtureRoot, "fake-readlink-always-fails");
 const launcherCopyPath = join(fixtureProbesDir, "native-claude-run.sh");
@@ -78,6 +81,8 @@ beforeAll(() => {
     ].join("\n"),
   );
   chmodSync(fakeClaude2Path, 0o755);
+  writeFileSync(replaceableClaudePath, readFileSync(fakeClaudePath));
+  chmodSync(replaceableClaudePath, 0o755);
 
   mkdirSync(decoyBinDir, { recursive: true });
   writeFileSync(decoyClaudePath, ['#!/bin/bash', 'printf "FAKE_CLAUDE_DECOY=1\\n"', `exit ${FAKE_EXIT_CODE}`, ''].join('\n'));
@@ -103,6 +108,19 @@ beforeAll(() => {
     ].join("\n"),
   );
   chmodSync(join(seamBinDir, "timeout"), 0o755);
+
+  mkdirSync(replacementSeamBinDir, { recursive: true });
+  writeFileSync(
+    join(replacementSeamBinDir, "timeout"),
+    [
+      "#!/bin/bash",
+      `/bin/cp ${fakeClaude2Path} ${replaceableClaudePath}`,
+      "shift",
+      'exec "$@"',
+      "",
+    ].join("\n"),
+  );
+  chmodSync(join(replacementSeamBinDir, "timeout"), 0o755);
 
   // Self-contained (only node:http/fs/path); safe to copy standalone.
   writeFileSync(join(fixtureProbesDir, "native-claude-gateway.mjs"), readFileSync(REAL_GATEWAY_PATH, "utf8"));
@@ -197,6 +215,17 @@ test("launcher runs the client from WORK and propagates its real exit code (mode
   expect(clientStdout).toContain('SUBAGENT_ROUTER_SECRET_PRESENT=\n');
 
   expect(result.status).toBe(FAKE_EXIT_CODE); // old script always exited 0 via its last echo
+});
+
+test("launcher records a digest of the executable used by the run", () => {
+  const { result, runDir } = runCopy("delegate");
+  expect(result.status).toBe(FAKE_EXIT_CODE);
+  expect(runDir).toBeTruthy();
+  const digest = createHash("sha256").update(readFileSync(fakeClaudePath)).digest("hex");
+  expect(existsSync(join(runDir!, "capture", "client-binary.sha256"))).toBe(true);
+  expect(readFileSync(join(runDir!, "capture", "client-binary"), "utf8").trim()).toBe(join(runDir!, "client-binary"));
+  expect(readFileSync(join(runDir!, "capture", "client-binary-source"), "utf8").trim()).toBe(realpathSync(fakeClaudePath));
+  expect(readFileSync(join(runDir!, "capture", "client-binary.sha256"), "utf8").trim()).toBe(digest);
 });
 
 test("launcher reaches the client for simple mode too", () => {
@@ -411,7 +440,7 @@ test("compaction mode declares mode: compaction in the run manifest", () => {
   // production hook wrapper is asserted structurally above).
   const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
   expect(script).toContain('[ "$MODE" = "compaction" ]; }'); // the last clause of is_handler_like
-  expect(script).toContain('{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK", "correlationScaffold": $CORRELATION_SCAFFOLD_JSON }');
+  expect(script).toContain('"resumeStrategy": "$RESUME_STRATEGY"');
 
   const manifestGuard = script.lastIndexOf("if is_handler_like; then");
   expect(manifestGuard).toBeGreaterThan(-1);
@@ -659,6 +688,21 @@ test("a PROBE_CLAUDE_BIN symlink repointed mid-run still runs the target chosen 
   const clientStdout = readFileSync(join(runDir!, "cli-stdout.json"), "utf8");
   expect(clientStdout).toContain("FAKE_CLAUDE_1=1");
   expect(clientStdout).not.toContain("FAKE_CLAUDE_2=1");
+  expect(result.status).toBe(FAKE_EXIT_CODE);
+});
+
+test("launcher executes the immutable snapshot when the original canonical target is replaced after capture", () => {
+  const originalDigest = createHash("sha256").update(readFileSync(replaceableClaudePath)).digest("hex");
+  const { result, runDir } = runCopy("delegate", {
+    PROBE_CLAUDE_BIN: replaceableClaudePath,
+    PATH: `${replacementSeamBinDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+  });
+  expect(runDir).toBeTruthy();
+  expect(createHash("sha256").update(readFileSync(replaceableClaudePath)).digest("hex")).not.toBe(originalDigest);
+  const stdout = readFileSync(join(runDir!, "cli-stdout.json"), "utf8");
+  expect(stdout).toContain("FAKE_CLAUDE_1=1");
+  expect(stdout).not.toContain("FAKE_CLAUDE_2=1");
+  expect(readFileSync(join(runDir!, "capture", "client-binary.sha256"), "utf8").trim()).toBe(originalDigest);
   expect(result.status).toBe(FAKE_EXIT_CODE);
 });
 

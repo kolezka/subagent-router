@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { diffCapturedAgainstReal, extractM3AEvidence, judgeM3A, readRunCapture } from './evidence-m3a';
@@ -35,6 +35,56 @@ describe('evidence-m3a: readRunCapture + extractM3AEvidence + judgeM3A', () => {
       agentIdMatchesHook: true,
     });
     expect(judgeM3A(evidence)).toBe('passed');
+  });
+
+  test('pairs interleaved captures by request correlation id, not adjacent sequence number', async () => {
+    await writeSyntheticRunCapture(dir, { includePair: false });
+    const captureDir = join(dir, 'capture');
+    const request = (agentId: string, requestId: string, model: string) => ({
+      url: '/v1/messages',
+      headers: { 'x-claude-code-agent-id': agentId },
+      body: { model },
+      captureRequestId: requestId,
+    });
+    await writeFile(join(captureDir, '002-pre-handler.json'), JSON.stringify(request('agent-a', 'request-a', 'probe-parent-model')));
+    await writeFile(join(captureDir, '004-pre-handler.json'), JSON.stringify(request('agent-b', 'request-b', 'probe-parent-model')));
+    await writeFile(join(captureDir, '005-post-handler-upstream.json'), JSON.stringify(request('agent-b', 'request-b', 'gateway/smart-worker')));
+    await writeFile(join(captureDir, '006-post-handler-upstream.json'), JSON.stringify(request('agent-a', 'request-a', 'gateway/fast-worker')));
+
+    const capture = await readRunCapture(dir);
+    expect(capture.invalidEvidence).toEqual([]);
+    expect(capture.pairs.map((pair) => ({ seq: pair.seq, agentId: pair.agentId, model: pair.post.body.model }))).toEqual([
+      { seq: 2, agentId: 'agent-a', model: 'gateway/fast-worker' },
+      { seq: 4, agentId: 'agent-b', model: 'gateway/smart-worker' },
+    ]);
+  });
+
+  test('ambiguous legacy interleaving and duplicate or orphan correlation ids cannot certify M3-A', async () => {
+    await writeSyntheticRunCapture(dir);
+    const captureDir = join(dir, 'capture');
+    const pre = JSON.parse(await readFile(join(captureDir, '002-pre-handler.json'), 'utf8'));
+    const post = JSON.parse(await readFile(join(captureDir, '003-post-handler-upstream.json'), 'utf8'));
+    pre.captureRequestId = 'request-a';
+    post.captureRequestId = 'request-a';
+    await writeFile(join(captureDir, '002-pre-handler.json'), JSON.stringify(pre));
+    await writeFile(join(captureDir, '003-post-handler-upstream.json'), JSON.stringify(post));
+    await writeFile(join(captureDir, '004-post-handler-upstream.json'), JSON.stringify({ ...post, captureRequestId: 'request-a' }));
+
+    const duplicate = await readRunCapture(dir);
+    expect(duplicate.invalidEvidence?.length ?? 0).toBeGreaterThan(0);
+    expect(judgeM3A(await extractM3AEvidence(duplicate, FIXTURES))).toBe('pending');
+
+    const legacyDir = join(dir, 'legacy');
+    const legacyCaptureDir = join(legacyDir, 'capture');
+    await writeSyntheticRunCapture(legacyDir, { includePair: false });
+    await writeFile(join(legacyCaptureDir, '002-pre-handler.json'), JSON.stringify({ ...pre, captureRequestId: undefined }));
+    await writeFile(join(legacyCaptureDir, '003-pre-handler.json'), JSON.stringify({ ...pre, headers: { ...pre.headers, 'x-claude-code-agent-id': 'agent-b' }, captureRequestId: undefined }));
+    await writeFile(join(legacyCaptureDir, '004-post-handler-upstream.json'), JSON.stringify({ ...post, captureRequestId: undefined }));
+    await writeFile(join(legacyCaptureDir, '005-post-handler-upstream.json'), JSON.stringify({ ...post, headers: { ...post.headers, 'x-claude-code-agent-id': 'agent-b' }, captureRequestId: undefined }));
+
+    const ambiguousLegacy = await readRunCapture(legacyDir);
+    expect(ambiguousLegacy.invalidEvidence?.length ?? 0).toBeGreaterThan(0);
+    expect(judgeM3A(await extractM3AEvidence(ambiguousLegacy, FIXTURES))).toBe('pending');
   });
 
   test('rejects-synthetic-hermetic-profile-as-pending', async () => {

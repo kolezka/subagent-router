@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RouterError } from '../../src/core/errors';
 import { writeCapabilityFixture } from './fixture-writer';
+import { writeSyntheticLifecycleRun } from '../support/lifecycle-run';
+import { SYNTHETIC_SITES, writeSyntheticGeneratorBinary, writeSyntheticGeneratorProof } from '../support/generator-proof-fixture';
 
 const BASE_FIXTURE = {
   client: 'claude-code',
@@ -266,6 +269,7 @@ describe('fixture-writer: writeCapabilityFixture', () => {
 // writer is the only place that can check the set is complete before either lands on disk.
 describe('fixture-writer: derived keys nothing judges (probes.M10 and status)', () => {
   const ALL_PHASES = ['next-turn', 'resume', 'compaction', 'nested', 'parallel'] as const;
+  let syntheticGeneratorProofsDir = '';
   const ALL_PASSED = Object.fromEntries(ALL_PHASES.map((phase) => [phase, 'passed'])) as Record<(typeof ALL_PHASES)[number], 'passed'>;
 
   /** Rewrites the fixture under test with `patch` merged over BASE_FIXTURE. */
@@ -301,7 +305,33 @@ describe('fixture-writer: derived keys nothing judges (probes.M10 and status)', 
     expect((error as RouterError).message).not.toContain('parallel');
   });
 
-  test('probes.M10 passed writes when the fifth phase arrives in the same write', async () => {
+  async function lifecycleRuns() {
+    const runs = {} as Record<(typeof ALL_PHASES)[number], string>;
+    for (const phase of ALL_PHASES) {
+      runs[phase] = join(dir, `run-${phase}`);
+      await writeSyntheticLifecycleRun(runs[phase], phase);
+    }
+    const expectedBinary = join(dir, 'expected-client-binary');
+    await writeSyntheticGeneratorBinary(expectedBinary);
+    syntheticGeneratorProofsDir = join(dir, 'proofs');
+    await mkdir(syntheticGeneratorProofsDir, { recursive: true });
+    await writeSyntheticGeneratorProof(syntheticGeneratorProofsDir, { binaryPath: expectedBinary, version: '2.1.266', sites: SYNTHETIC_SITES });
+    for (const runDir of Object.values(runs)) {
+      const snapshot = join(runDir, 'client-binary');
+      await writeFile(snapshot, await readFile(expectedBinary));
+      await writeFile(join(runDir, 'capture', 'client-binary'), snapshot);
+      await writeFile(join(runDir, 'capture', 'client-binary.sha256'), createHash('sha256').update(await readFile(snapshot)).digest('hex'));
+    }
+    return runs;
+  }
+
+  test('boolean phase flags alone cannot promote M10 or support', async () => {
+    await seedFixture({ probes: { ...BASE_FIXTURE.probes, M10: 'passed', 'M3-A': 'passed' }, lifecycle: ALL_PASSED, parentPromptPosition: 'after-native-context-v2' });
+    expect(await refusalCode({ runId: 'flags-only', scaffoldDeclared: true, probes: { M10: 'passed' } })).toBe('fixture-writer-promotion-requires-runs');
+    expect(await refusalCode({ runId: 'flags-only', scaffoldDeclared: true, status: 'supported' })).toBe('fixture-writer-promotion-requires-runs');
+  });
+
+  test('probes.M10 passed writes when the fifth phase arrives with replayable evidence', async () => {
     // No single run exercises all five phases, so the last phase and the aggregate legitimately
     // land together: four already measured on disk, the fifth judged by the run doing this write.
     await seedFixture({ lifecycle: { ...ALL_PASSED, parallel: 'pending' } });
@@ -310,6 +340,7 @@ describe('fixture-writer: derived keys nothing judges (probes.M10 and status)', 
       '2.1.266',
       { runId: 'run-m10-last', scaffoldDeclared: true, probes: { M10: 'passed' }, lifecycle: { parallel: 'passed' } },
       dir,
+      { lifecycleRuns: await lifecycleRuns(), generatorProofsDir: syntheticGeneratorProofsDir },
     );
 
     const after = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>;
@@ -335,11 +366,68 @@ describe('fixture-writer: derived keys nothing judges (probes.M10 and status)', 
 
   test('status supported writes when every measurement it claims is already on disk', async () => {
     await seedFixture(SUPPORTED_ON_DISK);
-    await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-status', scaffoldDeclared: true, status: 'supported' }, dir);
+    await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'run-status', scaffoldDeclared: true, status: 'supported' }, dir, { lifecycleRuns: await lifecycleRuns(), generatorProofsDir: syntheticGeneratorProofsDir });
 
     const after = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<string, unknown>;
     expect(after.status).toBe('supported');
     expect(after.diagnostics as string[]).toContainEqual(expect.stringMatching(/^measured:status=supported;run=run-status;at=\d{4}-\d{2}-\d{2}T/));
+  });
+
+  test('promotion replay rejects legacy adjacent captures with no request ids', async () => {
+    await seedFixture(SUPPORTED_ON_DISK);
+    const runs = await lifecycleRuns();
+    for (const runDir of Object.values(runs)) {
+      for (const seq of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
+        const path = join(runDir, 'capture', `${String(seq).padStart(3, '0')}-${seq % 2 === 0 ? 'pre-handler' : 'post-handler-upstream'}.json`);
+        const record = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+        delete record.captureRequestId;
+        await writeFile(path, JSON.stringify(record));
+      }
+    }
+    const error = await writeCapabilityFixture(
+      'claude-code',
+      '2.1.266',
+      { runId: 'legacy-captures', scaffoldDeclared: true, status: 'supported' },
+      dir,
+      { lifecycleRuns: runs, generatorProofsDir: syntheticGeneratorProofsDir },
+    ).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(RouterError);
+    expect((error as RouterError).code).toBe('fixture-writer-promotion-evidence-invalid');
+  });
+
+  test('support replay rejects a phase with a consistently wrong child model', async () => {
+    await seedFixture(SUPPORTED_ON_DISK);
+    const runs = await lifecycleRuns();
+    for (const seq of [3, 7]) {
+      const file = join(runs.resume, 'capture', `${String(seq).padStart(3, '0')}-post-handler-upstream.json`);
+      const record = JSON.parse(await readFile(file, 'utf8'));
+      record.body.model = 'gateway/smart-worker';
+      await writeFile(file, JSON.stringify(record));
+    }
+    const error = await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'bad-routing', scaffoldDeclared: true, status: 'supported' }, dir, { lifecycleRuns: runs }).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(RouterError);
+    expect((error as RouterError).code).toBe('fixture-writer-promotion-evidence-invalid');
+  });
+
+  test('support replay rejects a run whose parent completion is PARENT_MISMATCH', async () => {
+    await seedFixture(SUPPORTED_ON_DISK);
+    const runs = await lifecycleRuns();
+    const outputPath = join(runs.resume, 'cli2-stdout.json');
+    await writeFile(outputPath, JSON.stringify({ subtype: 'success', is_error: false, result: 'PARENT_MISMATCH', session_id: 'synthetic-parent-session' }));
+
+    const error = await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'bad-completion', scaffoldDeclared: true, status: 'supported' }, dir, { lifecycleRuns: runs }).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(RouterError);
+    expect((error as RouterError).code).toBe('fixture-writer-promotion-evidence-invalid');
+  });
+
+  test('support replay requires runs for every phase', async () => {
+    await seedFixture(SUPPORTED_ON_DISK);
+    const runs = await lifecycleRuns();
+    const { resume: ignored, ...partial } = runs;
+    expect(ignored).toBeTruthy();
+    const error = await writeCapabilityFixture('claude-code', '2.1.266', { runId: 'partial', scaffoldDeclared: true, status: 'supported' }, dir, { lifecycleRuns: partial }).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(RouterError);
+    expect((error as RouterError).code).toBe('fixture-writer-promotion-requires-runs');
   });
 
   test('status supported is refused while probes.M10 is not passed', async () => {

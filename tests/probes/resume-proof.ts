@@ -1,19 +1,5 @@
-// Resume-inspection proofs: what a human read out of one pinned client binary about what an
-// ordinary resume does to a delegated child, recorded as byte offsets plus the literals that sit
-// at them. Same shape and the same positional re-read as generator-proof.ts (both use
-// proof-sites.ts), for a different question.
-//
-// The question: after `claude -c`, does any pre-boundary child keep its id and send another
-// request? On Claude Code 2.1.268 the answer read out of the binary is no. The resumed parent
-// re-delegates and every child is minted fresh; the only path that continues an existing child
-// with its old id is the takeover handoff, gated on pl() and LM(), which ordinary -c and --resume
-// never satisfy. That is a claim about code that was READ, not run, which is why
-// continuationPathMeasured exists and is false: the gated path itself stays unexercised, and the
-// resume judge says so in its own diagnostic rather than implying the whole space was covered.
-//
-// This is the evidence judgeLifecyclePhase's 'resume' branch (evidence-m10.ts) needs before a run
-// with no continuation at all can be anything but pending. Without it, "no child crossed the
-// boundary" is indistinguishable from "the router lost every child".
+// Source-inspection notes for selected resume paths in a pinned client binary.
+// Matching these bytes neither covers all entry points nor measures same-child resume.
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { RouterError } from '../../src/core/errors';
@@ -39,8 +25,7 @@ export interface ResumeProof {
   sites: readonly ResumeProofSite[];
 }
 
-/** The only claim the resume judge acts on. A record asserting anything else is not this evidence. */
-export const RESUME_NO_CONTINUATION_CLAIM = 'ordinary-resume-never-continues-a-child';
+export const RESUME_INSPECTION_CLAIM = 'takeover-continuation-sites-inspected';
 
 // All five must be present. Together they trace one resumed session end to end: where a resumed
 // parent restores its state, the two gates that guard the continue path, the single call that

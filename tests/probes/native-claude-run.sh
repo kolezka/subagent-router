@@ -41,6 +41,16 @@ CFG="$RUN/config"
 WORK="$RUN/work"
 mkdir -p "$HOMEDIR" "$CFG" "$WORK" "$RUN/capture"
 
+# Copy the resolved executable before any client invocation. The updater can replace the original
+# target after resolution, so every invocation, including --version, runs this read-only snapshot.
+CLAUDE_BIN_SOURCE="$CLAUDE_BIN"
+CLAUDE_BIN="$RUN/client-binary"
+/bin/cp "$CLAUDE_BIN_SOURCE" "$CLAUDE_BIN" || exit 1
+/bin/chmod 500 "$CLAUDE_BIN" || exit 1
+printf '%s\n' "$CLAUDE_BIN_SOURCE" > "$RUN/capture/client-binary-source"
+printf '%s\n' "$CLAUDE_BIN" > "$RUN/capture/client-binary"
+/usr/bin/shasum -a 256 "$CLAUDE_BIN" | awk '{print $1}' > "$RUN/capture/client-binary.sha256" || exit 1
+
 if is_handler_like; then
   # The handler binds its alternate marker slot to the exact client version it is told
   # about, so observe that version first, from the same isolated environment the real
@@ -56,8 +66,6 @@ if is_handler_like; then
   CLIENT_VERSION="$(printf '%s' "$VERSION_OUT" | /usr/bin/grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | /usr/bin/head -1)"
   [ -z "$CLIENT_VERSION" ] && { echo "FAIL: could not observe client version"; exit 1; }
   printf '%s\n' "$CLIENT_VERSION" > "$RUN/capture/client-version"
-  # The exact file this run executes, frozen above rather than resolved again here.
-  printf '%s\n' "$CLAUDE_BIN" > "$RUN/capture/client-binary"
   if [ "$MODE" = "next-turn" ]; then
     # Only next-turn forces the two-request-per-child flow: a file inside the CLI's own
     # sandboxed WORK dir that the fixture's forced tool_use (Read) points the real client's
@@ -116,6 +124,7 @@ if is_handler_like; then
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
       PROBE_LAYOUT="${PROBE_LAYOUT:-}" \
       PROBE_RESUME=1 \
+      PROBE_RESUME_EXISTING_CHILD="${PROBE_RESUME_EXISTING_CHILD:-}" \
       bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
   elif [ "$MODE" = "nested" ]; then
     # nested is handler-like but enables the fixture's nested-delegation opt-in: exactly one child
@@ -155,6 +164,8 @@ PORT="$(cat "$RUN/capture/port" 2>/dev/null)"
 # above).
 if uses_child_read; then
   ALLOW_JSON='["Agent", "Read"]'
+elif [ "$MODE" = "resume" ] && [ "${PROBE_RESUME_EXISTING_CHILD:-}" = "1" ]; then
+  ALLOW_JSON='["Agent", "SendMessage", "TaskOutput"]'
 else
   ALLOW_JSON='["Agent"]'
 fi
@@ -263,8 +274,16 @@ print(json.dumps([p for p in s.split(",") if p]))')"
   # pass from a scaffolded run on the strength of this flag, so it has to match reality.
   CORRELATION_SCAFFOLD_JSON=false
   [ "${PROBE_CORRELATION_SCAFFOLD:-}" = "1" ] && CORRELATION_SCAFFOLD_JSON=true
+  RESUME_STRATEGY=unknown
+  if [ "$MODE" = "resume" ]; then
+    if [ "${PROBE_RESUME_EXISTING_CHILD:-}" = "1" ]; then
+      RESUME_STRATEGY=message-existing
+    else
+      RESUME_STRATEGY=re-delegate
+    fi
+  fi
   cat >"$RUN/capture/000-run-manifest.json" <<JSON
-{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK", "correlationScaffold": $CORRELATION_SCAFFOLD_JSON }
+{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK", "correlationScaffold": $CORRELATION_SCAFFOLD_JSON, "resumeStrategy": "$RESUME_STRATEGY" }
 JSON
 fi
 
@@ -318,6 +337,7 @@ if [ "$MODE" = "resume" ]; then
       >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
   )
   CLI1_EXIT=$?
+  printf '%s\n' "$CLI1_EXIT" > "$RUN/cli-exit-status"
   if [ "$CLI1_EXIT" -ne 0 ]; then
     # A timed-out or failed invocation 1 must never be masked by a later invocation 2's success:
     # report the first failure, leave .last-run pointing at this run, and stop before resuming.
@@ -356,6 +376,7 @@ if [ "$MODE" = "resume" ]; then
       >"$RUN/cli2-stdout.json" 2>"$RUN/cli2-stderr.txt"
   )
   CLI_EXIT=$?
+  printf '%s\n' "$CLI_EXIT" > "$RUN/cli2-exit-status"
   echo "exit=$CLI_EXIT (see $RUN)"
   echo "--- captured requests:"; ls -1 "$RUN/capture" 2>/dev/null
   echo "$RUN" > "$ROOT/tests/probes/.last-run"
@@ -442,6 +463,7 @@ else
   )
 fi
 CLI_EXIT=$?
+printf '%s\n' "$CLI_EXIT" > "$RUN/cli-exit-status"
 echo "exit=$CLI_EXIT (see $RUN)"
 echo "--- captured requests:"; ls -1 "$RUN/capture" 2>/dev/null
 echo "$RUN" > "$ROOT/tests/probes/.last-run"

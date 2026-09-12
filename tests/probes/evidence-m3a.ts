@@ -36,9 +36,15 @@ export interface CapturedHookRecord {
 
 export interface CapturedPair {
   seq: number;
+  captureRequestId?: string;
   agentId?: string;
   pre: CapturedHttpMessage;
   post: CapturedHttpMessage;
+}
+
+export interface CorrelationCompleteness {
+  result: ProbeResult;
+  diagnostic?: string;
 }
 
 // A pre-handler request with no upstream record beside it: the handler refused it, so it was
@@ -59,6 +65,12 @@ export interface RunCapture {
   clientVersionFile?: string;
   pairs: readonly CapturedPair[];
   unforwarded: readonly CapturedUnforwardedRequest[];
+  // Pairing errors are retained as invalid evidence. A judge may not certify a run that contains
+  // an ambiguous, mismatched or orphan capture record.
+  invalidEvidence?: readonly string[];
+  // Legacy adjacent pairs remain available for diagnostics, but only complete request-id pairing
+  // can certify lifecycle or aggregate claims.
+  correlationCompleteness: CorrelationCompleteness;
   hookAgentIds: ReadonlySet<string>;
 }
 
@@ -75,14 +87,20 @@ function toHttpMessage(raw: Record<string, unknown>): CapturedHttpMessage {
 
 const NUMBERED_FILE_RE = /^(\d+)-(.+)\.json$/;
 
+interface CaptureRecord {
+  seq: number;
+  message: CapturedHttpMessage;
+  requestId?: string;
+  hasRequestId: boolean;
+}
+
 /**
  * Reads a native-claude-handler.ts capture directory (runDir/capture/*) into a structured
  * RunCapture: the profile JSON, its optional scaffold-manifest sibling, the client-version file,
- * every NNN-pre-handler.json paired with its (NNN+1)-post-handler-upstream.json (a pair only
- * exists when both files are present AND their x-claude-code-agent-id headers are identical,
- * including both being absent), every pre-handler record that has no (NNN+1) post record at all
- * (`unforwarded`: a request the handler refused, so nothing was ever sent upstream), and the set
- * of agent ids that have a SubagentStart hook record.
+ * every pre-handler record paired with a post-handler-upstream record. New captures use their
+ * shared captureRequestId, while legacy captures use adjacent sequence numbers only when child ids
+ * match. A pre with no matching post stays in `unforwarded`; ambiguous, mismatched and orphan
+ * records remain in invalidEvidence so no judge can silently certify the surviving pairs.
  */
 export async function readRunCapture(runDir: string): Promise<RunCapture> {
   const captureDir = join(runDir, 'capture');
@@ -149,23 +167,97 @@ export async function readRunCapture(runDir: string): Promise<RunCapture> {
 
   const pairs: CapturedPair[] = [];
   const unforwarded: CapturedUnforwardedRequest[] = [];
-  for (const [seq, preFile] of preBySeq) {
-    const preRaw = await readJsonFile(join(captureDir, preFile));
-    if (!isRecord(preRaw)) continue;
-    const pre = toHttpMessage(preRaw);
-    const preAgentId = pre.headers['x-claude-code-agent-id'];
-    const postFile = postBySeq.get(seq + 1);
-    if (postFile === undefined) {
-      unforwarded.push({ seq, ...(preAgentId !== undefined ? { agentId: preAgentId } : {}), pre });
+  const invalidEvidence: string[] = [];
+  const readRecords = async (files: ReadonlyMap<number, string>, kind: string): Promise<CaptureRecord[]> => {
+    const records: CaptureRecord[] = [];
+    for (const [seq, file] of files) {
+      const raw = await readJsonFile(join(captureDir, file));
+      if (!isRecord(raw)) {
+        invalidEvidence.push(`capture-${kind}-not-object:${file}`);
+        continue;
+      }
+      const hasRequestId = Object.hasOwn(raw, 'captureRequestId');
+      const requestId = typeof raw.captureRequestId === 'string' && raw.captureRequestId.length > 0 ? raw.captureRequestId : undefined;
+      if (hasRequestId && requestId === undefined) invalidEvidence.push(`capture-${kind}-invalid-request-id:${file}`);
+      records.push({ seq, message: toHttpMessage(raw), ...(requestId !== undefined ? { requestId } : {}), hasRequestId });
+    }
+    return records;
+  };
+  const preRecords = await readRecords(preBySeq, 'pre');
+  const postRecords = await readRecords(postBySeq, 'post');
+  const addUnforwarded = (pre: CaptureRecord): void => {
+    const agentId = pre.message.headers['x-claude-code-agent-id'];
+    unforwarded.push({ seq: pre.seq, ...(agentId !== undefined ? { agentId } : {}), pre: pre.message });
+  };
+  const endpointPath = (url: string): string => new URL(url, 'http://capture.invalid').pathname;
+  const addPair = (pre: CaptureRecord, post: CaptureRecord): void => {
+    const preAgentId = pre.message.headers['x-claude-code-agent-id'];
+    const postAgentId = post.message.headers['x-claude-code-agent-id'];
+    if (preAgentId !== postAgentId) {
+      invalidEvidence.push(`capture-child-id-mismatch:pre=${pre.seq},post=${post.seq}`);
+      return;
+    }
+    if (endpointPath(pre.message.url) !== endpointPath(post.message.url)) {
+      invalidEvidence.push(`capture-endpoint-mismatch:pre=${pre.seq},post=${post.seq}`);
+      return;
+    }
+    pairs.push({
+      seq: pre.seq,
+      ...(pre.requestId !== undefined ? { captureRequestId: pre.requestId } : {}),
+      ...(preAgentId !== undefined ? { agentId: preAgentId } : {}),
+      pre: pre.message,
+      post: post.message,
+    });
+  };
+
+  const presByRequestId = new Map<string, CaptureRecord[]>();
+  const postsByRequestId = new Map<string, CaptureRecord[]>();
+  for (const pre of preRecords) {
+    if (pre.requestId !== undefined) {
+      const entries = presByRequestId.get(pre.requestId) ?? [];
+      entries.push(pre);
+      presByRequestId.set(pre.requestId, entries);
+    }
+  }
+  for (const post of postRecords) {
+    if (post.requestId !== undefined) {
+      const entries = postsByRequestId.get(post.requestId) ?? [];
+      entries.push(post);
+      postsByRequestId.set(post.requestId, entries);
+    }
+  }
+
+  for (const [requestId, pres] of presByRequestId) {
+    const posts = postsByRequestId.get(requestId) ?? [];
+    if (pres.length !== 1 || posts.length > 1) {
+      invalidEvidence.push(`capture-request-id-not-unique:${requestId}`);
       continue;
     }
-    const postRaw = await readJsonFile(join(captureDir, postFile));
-    if (!isRecord(postRaw)) continue;
-    const post = toHttpMessage(postRaw);
-    const postAgentId = post.headers['x-claude-code-agent-id'];
-    if (preAgentId !== postAgentId) continue;
-    pairs.push({ seq, ...(preAgentId !== undefined ? { agentId: preAgentId } : {}), pre, post });
+    if (posts.length === 0) {
+      addUnforwarded(pres[0]!);
+      continue;
+    }
+    addPair(pres[0]!, posts[0]!);
   }
+  for (const requestId of postsByRequestId.keys()) {
+    if (!presByRequestId.has(requestId)) invalidEvidence.push(`capture-orphan-post-request-id:${requestId}`);
+  }
+
+  const legacyPostsBySeq = new Map(postRecords.filter((post) => !post.hasRequestId).map((post) => [post.seq, post]));
+  const usedLegacyPosts = new Set<number>();
+  for (const pre of preRecords.filter((entry) => !entry.hasRequestId)) {
+    const post = legacyPostsBySeq.get(pre.seq + 1);
+    if (post === undefined) {
+      addUnforwarded(pre);
+      continue;
+    }
+    usedLegacyPosts.add(post.seq);
+    addPair(pre, post);
+  }
+  for (const post of legacyPostsBySeq.values()) {
+    if (!usedLegacyPosts.has(post.seq)) invalidEvidence.push(`capture-orphan-legacy-post:${post.seq}`);
+  }
+
   pairs.sort((a, b) => a.seq - b.seq);
   unforwarded.sort((a, b) => a.seq - b.seq);
 
@@ -177,6 +269,16 @@ export async function readRunCapture(runDir: string): Promise<RunCapture> {
     }
   }
 
+  const correlatedRecords = [...preRecords, ...postRecords];
+  const correlationCompleteness: CorrelationCompleteness =
+    invalidEvidence.length > 0
+      ? { result: 'pending', diagnostic: 'capture-correlation-invalid: pairing contains invalid evidence' }
+      : correlatedRecords.length === 0
+        ? { result: 'pending', diagnostic: 'capture-correlation-missing: no pre/post capture records exist' }
+        : correlatedRecords.every((record) => record.requestId !== undefined)
+          ? { result: 'passed' }
+          : { result: 'pending', diagnostic: 'capture-correlation-incomplete: legacy or id-less pre/post records cannot certify lifecycle evidence' };
+
   return {
     runDir,
     profileRaw,
@@ -184,6 +286,8 @@ export async function readRunCapture(runDir: string): Promise<RunCapture> {
     ...(clientVersionFile !== undefined ? { clientVersionFile } : {}),
     pairs,
     unforwarded,
+    invalidEvidence,
+    correlationCompleteness,
     hookAgentIds,
   };
 }
@@ -338,7 +442,7 @@ export function diffCapturedAgainstReal(captured: Record<string, unknown>, real:
   return diverged;
 }
 
-function pathIsDeclared(path: string, declared: ReadonlySet<string>): boolean {
+export function pathIsDeclared(path: string, declared: ReadonlySet<string>): boolean {
   if (declared.has(path)) return true;
   for (const entry of declared) {
     if (entry.endsWith('.*') && path.startsWith(entry.slice(0, -1))) return true;
@@ -367,6 +471,9 @@ export interface M3AExtraction {
   // Exposed so a caller can gate a fixture write on WHAT was scaffolded (fixture-writer.ts's
   // correlation guard) without re-reading the run directory and re-deriving the same list.
   declaredScaffoldPaths: readonly string[];
+  // False when capture pairing found ambiguous, mismatched or orphan records. Invalid capture
+  // evidence cannot certify M3-A, even if its surviving pairs look valid.
+  captureValid: boolean;
   // The envelope the profile's declared layout requires (v1: exactly two text blocks; v2: exactly
   // three) was present in every child pair, on both sides of the pair. False means this run does
   // not carry the shape the profile claims at all -- a v2 capture judged with a v1 profile, or the
@@ -380,6 +487,8 @@ const SYNTHETIC_HERMETIC_VERSION = 'synthetic-hermetic';
 
 export async function extractM3AEvidence(capture: RunCapture, fixturesDir: string): Promise<M3AExtraction> {
   const diagnostics: string[] = [];
+  const captureValid = (capture.invalidEvidence?.length ?? 0) === 0;
+  if (!captureValid) diagnostics.push(`m3a-capture-pairing-invalid: ${capture.invalidEvidence!.length} capture records are ambiguous, mismatched or orphaned`);
   const profileClient = capture.profileRaw.client; // validated string by readRunCapture
   const profileVersion = capture.profileRaw.version as string;
 
@@ -426,7 +535,7 @@ export async function extractM3AEvidence(capture: RunCapture, fixturesDir: strin
     }
   }
 
-  return { pairs, scaffoldDeclared, declaredScaffoldPaths: capture.scaffoldOverriddenPaths ?? [], layoutEnvelopeMatched, profileVersion, diagnostics };
+  return { pairs, scaffoldDeclared, declaredScaffoldPaths: capture.scaffoldOverriddenPaths ?? [], captureValid, layoutEnvelopeMatched, profileVersion, diagnostics };
 }
 
 /**
@@ -440,6 +549,7 @@ export async function extractM3AEvidence(capture: RunCapture, fixturesDir: strin
  * per-pair booleans, ANDed together, do.
  */
 export function judgeM3A(evidence: M3AExtraction): ProbeResult {
+  if (!evidence.captureValid) return 'pending';
   if (evidence.pairs.length === 0) return 'pending';
   if (!evidence.scaffoldDeclared) return 'pending';
   if (!evidence.layoutEnvelopeMatched) return 'pending';

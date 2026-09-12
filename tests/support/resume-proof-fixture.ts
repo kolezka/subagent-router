@@ -7,8 +7,8 @@ import { writeFile } from 'node:fs/promises';
 import { writeSyntheticGeneratorBinary } from './generator-proof-fixture';
 import type { SyntheticProofSite } from './generator-proof-fixture';
 
-// The claim the real 2.1.268 record carries, and the only one the resume judge accepts.
-export const SYNTHETIC_RESUME_CLAIM = 'ordinary-resume-never-continues-a-child';
+// This records inspected sites, not an exclusion of other continuation paths.
+export const SYNTHETIC_RESUME_CLAIM = 'takeover-continuation-sites-inspected';
 
 // Same five site names the real proof records, with short stand-in literals at small offsets.
 export const SYNTHETIC_RESUME_SITES: readonly SyntheticProofSite[] = [

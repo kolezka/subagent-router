@@ -105,7 +105,8 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   (the client issues a fresh child id on re-delegation) and `lifecycle.compaction` is UNMEASURED for
   this version: no run declared or exercised it. `status`, `M10`, `M10-freshness` and every probe
   other than the already-passing `M3-A` stay `pending`, so this is not a support promotion, and the
-  production `claude-marker` gate still refuses 2.1.268 child requests at the `status` check. Full
+  production `claude-marker` gate still refuses 2.1.268 child requests at the `status` check. The
+  fixture remains pending while production certification is pending. Full
   capture detail in [transport/GAPS.md](transport/GAPS.md).
 - 2026-09-11: `M2` measured `failed` for 2.1.268. The `Agent` tool's `model` parameter is a
   schema enum of four aliases; a full model id (`gateway/probe-full-id`, `claude-haiku-4-5-20251001`)
@@ -167,6 +168,23 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   correlation store until the profile is fully measured, so nothing changes for a running router
   yet; details in [transport/GAPS.md](transport/GAPS.md). `status` and `lifecycle.resume` stay
   `pending` and no profile is `supported`.
+- 2026-09-12: Production certification remains pending: `lifecycle.resume`, `M10`, and `status`
+  remain `pending`, and no profile is `supported`. `resume-YGQ0Ab` showed a resumed parent and two
+  fresh post-boundary child ids after boundary 11, with both invocations decoding `PARENT_FINAL_OK`.
+  Its five matching binary snippets are source-inspection evidence only. They do not exclude other
+  resume entry points. Runtime does not distinguish or refuse takeover, so this record does not
+  establish takeover behaviour or a universal no-drift guarantee.
+
+  Separately, `resume-ONBUDz` directly exercised the native `SendMessage` tool, present in the
+  captured tool schema but previously overlooked, against previously captured child ids. It recorded
+  the same parent session, `PARENT_FINAL_OK` for both invocations, the same two child ids before and
+  after seq=11, and unchanged upstream models. This observation is not a production promotion.
+  The current guards require forwarded pre-baseline traffic for every post-resume child, keep the
+  fresh-only case pending regardless of byte inspection, bind judging to the launch binary digest,
+  validate configured route expectations, and require replayable evidence for every lifecycle phase
+  before M10 or status can be written. Legacy captures without the digest and route expectations
+  cannot establish the newer promotion bar. Main is rerunning the remaining phases. Details in
+  [transport/GAPS.md](transport/GAPS.md).
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 

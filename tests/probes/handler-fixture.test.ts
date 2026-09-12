@@ -588,6 +588,40 @@ describe('channel-A handler fixture: resume re-delegation (resumeReDelegate, opt
     expect(textOf(events)).toBe('PARENT_FINAL_OK');
   });
 
+  test('same-child resume messages target only the ids captured before resume', async () => {
+    const { handler } = await createHandlerFixture({ resumeExistingChild: true });
+    await handler(jsonRequest('/v1/messages', buildParentRequest()));
+    for (const [index, agent] of CHANNEL_A_AGENTS.entries()) {
+      const request = jsonRequest('/v1/messages', buildChildRequest(agent.alias, 'task'));
+      request.headers.set('x-claude-code-agent-id', `existing-child-${index}`);
+      await handler(request);
+    }
+    const prior = roundResults('toolu_probe');
+    await handler(jsonRequest('/v1/messages', buildParentFinalRequest(prior)));
+    const events = await decodeSse(await handler(jsonRequest('/v1/messages', resumedRequestWithNewTurn(prior, 'Continue the same children'))));
+    const tools = reassembleToolUseBlocks(events);
+    expect(tools.map((tool) => tool.name)).toEqual(['SendMessage', 'SendMessage']);
+    expect(tools.map((tool) => tool.input.to)).toEqual(['existing-child-0', 'existing-child-1']);
+    expect(tools.every((tool) => !('subagent_type' in tool.input))).toBe(true);
+    const acknowledgements = tools.map((tool) => ({ toolUseId: tool.id, content: nativeStyleResultContent('{"success":true}') }));
+    const waits = reassembleToolUseBlocks(await decodeSse(await handler(jsonRequest('/v1/messages', buildParentFinalRequest(acknowledgements)))));
+    expect(waits.map((tool) => tool.name)).toEqual(['TaskOutput', 'TaskOutput']);
+    expect(waits.map((tool) => tool.input.task_id)).toEqual(['existing-child-0', 'existing-child-1']);
+    const outputs = waits.map((tool, index) => ({ toolUseId: tool.id, content: nativeStyleResultContent(`CHILD_SAW_MODEL=${CHANNEL_A_AGENTS[index]!.upstreamModel}`) }));
+    const final = await decodeSse(await handler(jsonRequest('/v1/messages', buildParentFinalRequest(outputs))));
+    expect(textOf(final)).toBe('PARENT_MISMATCH'); // Replies alone do not prove a child sent a post-resume request.
+  });
+
+  test('same-child resume never invents an id when no child was observed', async () => {
+    const { handler } = await createHandlerFixture({ resumeExistingChild: true });
+    await handler(jsonRequest('/v1/messages', buildParentRequest()));
+    const prior = roundResults('toolu_probe');
+    await handler(jsonRequest('/v1/messages', buildParentFinalRequest(prior)));
+    const events = await decodeSse(await handler(jsonRequest('/v1/messages', resumedRequestWithNewTurn(prior, 'Continue the same children'))));
+    expect(reassembleToolUseBlocks(events)).toHaveLength(0);
+    expect(textOf(events)).toBe('PARENT_RESUME_TARGET_MISSING');
+  });
+
   test('without resumeReDelegate, the same replayed tool_results end the turn (PARENT_FINAL_OK, never re-delegate)', async () => {
     const { handler } = await createHandlerFixture();
     await handler(jsonRequest('/v1/messages', buildParentRequest()));
@@ -770,7 +804,16 @@ describe('layout v2 profile variant (PROBE_LAYOUT=v2)', () => {
 
   test('the v2 variant still overrides exactly what the scaffold manifest declares, for every base layout value, so a v2 run stays judgeable', async () => {
     const loaded = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
-    const { parentPromptPosition: _dropped, ...withoutLayout } = loaded;
+    // Pin the gate fields to pending: the contract below asserts the scaffold diverges on status
+    // and probes.M10, which is only true of a pending base. The real fixture is a measured value
+    // that changes; this test is about the scaffold, not about what 2.1.268 says today.
+    const pendingBase: CapabilityProfile = {
+      ...loaded,
+      status: 'pending',
+      probes: { ...loaded.probes, M10: 'pending' },
+      lifecycle: { 'next-turn': 'pending', resume: 'pending', compaction: 'pending', nested: 'pending', parallel: 'pending' },
+    };
+    const { parentPromptPosition: _dropped, ...withoutLayout } = pendingBase;
 
     const bases: ReadonlyArray<{ label: string; base: CapabilityProfile }> = [
       { label: 'absent', base: withoutLayout as CapabilityProfile },

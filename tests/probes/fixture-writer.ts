@@ -8,6 +8,8 @@ import { join } from 'node:path';
 import { RouterError } from '../../src/core/errors';
 import { runWithCleanup } from '../../src/io/cleanup';
 import type { ClientId, LifecyclePhase, ProbeResult } from '../../src/core/types';
+import { judgeRun } from './judge-run';
+import { pathIsDeclared } from './evidence-m3a';
 
 const PROBE_RESULTS: readonly ProbeResult[] = ['passed', 'failed', 'pending'];
 function isProbeResult(value: unknown): value is ProbeResult {
@@ -91,6 +93,11 @@ async function writeTempPayload(temp: string, payload: string): Promise<void> {
 
 export interface WriteCapabilityFixtureOptions {
   now?: () => Date;
+  // Aggregate promotion replays the evidence rather than trusting stored phase flags alone.
+  lifecycleRuns?: Readonly<Partial<Record<LifecyclePhase, string>>>;
+  // Synthetic replay seams. Production uses judgeRun's checked-in proof directories.
+  generatorProofsDir?: string;
+  resumeProofsDir?: string;
   // Test seam only: replaces the temp-file write to simulate a failure after the file exists.
   writePayload?: (temp: string, payload: string) => Promise<void>;
 }
@@ -260,6 +267,23 @@ export async function writeCapabilityFixture(
         'fixture-writer-status-requires-measurements',
         `refusing to write status=supported: these are not established on disk or in this write: ${missing.join(', ')}`,
       );
+    }
+  }
+
+  if (judged.probes?.M10 === 'passed' || judged.status === 'supported') {
+    const runs = options.lifecycleRuns;
+    if (LIFECYCLE_PHASES.some((phase) => typeof runs?.[phase] !== 'string' || runs[phase]!.length === 0)) {
+      throw new RouterError('fixture-writer-promotion-requires-runs', 'promotion requires a replayable run for every lifecycle phase');
+    }
+    for (const phase of LIFECYCLE_PHASES) {
+      const report = await judgeRun(runs![phase]!, fixturesDir, options.generatorProofsDir, options.resumeProofsDir);
+      const declared = new Set(report.m3a.declaredScaffoldPaths);
+      const conditional = report.correlationScaffold || [...CORRELATION_GATE_PATHS].some((path) => pathIsDeclared(path, declared));
+      if (report.client !== client || report.clientVersion !== version || !report.scaffoldDeclared || conditional ||
+          report.correlationCompleteness.result !== 'passed' || report.identity.result !== 'passed' ||
+          report.completion.result !== 'passed' || report.lifecycle[phase].result !== 'passed' || report.routing.result !== 'passed') {
+        throw new RouterError('fixture-writer-promotion-evidence-invalid', `promotion evidence for ${phase} does not prove this version's routing contract`);
+      }
     }
   }
 
