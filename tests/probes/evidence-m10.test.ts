@@ -3,7 +3,10 @@
 // be judged in isolation from the real native-claude-run.sh pipeline. This file did not exist
 // before: judgeLifecyclePhase had zero direct test coverage until now.
 import { describe, expect, test } from 'bun:test';
-import { extractLifecycleEvidence, judgeLifecyclePhase } from './evidence-m10';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { extractLifecycleEvidence, judgeLifecyclePhase, readRunManifest } from './evidence-m10';
 import type { RunManifest } from './evidence-m10';
 import type { CapturedPair, RunCapture } from './evidence-m3a';
 
@@ -31,8 +34,46 @@ const TWO_AGENTS_TWO_REQUESTS_INTERLEAVED: readonly CapturedPair[] = [
 ];
 
 function manifest(mode: string, phasesExercised: readonly string[]): RunManifest {
-  return { mode, phasesExercised, freshnessHook: 'fake' };
+  return { mode, phasesExercised, freshnessHook: 'fake', correlationScaffold: false };
 }
+
+describe('readRunManifest: correlationScaffold', () => {
+  async function manifestDir(body: unknown): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'subagent-router-run-manifest-'));
+    await mkdir(join(dir, 'capture'), { recursive: true });
+    await writeFile(join(dir, 'capture', '000-run-manifest.json'), JSON.stringify(body), 'utf8');
+    return dir;
+  }
+
+  test('reads true only from a literal true, and defaults to false for absent, non-boolean or unwritten manifests', async () => {
+    // The flag decides whether a lifecycle pass may ever reach an on-disk fixture, so anything
+    // short of an explicit true has to read as "not scaffolded, judge it normally".
+    const cases: ReadonlyArray<{ label: string; body: Record<string, unknown>; expected: boolean }> = [
+      { label: 'true', body: { mode: 'compaction', phasesExercised: ['compaction'], freshnessHook: 'fake', correlationScaffold: true }, expected: true },
+      { label: 'false', body: { mode: 'compaction', phasesExercised: [], freshnessHook: 'fake', correlationScaffold: false }, expected: false },
+      { label: 'absent', body: { mode: 'compaction', phasesExercised: [], freshnessHook: 'fake' }, expected: false },
+      { label: 'string "true"', body: { mode: 'compaction', phasesExercised: [], freshnessHook: 'fake', correlationScaffold: 'true' }, expected: false },
+    ];
+
+    for (const { label, body, expected } of cases) {
+      const dir = await manifestDir(body);
+      try {
+        expect({ label, correlationScaffold: (await readRunManifest(dir))?.correlationScaffold }).toEqual({ label, correlationScaffold: expected });
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('the rest of the manifest still parses unchanged alongside the new flag', async () => {
+    const dir = await manifestDir({ mode: 'compaction', phasesExercised: ['compaction'], freshnessHook: 'production', correlationScaffold: true });
+    try {
+      expect(await readRunManifest(dir)).toEqual({ mode: 'compaction', phasesExercised: ['compaction'], freshnessHook: 'production', correlationScaffold: true });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('judgeLifecyclePhase: parallel', () => {
   test('passes when two agents have interleaved sequence numbers and no drift', () => {

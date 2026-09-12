@@ -92,10 +92,16 @@ if is_handler_like; then
     # the fixture used to reply with the next forced Read. The compactor reads the last assistant
     # text block, so a tool_use-only reply is rejected as "empty summary text" and there is no
     # retry. With this set the fixture answers that one request with a real summary instead.
+    #
+    # PROBE_CORRELATION_SCAFFOLD is forwarded from the invoking environment, never set here. With
+    # it the handler's profile also opens the correlation gate, so a child whose compacted history
+    # no longer carries the channel-A marker can still be routed by its agent id. Only this mode
+    # forwards it: it is the phase where the marker is the thing that goes missing.
     PROBE_CHILD_READ_FILE="$WORK/probe-child-read.txt"
     python3 -c 'import sys; sys.stdout.write("probe compaction filler line carrying enough words to be worth counting\n" * 400)' > "$PROBE_CHILD_READ_FILE"
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
       PROBE_LAYOUT="${PROBE_LAYOUT:-}" \
+      PROBE_CORRELATION_SCAFFOLD="${PROBE_CORRELATION_SCAFFOLD:-}" \
       PROBE_CHILD_READ_FILE="$PROBE_CHILD_READ_FILE" \
       PROBE_CHILD_READ_ROUNDS=6 \
       PROBE_CHILD_USAGE_INPUT_TOKENS=5000 \
@@ -251,8 +257,14 @@ if is_handler_like; then
   PHASES_JSON="$(printf '%s' "${PROBE_PHASES_EXERCISED:-}" | python3 -c 'import json,sys
 s = sys.stdin.read().strip()
 print(json.dumps([p for p in s.split(",") if p]))')"
+  # Read from the invoking environment, not from the branch that forwarded it: the handler is
+  # started as a plain child of this shell and inherits the whole environment, so whatever the
+  # operator exported is what it actually saw. tests/probes/fixture-writer.ts refuses a lifecycle
+  # pass from a scaffolded run on the strength of this flag, so it has to match reality.
+  CORRELATION_SCAFFOLD_JSON=false
+  [ "${PROBE_CORRELATION_SCAFFOLD:-}" = "1" ] && CORRELATION_SCAFFOLD_JSON=true
   cat >"$RUN/capture/000-run-manifest.json" <<JSON
-{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK" }
+{ "mode": "$MODE", "phasesExercised": $PHASES_JSON, "freshnessHook": "$FRESHNESS_HOOK", "correlationScaffold": $CORRELATION_SCAFFOLD_JSON }
 JSON
 fi
 

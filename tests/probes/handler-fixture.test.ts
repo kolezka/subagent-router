@@ -12,6 +12,7 @@ import type { CapabilityProfile } from '../../src/core/types';
 import {
   AGENT_TOOL_NAME,
   CHANNEL_A_AGENTS,
+  CORRELATION_SCAFFOLD_OVERRIDDEN_PATHS,
   PARENT_CLIENT_MODEL,
   SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS,
   buildChildRequest,
@@ -19,9 +20,11 @@ import {
   createHandlerFixture,
   markerLine,
   realLayoutProfile,
+  scaffoldOverriddenPaths,
   syntheticLayoutProfile,
 } from './native-claude-handler';
 import { diffCapturedAgainstReal } from './evidence-m3a';
+import { COMPACTION_SUMMARY_PREFIX } from './evidence-m10';
 import { nativeContextBlockV1, nativeLayoutUserMessage } from '../support/native-layout';
 
 const CAPABILITIES_FIXTURES = join(import.meta.dir, '..', 'fixtures', 'capabilities');
@@ -1142,5 +1145,168 @@ describe('channel-A handler fixture: compaction summarizer replies (answerCompac
     const notSummarizer = await decodeSse(await handler(continuation(agent.alias, agentId, firstId, 'please keep going')));
     expect(reassembleToolUseBlocks(notSummarizer)).toHaveLength(1);
     expect(textOf(notSummarizer)).not.toContain('<summary>');
+  });
+});
+
+describe('correlation scaffold (PROBE_CORRELATION_SCAFFOLD=1, opt-in)', () => {
+  test('absent, both profile builders leave the correlation gate exactly as their base had it', async () => {
+    // Default inert: every existing run must keep producing the same profile it produced before
+    // this knob existed, so a scaffolded run can never be confused with an ordinary one.
+    const realFixture = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
+
+    const plain = realLayoutProfile(realFixture);
+    expect(plain.correlation).toBe(realFixture.correlation);
+    expect(plain.correlationEntropy).toBe(realFixture.correlationEntropy);
+    expect(plain.probes.M1).toBe(realFixture.probes.M1);
+    expect(realLayoutProfile(realFixture, 'after-native-context-v2', false)).toEqual(realLayoutProfile(realFixture, 'after-native-context-v2'));
+
+    expect(syntheticLayoutProfile('2.1.268').correlation).toBe(false);
+    expect(syntheticLayoutProfile('2.1.268').correlationEntropy).toBe('pending');
+    expect(syntheticLayoutProfile('2.1.268').probes.M1).toBeUndefined();
+  });
+
+  test('when set, both builders open the correlation gate and nothing else moves', async () => {
+    const realFixture = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
+    const scaffolded = realLayoutProfile(realFixture, 'after-native-context-v2', true);
+
+    expect(scaffolded.correlation).toBe(true);
+    expect(scaffolded.correlationEntropy).toBe('passed');
+    expect(scaffolded.probes.M1).toBe('passed');
+
+    // Everything outside the three correlation paths still matches the unscaffolded variant.
+    const plain = realLayoutProfile(realFixture, 'after-native-context-v2');
+    expect({ ...scaffolded, correlation: plain.correlation, correlationEntropy: plain.correlationEntropy, probes: plain.probes }).toEqual(plain);
+    for (const [name, result] of Object.entries(plain.probes)) {
+      if (name === 'M1') continue;
+      expect(scaffolded.probes[name]).toBe(result);
+    }
+
+    const synthetic = syntheticLayoutProfile('2.1.268', 'after-native-context-v2', true);
+    expect({ correlation: synthetic.correlation, correlationEntropy: synthetic.correlationEntropy, m1: synthetic.probes.M1 }).toEqual({
+      correlation: true,
+      correlationEntropy: 'passed',
+      m1: 'passed',
+    });
+  });
+
+  test('the declared path list gains exactly the three correlation paths, and covers every real divergence', async () => {
+    expect(scaffoldOverriddenPaths(false)).toEqual([...SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS]);
+    expect(scaffoldOverriddenPaths(true)).toEqual([...SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS, ...CORRELATION_SCAFFOLD_OVERRIDDEN_PATHS]);
+    expect([...CORRELATION_SCAFFOLD_OVERRIDDEN_PATHS].sort()).toEqual(['correlation', 'correlationEntropy', 'probes.M1']);
+
+    // The property extractM3AEvidence relies on: a scaffolded run's manifest must still declare
+    // every path its profile actually diverges on, or the run can never judge past 'pending'.
+    const realFixture = await loadCapabilityProfile('claude-code', '2.1.268', CAPABILITIES_FIXTURES);
+    const scaffolded = realLayoutProfile(realFixture, 'after-native-context-v2', true);
+    const diverged = diffCapturedAgainstReal(scaffolded as unknown as Record<string, unknown>, realFixture as unknown as Record<string, unknown>);
+    const declared = new Set(scaffoldOverriddenPaths(true));
+
+    expect(diverged.filter((path) => !pathIsDeclared(path, declared))).toEqual([]);
+    expect(diverged).toContain('correlation'); // non-vacuous: the real fixture has correlation false
+    // And the UNSCAFFOLDED list would not have covered it, so the extra declaration is load-bearing.
+    expect(diverged.filter((path) => !pathIsDeclared(path, new Set(SYNTHETIC_LAYOUT_SCAFFOLD_OVERRIDDEN_PATHS)))).toContain('correlation');
+  });
+});
+
+describe('correlation channel across a compacted history (correlationScaffold, opt-in)', () => {
+  function childRequest(alias: string, agentId: string): Request {
+    return new Request('http://router.local/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-claude-code-agent-id': agentId },
+      body: JSON.stringify(buildChildRequest(alias, 'task')),
+    });
+  }
+
+  // What the client sends after compacting a routed child's conversation: the whole history is
+  // replaced by one user message opening with the continuation wrapper, so the channel-A marker
+  // the parent placed in the original prompt is gone. Same billing block, so this is still a
+  // child-scope request; only the marker is missing.
+  function compactedRequest(alias: string, agentId: string): Request {
+    const base = buildChildRequest(alias, 'task') as Record<string, unknown>;
+    const body = {
+      ...base,
+      messages: [{ role: 'user', content: [{ type: 'text', text: `${COMPACTION_SUMMARY_PREFIX}\nPROBE_COMPACTION_SUMMARY: carry on.` }] }],
+    };
+    return new Request('http://router.local/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-claude-code-agent-id': agentId },
+      body: JSON.stringify(body),
+    });
+  }
+
+  test("with the scaffold on, a child's marker-less post-compaction request is still routed to the model its first request bound", async () => {
+    const agent = CHANNEL_A_AGENTS[1]!;
+    const agentId = 'agent-correlated-compaction';
+    const { handler, seen } = await createHandlerFixture({ correlationScaffold: true });
+
+    const first = await handler(childRequest(agent.alias, agentId));
+    expect(first.status).toBe(200);
+    expect(textOf(await decodeSse(first))).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.body.model).toBe(agent.upstreamModel);
+    // The marker really was the thing that selected the model on request one: it is stripped
+    // before forwarding, exactly as the unscaffolded path strips it.
+    const firstText = ((seen[0]?.body.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[0]?.text) ?? '';
+    expect(firstText).toBe('task');
+
+    const second = await handler(compactedRequest(agent.alias, agentId));
+    expect(second.status).toBe(200); // the compacted turn survives: no missing-selection
+    expect(textOf(await decodeSse(second))).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+    expect(seen).toHaveLength(2);
+    expect(seen[1]?.body.model).toBe(agent.upstreamModel); // same upstream model, no drift
+    // Nothing re-selected it: this request carried no marker at all.
+    const secondText = ((seen[1]?.body.messages as Array<{ content: Array<{ text: string }> }>)[0]?.content[0]?.text) ?? '';
+    expect(secondText.includes(markerLine(agent.alias))).toBe(false);
+  });
+
+  test('control: without the scaffold the same marker-less request is refused 422 missing-selection and never forwarded', async () => {
+    // This is what the 2.1.268 fixture records as lifecycle.compaction: failed. The scaffold is
+    // the only difference between the two tests, so a pass above can only come from correlation.
+    const agent = CHANNEL_A_AGENTS[1]!;
+    const agentId = 'agent-correlated-compaction-control';
+    const { handler, seen } = await createHandlerFixture();
+
+    const first = await handler(childRequest(agent.alias, agentId));
+    expect(first.status).toBe(200);
+    expect(seen).toHaveLength(1);
+
+    const second = await handler(compactedRequest(agent.alias, agentId));
+    expect(second.status).toBe(422);
+    expect(await second.json()).toEqual({ error: { code: 'missing-selection' } });
+    expect(seen).toHaveLength(1); // the child is lost: nothing was forwarded for it
+  });
+
+  test('every one of the three scaffolded paths is load-bearing: dropping any one closes the channel again', async () => {
+    // Why the declared list names three paths and not one. src/adapters/capabilities.ts's
+    // claude-correlation gate ANDs M1, correlation and correlationEntropy, so a partial scaffold
+    // builds no CorrelationStore at all and the compacted turn is refused exactly as it is today.
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const full = { ...syntheticLayoutProfile('9.9.9'), correlation: true, correlationEntropy: 'passed' as const, probes: { M10: 'passed' as const, 'M3-A': 'passed' as const, M1: 'passed' as const } };
+    const partials: ReadonlyArray<{ label: string; profile: CapabilityProfile }> = [
+      { label: 'no M1', profile: { ...full, probes: { M10: 'passed', 'M3-A': 'passed' } } },
+      { label: 'correlation false', profile: { ...full, correlation: false } },
+      { label: 'entropy pending', profile: { ...full, correlationEntropy: 'pending' } },
+    ];
+
+    for (const { label, profile } of partials) {
+      const { handler, seen } = await createHandlerFixture({ profile });
+      const agentId = `agent-partial-${label.replace(/\s+/g, '-')}`;
+      expect((await handler(childRequest(agent.alias, agentId))).status).toBe(200); // the marker still routes
+      const compacted = await handler(compactedRequest(agent.alias, agentId));
+      expect({ label, status: compacted.status, forwarded: seen.length }).toEqual({ label, status: 422, forwarded: 1 });
+    }
+  });
+
+  test('the scaffold binds per agent id: another child with no marker and no binding of its own is still refused', async () => {
+    // Correlation must not become a blanket "route anything from any child" switch. Only an agent
+    // id this handler actually bound gets carried across the boundary.
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const { handler, seen } = await createHandlerFixture({ correlationScaffold: true });
+
+    await handler(childRequest(agent.alias, 'agent-bound'));
+    const stranger = await handler(compactedRequest(agent.alias, 'agent-never-bound'));
+    expect(stranger.status).toBe(422);
+    expect(await stranger.json()).toEqual({ error: { code: 'missing-selection' } });
+    expect(seen).toHaveLength(1);
   });
 });

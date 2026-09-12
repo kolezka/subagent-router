@@ -160,7 +160,13 @@ export interface RunJudgement {
     // How many of the pairCount pairs have each boolean true -- e.g. { block0ByteIdentical: 2 }
     // with pairCount 2 means every pair passed that one check. Never a raw agentId.
     pairsTrueCounts: Record<(typeof M3A_PAIR_BOOLEAN_KEYS)[number], number>;
+    // The run's own declared scaffold paths, verbatim. Static profile field names, never run data.
+    declaredScaffoldPaths: readonly string[];
   };
+  // The run manifest's own correlation-scaffold declaration. Together with declaredScaffoldPaths
+  // this is what a caller passes to writeCapabilityFixture, which refuses a lifecycle pass from a
+  // run that scaffolded the correlation gate.
+  correlationScaffold: boolean;
   lifecycle: Record<LifecyclePhase, { result: string; diagnostic?: string }>;
   freshness: {
     result: string;
@@ -199,7 +205,14 @@ export async function judgeRun(runDir: string, fixturesDir: string): Promise<Run
 
   return {
     runDir,
-    m3a: { result: judgeM3A(m3aEvidence), diagnostics: m3aEvidence.diagnostics, pairCount: m3aEvidence.pairs.length, pairsTrueCounts },
+    m3a: {
+      result: judgeM3A(m3aEvidence),
+      diagnostics: m3aEvidence.diagnostics,
+      pairCount: m3aEvidence.pairs.length,
+      pairsTrueCounts,
+      declaredScaffoldPaths: m3aEvidence.declaredScaffoldPaths,
+    },
+    correlationScaffold: runManifest?.correlationScaffold ?? false,
     lifecycle,
     freshness: {
       result: freshnessJudgement.result,

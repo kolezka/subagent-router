@@ -57,6 +57,32 @@ describe('judgeRun', () => {
     expect(JSON.stringify(report)).not.toContain('agent-judge-run-secret');
   });
 
+  test('the report surfaces the run\'s declared scaffold paths and its correlationScaffold flag, so a caller can gate a fixture write on them', async () => {
+    // Both are what fixture-writer.ts's guard needs. Reporting them is the only way a caller can
+    // pass them through without re-reading the run directory and re-deriving the same facts.
+    await writeSyntheticRunCapture(dir, { scaffoldOverriddenPaths: ['status', 'probes.M10', 'probes.M3-A', 'lifecycle.*', 'parentPromptPosition', 'correlation', 'correlationEntropy', 'probes.M1'] });
+    await mkdir(join(dir, 'capture'), { recursive: true });
+    await writeFile(
+      join(dir, 'capture', '000-run-manifest.json'),
+      JSON.stringify({ mode: 'compaction', phasesExercised: ['compaction'], freshnessHook: 'fake', correlationScaffold: true }),
+      'utf8',
+    );
+
+    const report = await judgeRun(dir, FIXTURES);
+
+    expect(report.m3a.declaredScaffoldPaths).toEqual(['status', 'probes.M10', 'probes.M3-A', 'lifecycle.*', 'parentPromptPosition', 'correlation', 'correlationEntropy', 'probes.M1']);
+    expect(report.correlationScaffold).toBe(true);
+  });
+
+  test('a run that declares no correlation scaffold reports the flag false and only its own declared paths', async () => {
+    await writeSyntheticRunCapture(dir);
+    const report = await judgeRun(dir, FIXTURES);
+
+    expect(report.correlationScaffold).toBe(false); // no manifest at all: never inferred as scaffolded
+    expect(report.m3a.declaredScaffoldPaths).not.toContain('correlation');
+    expect(report.m3a.declaredScaffoldPaths).not.toContain('probes.M1');
+  });
+
   test('a run without a declared scaffold manifest judges m3a pending, naming the missing manifest', async () => {
     await writeSyntheticRunCapture(dir, { includeScaffoldManifest: false });
 

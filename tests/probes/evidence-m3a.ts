@@ -363,6 +363,10 @@ export interface M3AExtraction {
   // selects the real fixture in the first place, so a mismatch there fails the fixture load
   // itself rather than showing up as an undeclared-divergence diagnostic.
   scaffoldDeclared: boolean;
+  // The paths the run's own scaffold manifest declares it overrode, empty when it wrote none.
+  // Exposed so a caller can gate a fixture write on WHAT was scaffolded (fixture-writer.ts's
+  // correlation guard) without re-reading the run directory and re-deriving the same list.
+  declaredScaffoldPaths: readonly string[];
   // The envelope the profile's declared layout requires (v1: exactly two text blocks; v2: exactly
   // three) was present in every child pair, on both sides of the pair. False means this run does
   // not carry the shape the profile claims at all -- a v2 capture judged with a v1 profile, or the
@@ -422,7 +426,7 @@ export async function extractM3AEvidence(capture: RunCapture, fixturesDir: strin
     }
   }
 
-  return { pairs, scaffoldDeclared, layoutEnvelopeMatched, profileVersion, diagnostics };
+  return { pairs, scaffoldDeclared, declaredScaffoldPaths: capture.scaffoldOverriddenPaths ?? [], layoutEnvelopeMatched, profileVersion, diagnostics };
 }
 
 /**
