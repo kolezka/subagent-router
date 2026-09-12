@@ -115,6 +115,19 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   `writeCapabilityFixture` set exactly `probes.M2: failed` in
   [../tests/fixtures/capabilities/claude-code-2.1.268.json](../tests/fixtures/capabilities/claude-code-2.1.268.json);
   nothing else changed. Details in [transport/GAPS.md](transport/GAPS.md).
+- 2026-09-12: `lifecycle.compaction` measured `failed` for 2.1.268 (run
+  `tests/probes/.runs/compaction-sbnVo0`, real `claude` 2.1.268 through the loopback capture
+  gateway). The compaction really fired: each child's transcript gained one `compact_boundary`
+  line and each child's next request opened with the client's continuation summary wrapper, with
+  its message count down from 11 to 4. The compacted history dropped the channel-A marker from the
+  first line of the delegation prompt, so the handler refused both post-compaction child requests
+  with `422 missing-selection` and neither was forwarded. Upstream model was stable per child on
+  every request that was forwarded. The `x-claude-code-agent-id` header survived the boundary, so a
+  correlation binding keyed on it is the only known way to keep a child across a compaction, and
+  that channel stays closed until `M1` is ruled on. The judge's compaction signal changed from the
+  transcript-only `compact_boundary` marker to the wire wrapper, because the old predicate searched
+  request bodies for a string that never reaches one. This is a failure, not a support promotion.
+  Details in [transport/GAPS.md](transport/GAPS.md).
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 

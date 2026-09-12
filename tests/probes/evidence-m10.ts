@@ -63,6 +63,9 @@ export interface LifecycleRequestEvidence {
   seq: number;
   clientModel?: string;
   upstreamModel?: string;
+  // True when this request's own body carries the client's post-compaction continuation
+  // wrapper (see COMPACTION_SUMMARY_PREFIX). The name is kept from the earlier transcript-marker
+  // predicate so the compaction diagnostic string stays consistent with it.
   hasCompactBoundary: boolean;
   // The x-claude-code-parent-agent-id header on this request, when present. Only ever
   // consulted for the 'nested' phase. See
@@ -73,15 +76,33 @@ export interface LifecycleRequestEvidence {
 
 export type LifecycleEvidenceByAgent = ReadonlyMap<string, readonly LifecycleRequestEvidence[]>;
 
-function containsCompactBoundaryMarker(value: unknown, seen: Set<object> = new Set()): boolean {
-  if (typeof value === 'string') return value.includes('compact_boundary');
-  if (Array.isArray(value)) return value.some((item) => containsCompactBoundaryMarker(item, seen));
-  if (isRecord(value)) {
-    if (seen.has(value)) return false;
-    seen.add(value);
-    return Object.values(value).some((item) => containsCompactBoundaryMarker(item, seen));
-  }
-  return false;
+/**
+ * The wrapper Claude Code 2.1.268 puts in front of a compaction summary, observed on the wire:
+ * after a compaction the child's next /v1/messages request opens with a `user` message whose text
+ * starts with this sentence. The transcript-only `compact_boundary` marker is NOT usable here: it
+ * is a `type:"system"` transcript line with no `message` field, and the client's API-facing
+ * readers skip those, so it never reaches a request body at all.
+ */
+export const COMPACTION_SUMMARY_PREFIX =
+  'This session is being continued from a previous conversation that ran out of context.';
+
+function startsWithCompactionSummary(value: unknown): boolean {
+  return typeof value === 'string' && value.startsWith(COMPACTION_SUMMARY_PREFIX);
+}
+
+// Matches only a `user` message whose text BEGINS with the wrapper. Content is a plain string on
+// the measured client, but an array of blocks is accepted too, in which case any `text` block
+// opening with the wrapper counts. The wrapper quoted mid-text is deliberately not a match.
+function hasCompactionContinuationMessage(body: Record<string, unknown>): boolean {
+  const messages = body.messages;
+  if (!Array.isArray(messages)) return false;
+  return messages.some((message) => {
+    if (!isRecord(message) || message.role !== 'user') return false;
+    const content = message.content;
+    if (typeof content === 'string') return startsWithCompactionSummary(content);
+    if (!Array.isArray(content)) return false;
+    return content.some((block) => isRecord(block) && block.type === 'text' && startsWithCompactionSummary(block.text));
+  });
 }
 
 /**
@@ -91,6 +112,10 @@ function containsCompactBoundaryMarker(value: unknown, seen: Set<object> = new S
  * the model the router actually forwarded are two different facts this evidence must keep
  * separate, exactly as RouteInput.clientModel and RouteDecision.upstreamModel are kept separate
  * in src/core/types.ts.
+ *
+ * The capture's unforwarded requests are merged into the same per-agent timeline, with no
+ * upstreamModel, because that absence IS the evidence: a request the handler refused was never
+ * forwarded, and without it a lost child looks identical to a child that simply stopped talking.
  */
 export function extractLifecycleEvidence(capture: RunCapture): LifecycleEvidenceByAgent {
   const byAgent = new Map<string, LifecycleRequestEvidence[]>();
@@ -101,13 +126,27 @@ export function extractLifecycleEvidence(capture: RunCapture): LifecycleEvidence
     const parentAgentId = pair.pre.headers['x-claude-code-parent-agent-id'];
     const entry: LifecycleRequestEvidence = {
       seq: pair.seq,
-      hasCompactBoundary: containsCompactBoundaryMarker(pair.pre.body),
+      hasCompactBoundary: hasCompactionContinuationMessage(pair.pre.body),
       ...(clientModel !== undefined ? { clientModel } : {}),
       ...(upstreamModel !== undefined ? { upstreamModel } : {}),
       ...(parentAgentId !== undefined ? { parentAgentId } : {}),
     };
     const list = byAgent.get(pair.agentId);
     if (list === undefined) byAgent.set(pair.agentId, [entry]);
+    else list.push(entry);
+  }
+  for (const request of capture.unforwarded) {
+    if (request.agentId === undefined) continue;
+    const clientModel = typeof request.pre.body.model === 'string' ? request.pre.body.model : undefined;
+    const parentAgentId = request.pre.headers['x-claude-code-parent-agent-id'];
+    const entry: LifecycleRequestEvidence = {
+      seq: request.seq,
+      hasCompactBoundary: hasCompactionContinuationMessage(request.pre.body),
+      ...(clientModel !== undefined ? { clientModel } : {}),
+      ...(parentAgentId !== undefined ? { parentAgentId } : {}),
+    };
+    const list = byAgent.get(request.agentId);
+    if (list === undefined) byAgent.set(request.agentId, [entry]);
     else list.push(entry);
   }
   for (const list of byAgent.values()) list.sort((a, b) => a.seq - b.seq);
@@ -233,8 +272,8 @@ export function judgeLifecyclePhase(phase: LifecyclePhase, evidence: LifecycleEv
   }
 
   if (phase === 'compaction') {
-    // A compact_boundary marker can ride along in the history of any multi-turn run, so the
-    // marker alone never proves this run drove a compaction: the declared mode must agree too.
+    // A continuation wrapper can ride along in the history of any multi-turn run, so the wrapper
+    // alone never proves this run drove a compaction: the declared mode must agree too.
     const declared = checkDeclaredMode(phase, runMetadata);
     if (declared !== undefined) return declared;
     const withBoundary = [...evidence.entries()]

@@ -17,7 +17,7 @@ function pair(seq: number, agentId: string, upstreamModel: string): CapturedPair
 }
 
 function runCapture(pairs: readonly CapturedPair[]): RunCapture {
-  return { runDir: '/synthetic', profileRaw: {}, pairs, hookAgentIds: new Set() };
+  return { runDir: '/synthetic', profileRaw: {}, pairs, unforwarded: [], hookAgentIds: new Set() };
 }
 
 // Two agents, two requests each, genuinely interleaved by seq (A, B, A, B rather than A, A, B,

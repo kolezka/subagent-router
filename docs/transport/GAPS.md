@@ -86,7 +86,10 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   `extractFreshnessEvidence` + `judgeM10Freshness` turn instance-fetch/register/consume/replay
   records into an `M10-freshness` verdict; both fail closed to `pending` when the run declares
   nothing. `compaction` additionally stays `pending` until a later request of the same agent
-  is observed carrying a `compact_boundary` marker (`compaction-requires-observed-compact-boundary`);
+  is observed opening with the client's post-compaction continuation wrapper
+  (`compaction-requires-observed-compact-boundary`; the diagnostic name predates the 2026-09-12
+  signal change, when the transcript-only `compact_boundary` marker was found never to reach a
+  request body);
   nothing in the current saved runs or fixtures ever exercises real lifecycle transitions, so
   every phase and `M10-freshness` in
   [../../tests/fixtures/capabilities/claude-code-2.1.266.json](../../tests/fixtures/capabilities/claude-code-2.1.266.json)
@@ -208,7 +211,10 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   `pending` in `tests/fixtures/capabilities/claude-code-2.1.267.json` until either a client
   version emits a `compact_boundary` marker under a controllable setting, or the judge gains a
   compaction-specific signal other than a later request carrying that marker (an operator
-  decision, RED first, not made here).
+  decision, RED first, not made here). That `until either` sentence is historical, true only
+  until 2026-09-12: the second branch was taken, the judge now reads the client's on-the-wire
+  continuation wrapper, and the phase has since been measured for 2.1.268. See the compaction
+  bullet at the end of this file.
 - **`nested` lifecycle, first attempt (2026-09-10, historical): the probe mode exists, but this
   run hit a client auto-update to 2.1.268 and could not route any child, so it left the phase
   `pending` for 2.1.267 (unmeasured) and 2.1.268 (fail-closed). The pinned 2.1.267 rerun in the
@@ -377,5 +383,50 @@ none of the gaps above; M1, M3/M3-B2, M4, M10 and freshness stay unproven.
   [../../tests/fixtures/capabilities/claude-code-2.1.268.json](../../tests/fixtures/capabilities/claude-code-2.1.268.json)
   with one `diagnostics` entry naming both failing runs. Not measured: whether frontmatter `model`
   accepts a full id (the docs say yes; M2 as specified is about the call parameter), and 2.1.267.
+
+- **`compaction` lifecycle measured for 2.1.268: the compaction fired, the boundary is real, and
+  the phase is `failed`.** [verified] run `tests/probes/.runs/compaction-sbnVo0` (2026-09-12, real
+  `claude` 2.1.268 driven through the loopback capture gateway). Only the reactive compactor is
+  reachable from a probe, and it has two requirements the run has to meet. It decides from a
+  usage-driven context estimate, so the run ramps the injected child token usage until the client
+  compacts. It also needs a real text summary in the reply to the compaction request, because an
+  empty summary is rejected and no boundary is produced. Both routed children compacted.
+
+  Wire evidence: the `compact_boundary` literal appeared in 0 request bodies, pre-handler or
+  upstream. What appears instead is the client's continuation wrapper. Each child's next request
+  opens with a `user` message whose `content` is a plain string (not an array of blocks) starting
+  `This session is being continued from a previous conversation that ran out of context.`, and that
+  request's message count dropped from 11 to 4. Every request that was forwarded carried the same
+  `upstreamModel` for its child, so there is no model drift anywhere in the run.
+
+  Transcript evidence: each child's isolated transcript file gained exactly one line with
+  `"subtype":"compact_boundary"`. That is the only place the literal exists. The boundary object is
+  a `type:"system"` transcript message with no `message` field, and the client's API-facing readers
+  skip `type:"system"`, so it can never reach a request body.
+
+  Why the phase is `failed` and not a pass: the compacted history replaced the child's first line,
+  which is where the channel-A marker lives, so the next request had no marker to select with. The
+  production handler refused both post-compaction child requests with `422 missing-selection`
+  (`capture/034-pre-handler.json` and `capture/035-pre-handler.json` have no paired
+  post-handler-upstream record at all), and the parent's `tool_result` for each child carries
+  `API Error: 422 {"error":{"code":"missing-selection"}}`. `judgeLifecyclePhase('compaction')`
+  returns `failed` with `compaction-later-request-not-forwarded`, and `lifecycle.compaction` is
+  recorded `failed` for 2.1.268. The marker-only path does not survive a compaction.
+
+  What did survive: the post-compaction request carried the same `x-claude-code-agent-id` as before
+  the boundary. A correlation binding keyed on that id is therefore the only known way to keep a
+  child's routing across a compaction, and that channel stays closed until `M1` is ruled on.
+
+  Judge change, RED first, in this branch: the compaction signal in
+  [../../tests/probes/evidence-m10.ts](../../tests/probes/evidence-m10.ts) moved from the
+  transcript-only `compact_boundary` marker to the on-the-wire wrapper (`COMPACTION_SUMMARY_PREFIX`,
+  matched only at the start of a `user` message's text). The old predicate searched request bodies
+  for a string that cannot appear in one, so it was unsatisfiable by construction on this client.
+  The diagnostic name `compaction-requires-observed-compact-boundary` is unchanged. A second
+  defect one layer down was fixed in the same change, also RED first: `readRunCapture` built its
+  `pairs` only from a pre-handler record that had an upstream record beside it, so a refused
+  request was dropped from the capture entirely and the judge could not see the very refusal that
+  defines this failure. Refused requests now reach the lifecycle judge as `unforwarded`, while
+  `pairs` keeps its forwarded-only meaning for M3-A.
 
 No status here becomes `supported` by editing a fixture; each line needs its named measurement.

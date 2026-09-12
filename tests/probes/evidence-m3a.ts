@@ -41,6 +41,16 @@ export interface CapturedPair {
   post: CapturedHttpMessage;
 }
 
+// A pre-handler request with no upstream record beside it: the handler refused it, so it was
+// never forwarded. Kept apart from `pairs` because a pair means "forwarded", and every M3-A check
+// depends on that meaning. The lifecycle judge needs these, since a refused request is exactly
+// what losing a routed child looks like on disk.
+export interface CapturedUnforwardedRequest {
+  seq: number;
+  agentId?: string;
+  pre: CapturedHttpMessage;
+}
+
 export interface RunCapture {
   runDir: string;
   profileRaw: Record<string, unknown>;
@@ -48,6 +58,7 @@ export interface RunCapture {
   scaffoldOverriddenPaths?: readonly string[];
   clientVersionFile?: string;
   pairs: readonly CapturedPair[];
+  unforwarded: readonly CapturedUnforwardedRequest[];
   hookAgentIds: ReadonlySet<string>;
 }
 
@@ -69,7 +80,9 @@ const NUMBERED_FILE_RE = /^(\d+)-(.+)\.json$/;
  * RunCapture: the profile JSON, its optional scaffold-manifest sibling, the client-version file,
  * every NNN-pre-handler.json paired with its (NNN+1)-post-handler-upstream.json (a pair only
  * exists when both files are present AND their x-claude-code-agent-id headers are identical,
- * including both being absent), and the set of agent ids that have a SubagentStart hook record.
+ * including both being absent), every pre-handler record that has no (NNN+1) post record at all
+ * (`unforwarded`: a request the handler refused, so nothing was ever sent upstream), and the set
+ * of agent ids that have a SubagentStart hook record.
  */
 export async function readRunCapture(runDir: string): Promise<RunCapture> {
   const captureDir = join(runDir, 'capture');
@@ -135,20 +148,26 @@ export async function readRunCapture(runDir: string): Promise<RunCapture> {
   }
 
   const pairs: CapturedPair[] = [];
+  const unforwarded: CapturedUnforwardedRequest[] = [];
   for (const [seq, preFile] of preBySeq) {
-    const postFile = postBySeq.get(seq + 1);
-    if (postFile === undefined) continue;
     const preRaw = await readJsonFile(join(captureDir, preFile));
-    const postRaw = await readJsonFile(join(captureDir, postFile));
-    if (!isRecord(preRaw) || !isRecord(postRaw)) continue;
+    if (!isRecord(preRaw)) continue;
     const pre = toHttpMessage(preRaw);
-    const post = toHttpMessage(postRaw);
     const preAgentId = pre.headers['x-claude-code-agent-id'];
+    const postFile = postBySeq.get(seq + 1);
+    if (postFile === undefined) {
+      unforwarded.push({ seq, ...(preAgentId !== undefined ? { agentId: preAgentId } : {}), pre });
+      continue;
+    }
+    const postRaw = await readJsonFile(join(captureDir, postFile));
+    if (!isRecord(postRaw)) continue;
+    const post = toHttpMessage(postRaw);
     const postAgentId = post.headers['x-claude-code-agent-id'];
     if (preAgentId !== postAgentId) continue;
     pairs.push({ seq, ...(preAgentId !== undefined ? { agentId: preAgentId } : {}), pre, post });
   }
   pairs.sort((a, b) => a.seq - b.seq);
+  unforwarded.sort((a, b) => a.seq - b.seq);
 
   const hookAgentIds = new Set<string>();
   for (const file of hookFiles) {
@@ -164,6 +183,7 @@ export async function readRunCapture(runDir: string): Promise<RunCapture> {
     ...(scaffoldOverriddenPaths !== undefined ? { scaffoldOverriddenPaths } : {}),
     ...(clientVersionFile !== undefined ? { clientVersionFile } : {}),
     pairs,
+    unforwarded,
     hookAgentIds,
   };
 }

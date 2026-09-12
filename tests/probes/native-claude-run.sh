@@ -86,6 +86,12 @@ if is_handler_like; then
     # enough to summarize. Holding the small usage back for the first 3 completed rounds means the
     # child has four assistant turns behind it before the threshold trips, and 6 rounds leaves
     # three more requests afterwards to carry the boundary.
+    #
+    # PROBE_ANSWER_COMPACTION_SUMMARIES is the step after that. Once the compactor has work it
+    # sends a summarizer request through the gateway that looks like an answered Read round, and
+    # the fixture used to reply with the next forced Read. The compactor reads the last assistant
+    # text block, so a tool_use-only reply is rejected as "empty summary text" and there is no
+    # retry. With this set the fixture answers that one request with a real summary instead.
     PROBE_CHILD_READ_FILE="$WORK/probe-child-read.txt"
     python3 -c 'import sys; sys.stdout.write("probe compaction filler line carrying enough words to be worth counting\n" * 400)' > "$PROBE_CHILD_READ_FILE"
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
@@ -94,6 +100,7 @@ if is_handler_like; then
       PROBE_CHILD_READ_ROUNDS=6 \
       PROBE_CHILD_USAGE_INPUT_TOKENS=5000 \
       PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=3 \
+      PROBE_ANSWER_COMPACTION_SUMMARIES=1 \
       bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
   elif [ "$MODE" = "resume" ]; then
     # resume is handler-like but enables the fixture's resume re-delegation opt-in so a second,

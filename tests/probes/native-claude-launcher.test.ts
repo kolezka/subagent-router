@@ -457,6 +457,11 @@ test("compaction mode's child scripting reuses the forced-Read channel with more
   expect(script.indexOf("PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=3")).toBeGreaterThan(dispatchGuard);
   expect(script.match(/^\s+PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=/gm) ?? []).toHaveLength(1); // compaction only
 
+  // Without this the compactor's own summarizer request is answered with the next forced Read, and
+  // the client rejects a tool_use-only reply as "empty summary text" with no retry.
+  expect(script.indexOf("PROBE_ANSWER_COMPACTION_SUMMARIES=1")).toBeGreaterThan(dispatchGuard);
+  expect(script.match(/^\s+PROBE_ANSWER_COMPACTION_SUMMARIES=/gm) ?? []).toHaveLength(1); // compaction only
+
   // The Read tool must actually be grantable for both forced-Read modes, via one shared predicate.
   expect(script).toContain('uses_child_read() { [ "$MODE" = "next-turn" ] || [ "$MODE" = "compaction" ]; }');
   expect(script).toContain("if uses_child_read; then\n  ALLOW_JSON='[\"Agent\", \"Read\"]'");

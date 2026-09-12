@@ -20,7 +20,7 @@
   "lifecycle": {
     "next-turn": "passed",
     "resume": "pending",
-    "compaction": "pending",
+    "compaction": "failed",
     "nested": "passed",
     "parallel": "passed"
   },
@@ -29,6 +29,7 @@
     "measured:lifecycle.parallel=passed;run=next-turn-UJqWfM;at=2026-09-11T00:10:13.022Z",
     "measured:lifecycle.next-turn=passed;run=next-turn-UJqWfM;at=2026-09-11T00:10:13.022Z",
     "measured:lifecycle.nested=passed;run=nested-uxI3hK;at=2026-09-11T00:10:13.031Z",
-    "measured:M2=failed;run=delegate-8EiyAy+delegate-IiHhdB;at=2026-09-11T04:19:13.352Z"
+    "measured:M2=failed;run=delegate-8EiyAy+delegate-IiHhdB;at=2026-09-11T04:19:13.352Z",
+    "measured:lifecycle.compaction=failed;run=compaction-sbnVo0;at=2026-09-12T07:51:09.332Z"
   ]
 }
