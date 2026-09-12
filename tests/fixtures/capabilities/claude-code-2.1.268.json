@@ -20,7 +20,7 @@
   "lifecycle": {
     "next-turn": "passed",
     "resume": "pending",
-    "compaction": "failed",
+    "compaction": "passed",
     "nested": "passed",
     "parallel": "passed"
   },
@@ -33,6 +33,7 @@
     "measured:lifecycle.compaction=failed;run=compaction-sbnVo0;at=2026-09-12T07:51:09.332Z",
     "measured:M1=passed;run=compaction-sbnVo0;at=2026-09-12T09:45:27.721Z",
     "measured:correlation=true;run=compaction-sbnVo0;at=2026-09-12T09:45:27.721Z",
-    "measured:correlationEntropy=passed;run=compaction-sbnVo0;at=2026-09-12T09:45:27.721Z"
+    "measured:correlationEntropy=passed;run=compaction-sbnVo0;at=2026-09-12T09:45:27.721Z",
+    "measured:lifecycle.compaction=passed;run=compaction-3slJXF;at=2026-09-12T09:52:50.447Z"
   ]
 }
