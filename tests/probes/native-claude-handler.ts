@@ -276,6 +276,25 @@ export interface HandlerFixture {
   seen: RecordedUpstreamRequest[];
 }
 
+export function fixtureOptionsFromEnvironment(env: Record<string, string | undefined> = process.env): Pick<HandlerFixtureOptions, 'childReadFilePath' | 'childReadRounds' | 'childUsageInputTokens' | 'childUsageRampAfterRounds' | 'answerCompactionSummaries' | 'resumeReDelegate' | 'resumeExistingChild' | 'nestedDelegatingAgent'> {
+  const childReadFilePath = env.PROBE_CHILD_READ_FILE || undefined;
+  const childReadRounds = Number.parseInt(env.PROBE_CHILD_READ_ROUNDS ?? '', 10);
+  const childUsageInputTokens = Number.parseInt(env.PROBE_CHILD_USAGE_INPUT_TOKENS ?? '', 10);
+  const childUsageRampAfterRounds = Number.parseInt(env.PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS ?? '', 10);
+  const nestedDelegatingAgent = env.PROBE_NESTED_AGENT || undefined;
+
+  return {
+    ...(childReadFilePath !== undefined ? { childReadFilePath } : {}),
+    ...(Number.isInteger(childReadRounds) && childReadRounds > 1 ? { childReadRounds } : {}),
+    ...(Number.isInteger(childUsageInputTokens) && childUsageInputTokens > 0 ? { childUsageInputTokens } : {}),
+    ...(Number.isInteger(childUsageRampAfterRounds) && childUsageRampAfterRounds > 0 ? { childUsageRampAfterRounds } : {}),
+    ...(env.PROBE_ANSWER_COMPACTION_SUMMARIES === '1' ? { answerCompactionSummaries: true } : {}),
+    ...(env.PROBE_RESUME === '1' ? { resumeReDelegate: true } : {}),
+    ...(env.PROBE_RESUME_EXISTING_CHILD === '1' ? { resumeExistingChild: true } : {}),
+    ...(nestedDelegatingAgent !== undefined ? { nestedDelegatingAgent } : {}),
+  };
+}
+
 const KNOWN_UPSTREAM_MODELS = new Set<string>(CHANNEL_A_AGENTS.map((a) => a.upstreamModel));
 
 interface PendingToolUse {
@@ -567,7 +586,7 @@ function parentFinalText(
 // Creates the measurement fixture: the real production createHandler wired to a
 // scripted mock upstream. Never opens a socket; callers drive `handler` directly
 // (hermetic tests) or the opt-in front server below wraps it for a real CLI.
-export async function createHandlerFixture(options: HandlerFixtureOptions = {}): Promise<HandlerFixture> {
+export function createScriptedUpstream(options: HandlerFixtureOptions = {}): { fetch: FetchLike; seen: RecordedUpstreamRequest[] } {
   const seen: RecordedUpstreamRequest[] = [];
   const pendingToolUses = new Map<string, PendingToolUse>();
   const pendingChildToolUseByAgent = new Map<string, PendingChildToolUse>();
@@ -759,6 +778,12 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
     return new Response(agentToolUseSse(body.model, pendingToolUses), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
 
+  return { fetch: upstreamFetch, seen };
+}
+
+// Reuses the scripted upstream across direct-handler and packaged-serve probes.
+export async function createHandlerFixture(options: HandlerFixtureOptions = {}): Promise<HandlerFixture> {
+  const { fetch: upstreamFetch, seen } = createScriptedUpstream(options);
   const injectedProfile = options.profile ?? SYNTHETIC_PROFILE;
   const handler = createHandler({
     config: configFixture({
@@ -783,6 +808,43 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
   });
 
   return { handler, seen };
+}
+
+export async function startScriptedUpstreamServer(options: HandlerFixtureOptions = {}): Promise<{ url: string; seen: RecordedUpstreamRequest[]; close(): Promise<void> }> {
+  const upstream = createScriptedUpstream(options);
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', async () => {
+      const body = Buffer.concat(chunks);
+      const headers = Object.fromEntries(
+        Object.entries(req.headers).flatMap(([key, value]) => (typeof value === 'string' ? [[key, value]] : [])),
+      );
+      try {
+        const response = await upstream.fetch(
+          new Request(`http://127.0.0.1${req.url ?? '/'}`, {
+            method: req.method ?? 'GET',
+            headers,
+            ...(body.length > 0 ? { body } : {}),
+          }),
+        );
+        res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
+        res.end(Buffer.from(await response.arrayBuffer()));
+      } catch (error) {
+        res.writeHead(500, { 'content-type': 'text/plain' });
+        res.end(error instanceof Error ? error.message : String(error));
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    seen: upstream.seen,
+    close: async () => {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error === undefined ? resolve() : reject(error))));
+    },
+  };
 }
 
 export const CONTROL_URL_PREFIX = '/subagent-router/control/';
@@ -811,7 +873,7 @@ export function recordPreHandlerIfNotControlPlane(rec: (kind: string, o: unknown
 // Gated on BOTH the flag AND this file being the process entry point: a bare env
 // check would also fire when some other script merely imports this module with
 // the flag set in its environment, silently opening a socket nobody asked for.
-if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
+if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main && process.env.PROBE_SCRIPTED_UPSTREAM !== '1') {
   const OUT = process.env.PROBE_OUT ?? `${import.meta.dir}/.runs/handler-${process.pid}`;
   mkdirSync(OUT, { recursive: true });
   let seq = 0;
@@ -878,48 +940,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   const registeredEnvelopeByAgent = new Map<string, Record<string, unknown>>();
   const consumeInferredForAgent = new Set<string>();
 
-  // Opt-in (the launcher's next-turn mode only, empty/unset for handler mode): forces every
-  // routed child to make a second upstream request. Empty string is treated the same as unset
-  // (native-claude-run.sh always passes this env var for the shared handler/next-turn dispatch
-  // branch, blank for handler mode, so a blank value is never a deliberate request for the
-  // two-request behavior).
-  const childReadFilePath = process.env.PROBE_CHILD_READ_FILE || undefined;
-
-  // Opt-in (the launcher's compaction mode only): how many forced Read rounds each routed child is
-  // driven through. Unset, blank or unparseable means 1, the single round every other mode has
-  // always had. See HandlerFixtureOptions.childReadRounds.
-  const parsedChildReadRounds = Number.parseInt(process.env.PROBE_CHILD_READ_ROUNDS ?? '', 10);
-  const childReadRounds = Number.isInteger(parsedChildReadRounds) && parsedChildReadRounds > 1 ? parsedChildReadRounds : undefined;
-
-  // Opt-in (the launcher's compaction mode only): the input_tokens a routed child's own
-  // message_start reports, so the client's context estimate for that child can cross its
-  // compaction threshold. Unset, blank or unparseable leaves every response's usage untouched.
-  // See HandlerFixtureOptions.childUsageInputTokens.
-  const parsedChildUsageInputTokens = Number.parseInt(process.env.PROBE_CHILD_USAGE_INPUT_TOKENS ?? '', 10);
-  const childUsageInputTokens = Number.isInteger(parsedChildUsageInputTokens) && parsedChildUsageInputTokens > 0 ? parsedChildUsageInputTokens : undefined;
-
-  // Opt-in (the launcher's compaction mode only): how many forced Read rounds a child must have
-  // completed before the large usage above starts being reported. Unset, blank or unparseable
-  // means no ramp, so the large value applies from the first reply as it did before.
-  // See HandlerFixtureOptions.childUsageRampAfterRounds.
-  const parsedChildUsageRampAfterRounds = Number.parseInt(process.env.PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS ?? '', 10);
-  const childUsageRampAfterRounds = Number.isInteger(parsedChildUsageRampAfterRounds) && parsedChildUsageRampAfterRounds > 0 ? parsedChildUsageRampAfterRounds : undefined;
-
-  // Opt-in (the launcher's compaction mode only): answer the client's compaction summarizer with
-  // text instead of the next forced Read. See HandlerFixtureOptions.answerCompactionSummaries for
-  // why a tool_use reply there kills the compaction. Empty/unset for every other mode.
-  const answerCompactionSummaries = process.env.PROBE_ANSWER_COMPACTION_SUMMARIES === '1';
-
-  // Opt-in (the launcher's resume mode only): lets a resumed parent turn re-delegate instead of
-  // ending. See HandlerFixtureOptions.resumeReDelegate for why this must never be inferred from
-  // request shape. Empty/unset for every other mode.
-  const resumeReDelegate = process.env.PROBE_RESUME === '1';
-  const resumeExistingChild = process.env.PROBE_RESUME_EXISTING_CHILD === '1';
-
-  // Opt-in (the launcher's nested mode only): names the one child allowed to delegate. See
-  // HandlerFixtureOptions.nestedDelegatingAgent for why this must never be inferred from request
-  // shape. Empty/unset for every other mode.
-  const nestedDelegatingAgent = process.env.PROBE_NESTED_AGENT || undefined;
+  const lifecycleOptions = fixtureOptionsFromEnvironment();
 
   const { handler } = await createHandlerFixture({
     onUpstreamRequest: (record) => {
@@ -948,14 +969,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
       }
     },
     profile,
-    ...(childReadFilePath !== undefined ? { childReadFilePath } : {}),
-    ...(childReadRounds !== undefined ? { childReadRounds } : {}),
-    ...(childUsageInputTokens !== undefined ? { childUsageInputTokens } : {}),
-    ...(childUsageRampAfterRounds !== undefined ? { childUsageRampAfterRounds } : {}),
-    ...(answerCompactionSummaries ? { answerCompactionSummaries: true } : {}),
-    ...(resumeReDelegate ? { resumeReDelegate: true } : {}),
-    ...(resumeExistingChild ? { resumeExistingChild: true } : {}),
-    ...(nestedDelegatingAgent !== undefined ? { nestedDelegatingAgent } : {}),
+    ...lifecycleOptions,
   });
   liveHandler = handler;
 
@@ -995,4 +1009,21 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   console.log(`front(handler) 127.0.0.1:${port}  out=${OUT}`);
   console.log(`channel-A agents: ${CHANNEL_A_AGENTS.map((a) => a.name).join(', ')}`);
   console.log('drive the CLI at ANTHROPIC_BASE_URL=http://127.0.0.1:' + port);
+}
+
+if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main && process.env.PROBE_SCRIPTED_UPSTREAM === '1') {
+  const OUT = process.env.PROBE_OUT ?? `${import.meta.dir}/.runs/upstream-${process.pid}`;
+  mkdirSync(OUT, { recursive: true });
+  const postDir = `${OUT}/packaged-post`;
+  mkdirSync(postDir, { recursive: true });
+  let fallbackSeq = 0;
+  const upstream = await startScriptedUpstreamServer({
+    ...fixtureOptionsFromEnvironment(),
+    onUpstreamRequest: (record) => {
+      const captureRequestId = record.headers['x-probe-capture-id'] ?? `unmatched-${++fallbackSeq}`;
+      writeFileSync(`${postDir}/${captureRequestId}.json`, JSON.stringify({ ...record, captureRequestId }, null, 2));
+    },
+  });
+  writeFileSync(`${OUT}/port`, new URL(upstream.url).port);
+  console.log(`scripted-upstream ${upstream.url} out=${OUT}`);
 }
