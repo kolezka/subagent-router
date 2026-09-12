@@ -128,6 +128,28 @@ Ten katalog zawiera dokumentację projektu `subagent-router`. Trwa implementacja
   transcript-only `compact_boundary` marker to the wire wrapper, because the old predicate searched
   request bodies for a string that never reaches one. This is a failure, not a support promotion.
   Details in [transport/GAPS.md](transport/GAPS.md).
+- 2026-09-12: M1 evidence for 2.1.268 and a compaction run under the agent-id correlation channel.
+  Neither is narrowed into a fixture. The id generator was read straight out of the pinned binary
+  `/Users/me/.local/share/claude/versions/2.1.268` with `dd`: 8 bytes from the Node CSPRNG
+  `randomBytes` rendered as hex, so an unlabelled id is `a` plus 16 hex characters, 64 random bits,
+  exactly the plan's "at least 64 bits" bar. The optional label that is new in this version adds no
+  entropy. The id is minted once per spawn, rides in the `x-claude-code-agent-id` header, and stayed
+  identical per child across compaction, `next-turn`, `parallel` and `nested`; eight children across
+  four compaction runs of today produced eight distinct ids, and a fifth run added two more, no
+  collision. `probes.M1` stays `pending` anyway: `judgeM1Sample` cannot return `passed` by its own
+  type, its proof is always sample-based with `generatorInspected: false`, and no mechanism records
+  a generator proof against a client version. Building one is an operator decision, RED first.
+  Separately, run `tests/probes/.runs/compaction-up61gf` (same pinned binary and compaction mode as
+  `compaction-sbnVo0`, plus `PROBE_CORRELATION_SCAFFOLD=1`) compacted both children three times
+  each, forwarded every post-compaction request, and each child held its upstream model across every
+  boundary, so the judge returns a passing `lifecycle.compaction` for that run.
+  `writeCapabilityFixture` refuses a lifecycle pass from a run whose declared scaffold covers
+  `probes.M1`, `correlation` or `correlationEntropy`, so
+  [../tests/fixtures/capabilities/claude-code-2.1.268.json](../tests/fixtures/capabilities/claude-code-2.1.268.json)
+  keeps `lifecycle.compaction: failed`, which is what production does today. `M3-A` judges `pending`
+  on that run because post-compaction requests are not first-message envelopes, which is expected
+  and does not touch the layout claim. This is not a support promotion; details in
+  [transport/GAPS.md](transport/GAPS.md).
 - `superpowers/specs/`: specyfikacje decyzji i wymaganych zachowań.
 - `superpowers/plans/`: istniejący plan wykonania, nadal draft. Jego edycja nie uruchamia zadań ani nie zatwierdza wdrożenia.
 
