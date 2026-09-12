@@ -1,6 +1,8 @@
 # Documentation
 
-`subagent-router` now provides a working packaged Claude Code router. The supported Claude Code 2.1.268 profile routes selected children to distinct configured upstream models while preserving the parent model and exercised child lifecycle continuity.
+`subagent-router` now provides a working packaged Claude Code router. The supported Claude Code 2.1.268 and 2.1.269 profiles route selected children to distinct configured upstream models while preserving the parent model and exercised child lifecycle continuity.
+
+Start with the [minimal two-model example](../examples/minimal-router/README.md). It uses `terra` and `sol` aliases, environment-only gateway settings, and `bun run build`.
 
 ## Run the packaged router
 
@@ -10,7 +12,7 @@ Build the package, then start the bundled CLI with an operator-owned configurati
 bun run build
 bun dist/cli.js serve \
   --config <operator-config> \
-  --claude-version 2.1.268 \
+  --claude-version 2.1.269 \
   --host 127.0.0.1 \
   --port <port>
 ```
@@ -36,6 +38,6 @@ bash tests/probes/native-claude-run.sh resume
 
 On 2026-09-12, packaged-serve checks exercised `handler-ezphM0`, `next-turn-iscAxQ`, `nested-IWrTVw`, `compaction-Sroc4G`, and accepted resume `resume-0FieA7`. They used the pinned real Claude Code 2.1.268 client, recording proxy, built package, Bun raw fetch transport, and scripted loopback upstream. Each recorded expected routing, completion, executable identity, and capture pairing. The resume check observed the same child ids on both sides of the parent resume through native `SendMessage`; M3-A and explicit zero scaffold declaration also passed.
 
-Direct native checks were recorded separately in `resume-3STpCB`, `next-turn-RKA2N4`, `nested-a4QSXS`, and `compaction-WH9nKg`. They establish the measured 2.1.268 profile for the exercised routes. Claude Code 2.1.269 is installed but unmeasured. M2 failed, and M3, M3-B2, M4, M10-freshness, and their dependent channels remain closed. Correlation bindings are in memory, expire after idle TTL, and do not survive a router restart.
+Direct native checks were recorded separately in `resume-3STpCB`, `next-turn-RKA2N4`, `nested-a4QSXS`, and `compaction-WH9nKg`. They establish the measured 2.1.268 profile for the exercised routes. Claude Code 2.1.269 was subsequently checked with the same driver: `next-turn-wqfgz6` (next-turn and parallel), `nested-eHKU2Q`, `compaction-ffSI2i`, and `resume-bEB1Q3` passed through packaged `serve`. No routing-code change was required. M2 is failed on 2.1.268 and unmeasured on 2.1.269; M3, M3-B2, M4, M10-freshness, and their dependent channels remain closed. Correlation bindings are in memory, expire after idle TTL, and do not survive a router restart.
 
 See [transport/GAPS.md](transport/GAPS.md) for boundaries and historical measurements, and [cli/README.md](cli/README.md) for the command reference.

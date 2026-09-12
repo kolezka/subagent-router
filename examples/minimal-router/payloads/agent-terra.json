@@ -1,0 +1,5 @@
+{
+  "description": "Implement the requested change.",
+  "subagent_type": "general-purpose",
+  "prompt": "<subagent-router v=\"1\" model=\"terra\"/>\nImplement the requested change. Run focused checks and report the result."
+}
