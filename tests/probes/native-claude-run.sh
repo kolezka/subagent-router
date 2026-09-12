@@ -2,14 +2,14 @@
 # Drive the REAL installed `claude` CLI against the local mock gateway only.
 # Strict env allowlist via `env -i`: no inherited ANTHROPIC_API_KEY, no CCR vars,
 # no provider credentials. Loopback base URL + fake token only.
-# Usage: native-claude-run.sh <simple|delegate|handler|next-turn|resume|nested>
+# Usage: native-claude-run.sh <simple|delegate|handler|next-turn|resume|nested|compaction>
 # Set PROBE_CLAUDE_BIN to pin which client binary a run uses.
 set -uo pipefail
 
 MODE="${1:-simple}"
 case "$MODE" in
-  simple|delegate|handler|next-turn|resume|nested) ;;
-  *) echo "FAIL: unknown mode '$MODE' (expected simple, delegate, handler, next-turn, resume, or nested)" >&2; exit 2 ;;
+  simple|delegate|handler|next-turn|resume|nested|compaction) ;;
+  *) echo "FAIL: unknown mode '$MODE' (expected simple, delegate, handler, next-turn, resume, nested, or compaction)" >&2; exit 2 ;;
 esac
 
 # Pin one binary. The default path is a symlink the client updater repoints mid-run, so freeze
@@ -27,8 +27,12 @@ CLAUDE_BIN="$(/usr/bin/readlink -f "$CLAUDE_BIN_SELECTED" 2>/dev/null)"
 # declares mode "resume". nested lets exactly ONE child (native-probe-alpha) delegate to the other
 # (PROBE_NESTED_AGENT below) so a grandchild request can be measured for
 # x-claude-code-parent-agent-id; handler mode stays exactly as before (one invocation, one request
-# per child).
-is_handler_like() { [ "$MODE" = "handler" ] || [ "$MODE" = "next-turn" ] || [ "$MODE" = "resume" ] || [ "$MODE" = "nested" ]; }
+# per child). compaction reuses next-turn's forced-Read channel with a large file and more than one
+# round, plus the client's auto-compaction env vars, so one child's own conversation crosses the
+# compaction threshold and still has a turn left afterwards.
+is_handler_like() { [ "$MODE" = "handler" ] || [ "$MODE" = "next-turn" ] || [ "$MODE" = "resume" ] || [ "$MODE" = "nested" ] || [ "$MODE" = "compaction" ]; }
+# Modes driving a routed child through the forced Read tool, which needs the tool actually allowed.
+uses_child_read() { [ "$MODE" = "next-turn" ] || [ "$MODE" = "compaction" ]; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 mkdir -p "$ROOT/tests/probes/.runs" || exit 1
 RUN="$(mktemp -d "$ROOT/tests/probes/.runs/$MODE-XXXXXX")" || exit 1
@@ -63,6 +67,19 @@ if is_handler_like; then
     PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
       PROBE_LAYOUT="${PROBE_LAYOUT:-}" \
       PROBE_CHILD_READ_FILE="$PROBE_CHILD_READ_FILE" \
+      bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
+  elif [ "$MODE" = "compaction" ]; then
+    # compaction reuses next-turn's forced-Read channel, with two differences: the file the child
+    # reads is large enough that its tool_result pushes the child's OWN conversation past the
+    # ~800-token threshold forced below, and PROBE_CHILD_READ_ROUNDS makes the fixture issue a
+    # second Read afterwards, so the child still has a turn left once the client has compacted.
+    # That later request is the one expected to carry compact_boundary in its history.
+    PROBE_CHILD_READ_FILE="$WORK/probe-child-read.txt"
+    python3 -c 'import sys; sys.stdout.write("probe compaction filler line carrying enough words to be worth counting\n" * 400)' > "$PROBE_CHILD_READ_FILE"
+    PROBE_OUT="$RUN/capture" RUN_NATIVE_PROBES=1 PROBE_CLIENT_VERSION="$CLIENT_VERSION" \
+      PROBE_LAYOUT="${PROBE_LAYOUT:-}" \
+      PROBE_CHILD_READ_FILE="$PROBE_CHILD_READ_FILE" \
+      PROBE_CHILD_READ_ROUNDS=2 \
       bun "$ROOT/tests/probes/native-claude-handler.ts" >"$RUN/gateway.log" 2>&1 &
   elif [ "$MODE" = "resume" ]; then
     # resume is handler-like but enables the fixture's resume re-delegation opt-in so a second,
@@ -107,8 +124,9 @@ PORT="$(cat "$RUN/capture/port" 2>/dev/null)"
 # Minimal config so the CLI treats this as an onboarded, trusted, non-interactive workspace.
 # Narrow allow-list ONLY for the Task tool in this throwaway config. The permission
 # system stays ON; child agents declare `tools: []` so they can execute nothing, except
-# next-turn mode which adds the harmless `Read` tool (see PROBE_CHILD_READ_FILE above).
-if [ "$MODE" = "next-turn" ]; then
+# next-turn and compaction modes which add the harmless `Read` tool (see PROBE_CHILD_READ_FILE
+# above).
+if uses_child_read; then
   ALLOW_JSON='["Agent", "Read"]'
 else
   ALLOW_JSON='["Agent"]'
@@ -132,11 +150,11 @@ if is_handler_like; then
 else
   AGENT_PAIRS="alpha:haiku beta:sonnet"
 fi
-# next-turn's forced tool_use needs an actual tool the child is allowed to call; handler mode
-# (and simple/delegate) keep tools: [] exactly as before -- their children can execute nothing.
-# nested additionally grants ONLY native-probe-alpha the Agent tool (the one delegating child), so
-# it can issue a grandchild request; beta and every other mode keep their existing tools line.
-if [ "$MODE" = "next-turn" ]; then
+# next-turn's and compaction's forced tool_use needs an actual tool the child is allowed to call;
+# handler mode (and simple/delegate) keep tools: [] exactly as before -- their children can execute
+# nothing. nested additionally grants ONLY native-probe-alpha the Agent tool (the one delegating
+# child), so it can issue a grandchild request; beta and every other mode keep their existing line.
+if uses_child_read; then
   CHILD_TOOLS_LINE="[Read]"
 else
   CHILD_TOOLS_LINE="[]"
@@ -300,7 +318,40 @@ if [ "$MODE" = "resume" ]; then
   exit "$CLI_EXIT"
 fi
 
-if is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then
+# compaction needs two extra vars in the client's env, so it gets its own branch rather than an
+# array (see the bash 3.2 note above). CLAUDE_CODE_AUTO_COMPACT_WINDOW is floored at 100000 by the
+# client, so a smaller value would be silently raised; CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1 is what
+# actually drops the fire threshold to roughly 800 tokens counted over conversation messages.
+# DISABLE_COMPACT and DISABLE_AUTO_COMPACT must stay UNSET here: auto-compaction is opt-out only,
+# so naming either of them at all would turn off the very thing this mode exists to measure.
+if [ "$MODE" = "compaction" ]; then
+  # Same reasoning as resume: this branch carries no SUBAGENT_ROUTER_SECRET, so running the
+  # production freshness hook here would silently drop the secret the hook needs to sign a
+  # FreshDelegationEnvelope. Refuse up front rather than run a half-wired measurement.
+  if [ "$FRESHNESS_HOOK" = "production" ]; then
+    echo "FAIL: compaction mode does not support PROBE_FRESHNESS_HOOK=production yet" >&2
+    exit 2
+  fi
+  (
+    cd "$WORK" || exit 1
+    env -i \
+      PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Users/me/.local/bin" \
+      HOME="$HOMEDIR" \
+      PWD="$WORK" \
+      CLAUDE_CONFIG_DIR="$CFG" \
+      DISABLE_AUTOUPDATER=1 \
+      DISABLE_UPDATES=1 \
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+      ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" \
+      ANTHROPIC_AUTH_TOKEN="fake-local-token-not-a-credential" \
+      ANTHROPIC_MODEL="probe-parent-model" \
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000 \
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1 \
+      "$TIMEOUT" 90 "$CLAUDE_BIN" \
+        -p "$PROMPT" --output-format json \
+      >"$RUN/cli-stdout.json" 2>"$RUN/cli-stderr.txt"
+  )
+elif is_handler_like && [ "$FRESHNESS_HOOK" = "production" ]; then
   (
     cd "$WORK" || exit 1
     env -i \

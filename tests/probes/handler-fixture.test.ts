@@ -368,6 +368,61 @@ describe('channel-A handler fixture: forced two-request child flow (childReadFil
     expect(seen[1]?.body.model).toBe(agent.upstreamModel); // stable upstream model across both requests, no drift
   });
 
+  test('childReadRounds drives one child through several Read rounds before the echo, so it still has a turn left after its conversation has grown', async () => {
+    // What compaction mode needs: the child must keep taking turns after the tool_result that
+    // pushed its own conversation past the auto-compaction threshold, because only a LATER request
+    // can carry the resulting compact_boundary in its history.
+    const { handler, seen } = await createHandlerFixture({ childReadFilePath: '/tmp/probe-child-read-fixture.txt', childReadRounds: 2 });
+    const agent = CHANNEL_A_AGENTS[0]!;
+    const agentId = 'agent-multi-round';
+
+    const firstToolUses = reassembleToolUseBlocks(
+      await decodeSse(await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agent.alias, 'task'), { 'x-claude-code-agent-id': agentId }))),
+    );
+    expect(firstToolUses).toHaveLength(1);
+
+    // Round 1 answered: with two rounds configured this must issue ANOTHER tool_use, not the echo.
+    const secondEvents = await decodeSse(
+      await handler(jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agent.alias, 'task', firstToolUses[0]!.id, 'file contents'), { 'x-claude-code-agent-id': agentId })),
+    );
+    const secondToolUses = reassembleToolUseBlocks(secondEvents);
+    expect(secondToolUses).toHaveLength(1);
+    expect(secondToolUses[0]?.id).not.toBe(firstToolUses[0]?.id); // a fresh round, not a replay
+    expect(textOf(secondEvents)).not.toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+
+    // Round 2 answered: the last round, so now the echo ends the loop.
+    const thirdEvents = await decodeSse(
+      await handler(jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agent.alias, 'task', secondToolUses[0]!.id, 'file contents'), { 'x-claude-code-agent-id': agentId })),
+    );
+    expect(reassembleToolUseBlocks(thirdEvents)).toHaveLength(0);
+    expect(textOf(thirdEvents)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+
+    expect(seen).toHaveLength(3); // three forwarded requests from one child
+    expect(seen.every((r) => r.body.model === agent.upstreamModel)).toBe(true); // no upstream drift
+  });
+
+  test('childReadRounds defaults to a single round, so every existing mode keeps its two-request flow', async () => {
+    // Guards the opt-in: absent (and at 1) the knob must change nothing for handler/next-turn runs.
+    for (const rounds of [undefined, 1]) {
+      const { handler, seen } = await createHandlerFixture({
+        childReadFilePath: '/tmp/probe-child-read-fixture.txt',
+        ...(rounds !== undefined ? { childReadRounds: rounds } : {}),
+      });
+      const agent = CHANNEL_A_AGENTS[1]!;
+      const agentId = `agent-single-round-${String(rounds)}`;
+
+      const toolUses = reassembleToolUseBlocks(
+        await decodeSse(await handler(jsonRequestWithHeaders('/v1/messages', buildChildRequest(agent.alias, 'task'), { 'x-claude-code-agent-id': agentId }))),
+      );
+      const events = await decodeSse(
+        await handler(jsonRequestWithHeaders('/v1/messages', childContinuationRequest(agent.alias, 'task', toolUses[0]!.id, 'file contents'), { 'x-claude-code-agent-id': agentId })),
+      );
+      expect(reassembleToolUseBlocks(events)).toHaveLength(0); // echo on the second request, as before
+      expect(textOf(events)).toBe(`CHILD_SAW_MODEL=${agent.upstreamModel}`);
+      expect(seen).toHaveLength(2);
+    }
+  });
+
   test('a tool_result for a foreign or stale tool_use id is treated as a fresh first request, never a shortcut to the echo', async () => {
     const { handler, seen } = await createHandlerFixture({ childReadFilePath: '/tmp/probe-child-read-fixture.txt' });
     const agent = CHANNEL_A_AGENTS[0]!;

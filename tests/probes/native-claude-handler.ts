@@ -170,6 +170,14 @@ export interface HandlerFixtureOptions {
   // against it; hermetic tests never execute a real Read tool (they drive `handler` directly), so
   // any string works for them.
   childReadFilePath?: string;
+  // Opt-in (the launcher's `compaction` mode only, and only alongside childReadFilePath): how many
+  // forced Read rounds a routed child is driven through before it finally gets the echo. Each
+  // answered tool_use issues the next one, so N rounds means N+1 requests from that child. Absent
+  // or 1 (the default) is byte-identical to before this option existed: one round, echo on the
+  // second request. compaction mode needs more than one so the child still has a turn left AFTER
+  // its own conversation has grown past the auto-compaction threshold, which is what puts a
+  // compact_boundary in a later request's history.
+  childReadRounds?: number;
   // Opt-in (the launcher's `resume` mode only): when a parent turn arrives whose tool_results
   // are all for ids this fixture already finalized, treat it as a resumed session replaying the
   // prior round's history and force a FRESH Agent delegation (new tool_use ids) instead of ending
@@ -434,6 +442,10 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
   const seen: RecordedUpstreamRequest[] = [];
   const pendingToolUses = new Map<string, PendingToolUse>();
   const pendingChildToolUseByAgent = new Map<string, PendingChildToolUse>();
+  // Forced Read rounds each agent has actually completed (a tool_use this fixture issued, answered
+  // by a matching tool_result). Keyed by agent id, never by request order.
+  const childReadRoundsDoneByAgent = new Map<string, number>();
+  const childReadRounds = options.childReadRounds !== undefined && options.childReadRounds > 1 ? options.childReadRounds : 1;
   // Nested-delegation state, keyed by x-claude-code-agent-id (never by request order): the
   // deterministic tool_use id this fixture issued to the delegating child on its first request,
   // so only a SECOND request from that SAME agent carrying the matching tool_result gets the echo.
@@ -520,7 +532,11 @@ export async function createHandlerFixture(options: HandlerFixtureOptions = {}):
         const answered = extractToolResults(body).some((result) => result.toolUseId === pendingChildToolUse.toolUseId);
         if (answered) {
           pendingChildToolUseByAgent.delete(agentId as string);
-          return childEcho();
+          const done = (childReadRoundsDoneByAgent.get(agentId as string) ?? 0) + 1;
+          childReadRoundsDoneByAgent.set(agentId as string, done);
+          // With the default single round this is always the echo, exactly as before. Only the
+          // multi-round opt-in falls through to issue the next tool_use below.
+          if (done >= childReadRounds) return childEcho();
         }
       }
       const toolUseId = `toolu_child_${agentId ?? 'unknown'}_${Math.random().toString(36).slice(2, 8)}`;
@@ -662,6 +678,12 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
   // two-request behavior).
   const childReadFilePath = process.env.PROBE_CHILD_READ_FILE || undefined;
 
+  // Opt-in (the launcher's compaction mode only): how many forced Read rounds each routed child is
+  // driven through. Unset, blank or unparseable means 1, the single round every other mode has
+  // always had. See HandlerFixtureOptions.childReadRounds.
+  const parsedChildReadRounds = Number.parseInt(process.env.PROBE_CHILD_READ_ROUNDS ?? '', 10);
+  const childReadRounds = Number.isInteger(parsedChildReadRounds) && parsedChildReadRounds > 1 ? parsedChildReadRounds : undefined;
+
   // Opt-in (the launcher's resume mode only): lets a resumed parent turn re-delegate instead of
   // ending. See HandlerFixtureOptions.resumeReDelegate for why this must never be inferred from
   // request shape. Empty/unset for every other mode.
@@ -700,6 +722,7 @@ if (process.env.RUN_NATIVE_PROBES === '1' && import.meta.main) {
     },
     profile,
     ...(childReadFilePath !== undefined ? { childReadFilePath } : {}),
+    ...(childReadRounds !== undefined ? { childReadRounds } : {}),
     ...(resumeReDelegate ? { resumeReDelegate: true } : {}),
     ...(nestedDelegatingAgent !== undefined ? { nestedDelegatingAgent } : {}),
   });
