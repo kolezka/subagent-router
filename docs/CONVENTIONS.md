@@ -1,53 +1,53 @@
-# Konwencje dokumentacji
+# Documentation conventions
 
-Ten dokument opisuje lekkie zasady dla dokumentacji `subagent-router`. Dotyczy stanu projektowanego i później także stanu wdrożonego.
+This document describes lightweight rules for `subagent-router` documentation. It applies to the design state and later also to the implemented state.
 
-## Statusy
+## Statuses
 
-Każdy spec, plan lub dokument bloku podaje w treści `Date` i `Status`.
+Each spec, plan, or block document states `Date` and `Status` in its body.
 
-- `draft`: materiał do przeglądu, bez zatwierdzenia.
-- `approved`: decyzja zaakceptowana, ale nie musi być wdrożona.
-- `implemented`: opis odpowiada działającemu zachowaniu zweryfikowanemu względem wskazanego kodu i testów.
-- `superseded`: materiał zastąpiony przez nowszy dokument, z linkiem do następcy.
+- `draft`: material for review, not yet approved.
+- `approved`: decision accepted, but not necessarily implemented.
+- `implemented`: the description matches working behavior verified against the referenced code and tests.
+- `superseded`: material replaced by a newer document, with a link to the successor.
 
-Zadania należą do planu, nie do specyfikacji. Planów nie tworzy się przed zatwierdzeniem specyfikacji.
+Tasks belong to the plan, not to the specification. Plans are not created before the specification is approved.
 
-## Fakty, założenia i wymagania
+## Facts, assumptions, and requirements
 
-Dokumentacja oznacza poziom podstawy każdego istotnego twierdzenia:
+The documentation marks the evidence level of every significant claim:
 
-- `[verified]`: potwierdzone we wskazanym źródle lub wykonanym sprawdzeniu. Odczyt kodu nie oznacza testu działającej integracji.
-- `[inferred]`: wniosek z potwierdzonych faktów, z podanym uzasadnieniem.
-- `[assumption]`: założenie lub informacja niezweryfikowana w źródle.
-- `[historical: YYYY-MM-DD, źródło]`: dawny pomiar, którego nie można teraz odtworzyć. Sam wiek dokumentu nie uzasadnia tego oznaczenia.
+- `[verified]`: confirmed in the referenced source or in a check that was performed. Reading the code does not count as testing a working integration.
+- `[inferred]`: a conclusion drawn from confirmed facts, with the reasoning stated.
+- `[assumption]`: an assumption or information not verified against the source.
+- `[historical: YYYY-MM-DD, source]`: a past measurement that cannot be reproduced now. The document's age alone does not justify this tag.
 
-Wymagania normatywne są pisane osobno, zwykle jako `MUSI`, `NIE MOŻE` lub `POWINIEN`. Nie należy przedstawiać ich jako zmierzonych faktów.
+Normative requirements are written separately, usually as `MUST`, `MUST NOT`, or `SHOULD`. They must not be presented as measured facts.
 
-Dla początkowych dokumentów meta nie dodajemy YAML ani pola `verified_against`, ponieważ nie istnieje implementacja, którą można uczciwie wskazać.
+For initial meta documents we do not add YAML or a `verified_against` field, because there is no implementation that can honestly be referenced.
 
-## Dowody i kontrakty
+## Evidence and contracts
 
-Każdy przyszły opis działającego bloku zawiera YAML z polami `block`, `doc`, `verified_against` i `verified_on`. Wartość `verified_against` jest identyfikatorem sprawdzonego commita. Cytowania w treści wskazują plik i symbol, nie numer linii.
+Every future description of a working block contains YAML with the fields `block`, `doc`, `verified_against`, and `verified_on`. The value of `verified_against` is the identifier of the verified commit. Citations in the body reference the file and symbol, not the line number.
 
-Opis działania oddziela:
+The behavior description separates:
 
-- kontrakt publiczny,
-- invariants, które kod i testy muszą zachować,
-- luki i nieweryfikowane ścieżki,
-- mechanizm enforcementu, który faktycznie istnieje,
-- elementy wyłącznie planowane.
+- the public contract,
+- invariants that the code and tests must preserve,
+- gaps and unverified paths,
+- the enforcement mechanism that actually exists,
+- elements that are only planned.
 
-Nie wolno kopiować pola weryfikacji do dokumentu, którego nie sprawdzono względem działającego kodu.
+Do not copy the verification field into a document that has not been checked against working code.
 
-## Struktura i linki
+## Structure and links
 
-`docs/README.md` jest indeksem. Specyfikacje zapisuje się jako `docs/superpowers/specs/YYYY-MM-DD-<slug>-design.md`. Przyszłe plany zapisuje się jako `docs/superpowers/plans/YYYY-MM-DD-<slug>.md`.
+`docs/README.md` is the index. Specifications are saved as `docs/superpowers/specs/YYYY-MM-DD-<slug>-design.md`. Future plans are saved as `docs/superpowers/plans/YYYY-MM-DD-<slug>.md`.
 
-Linki wewnątrz repo są względne. Zewnętrzne źródła używają pinned commit, gdy odwołują się do kodu. Cytowania wskazują symbol, commit i plik, bez numerów linii.
+Links inside the repo are relative. External sources use a pinned commit when they refer to code. Citations reference the symbol, commit, and file, without line numbers.
 
-## Styl
+## Style
 
-Nowa proza dokumentacji jest po polsku. Identyfikatory, nazwy plików, nazwy symboli i wartości techniczne pozostają po angielsku, gdy są częścią kontraktu lub źródła.
+New documentation prose is written in English. Identifiers, file names, symbol names, and technical values stay in their original form when they are part of a contract or source.
 
-Źródłem adaptowanego stylu jest [dotfiles-next, commit `9337ab95a2fa3f673e77d16aa2be720e7b8353b1`](https://github.com/kolezka/dotfiles-next/tree/9337ab95a2fa3f673e77d16aa2be720e7b8353b1/docs). Konwencja została uproszczona dla projektu bez implementacji i nie przenosi automatycznie jego faktów ani struktury.
+The source of the adapted style is [dotfiles-next, commit `9337ab95a2fa3f673e77d16aa2be720e7b8353b1`](https://github.com/kolezka/dotfiles-next/tree/9337ab95a2fa3f673e77d16aa2be720e7b8353b1/docs). The convention was simplified for a project without an implementation and does not automatically carry over its facts or structure.
