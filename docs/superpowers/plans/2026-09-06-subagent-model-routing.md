@@ -2776,8 +2776,8 @@ git commit -m "feat: add Codex spawn validation hook logic"
 - Test: `tests/cli/read.test.ts`
 
 **Interfaces:**
-- Consumes: `loadState`, `buildCatalog`, `resolveModel`, `resolveRoute`, `readAgentInventory`, `getAgent`, `loadCapabilityProfile`, `resolveSource`, `validateSource`, typ `CliDeps`.
-- Produces: `parseArgs(argv: readonly string[]): ParsedArgs` z `ParsedArgs = { command: string[]; options: Record<string, string | boolean>; positionals: string[] }`; `render(deps: CliDeps, payload: unknown, human: () => string): void`; `previewRoute(options: { client: ClientId; agent: string; model?: string; parentModel?: string }, state: LoadedState, inventory: AgentInventory, profile: CapabilityProfile): { mode: 'simulation'; generation: string; assumptions: { authenticatedChild: true; freshDelegation: true; runtimeCapabilityNotProven: true }; decision: RouteDecision; agent: { name: string; declaredModel: string | 'unknown'; scope: string } }`; `runCli(argv: readonly string[], deps: CliDeps): Promise<0 | 1 | 2>`.
+- Consumes: `loadState`, `buildCatalog`, `resolveModel`, `resolveRoute`, `readAgentInventory`, `getAgent`, `loadCapabilityProfile`, `resolveSource`, `validateSource`, type `CliDeps`.
+- Produces: `parseArgs(argv: readonly string[]): ParsedArgs` with `ParsedArgs = { command: string[]; options: Record<string, string | boolean>; positionals: string[] }`; `render(deps: CliDeps, payload: unknown, human: () => string): void`; `previewRoute(options: { client: ClientId; agent: string; model?: string; parentModel?: string }, state: LoadedState, inventory: AgentInventory, profile: CapabilityProfile): { mode: 'simulation'; generation: string; assumptions: { authenticatedChild: true; freshDelegation: true; runtimeCapabilityNotProven: true }; decision: RouteDecision; agent: { name: string; declaredModel: string | 'unknown'; scope: string } }`; `runCli(argv: readonly string[], deps: CliDeps): Promise<0 | 1 | 2>`.
 
 Commands for this task: `models list`, `models show <id-or-alias>`, `agents list --client <c>`, `agents show <name> --client <c>`, `route preview --client <c> --agent <name> [--model <ref>] [--parent-model <m>]`, `config show`, `config check`, `doctor` (offline). `config check`, the export sidecar, and offline preview check files and references, but are never proof that the native runtime loaded the effective configuration or applied the default. The argument parser uses `parseArgs` from `node:util`, available in Bun and Node. Global options: `--config`, `--json`, `--no-color`, `--agents-dir` (repeatable), `--help`, `--version`. The default config is `<cwd>/subagent-router.json`. JSON output goes entirely to stdout; diagnostics go to stderr. Exit codes: 0 success, 1 operational error (`RouterError` from I/O or network), 2 usage, configuration, or selection error. Every string from the catalog, a description, or an agent name goes through `escapeControl` (control characters and ANSI sequences turned into `\uXXXX`) before being printed in text mode.
 
@@ -2944,14 +2944,14 @@ git commit -m "feat: add read-only CLI with route preview and doctor"
 - Create: `src/cli/write.ts`
 - Create: `src/cli/serve.ts`
 - Create: `src/agents/export.ts`
-- Modify: `src/cli/main.ts` (tylko dispatch nowych komend)
+- Modify: `src/cli/main.ts` (only dispatch of new commands)
 - Test: `tests/cli/write.test.ts`
 - Test: `tests/cli/export.test.ts`
 - Test: `tests/cli/serve.test.ts`
 
 **Interfaces:**
 - Consumes: `synchronize`, `loadState`, `commitState`, `opencodeVariants`, `readAgentInventory`, `createHandler`, `createClaudeStartOutput`, `runClaudeSubagentStartHook`, `createOpenCodePlugin`, `runCodexPreToolUseHook`, `discoverModels`, `resolveSource`.
-- Produces: `describeModel(configPath: string, reference: string, description: string | null): Promise<void>`; `exportConfig(configPath: string, client: ClientId, outputDir: string, options: { dryRun: boolean; force: boolean; inventory: AgentInventory; catalogRequired: boolean }): Promise<ExportFile[]>`; `startServer(configPath: string, deps: CliDeps, options: { port: number; host: string }): Promise<{ url: string; generation: string; stop: () => Promise<void> }>`; `dumpToml(value: Record<string, unknown>): string` w `src/agents/export.ts`.
+- Produces: `describeModel(configPath: string, reference: string, description: string | null): Promise<void>`; `exportConfig(configPath: string, client: ClientId, outputDir: string, options: { dryRun: boolean; force: boolean; inventory: AgentInventory; catalogRequired: boolean }): Promise<ExportFile[]>`; `startServer(configPath: string, deps: CliDeps, options: { port: number; host: string }): Promise<{ url: string; generation: string; stop: () => Promise<void> }>`; `dumpToml(value: Record<string, unknown>): string` in `src/agents/export.ts`.
 
 `exportConfig` calls `loadState` itself and derives `snapshotGeneration`, `configHash`, and `snapshotHash` from that single validated state. It does not accept a generation from the caller. It first builds the complete file plan with the target absolute paths or named operator env references, hashes the exact bytes of the planned artifacts, and only then atomically publishes the whole set into the output directory. The sidecar is outside the native schema.
 
@@ -3264,7 +3264,7 @@ git commit -m "feat: add sync, describe, export and serve commands"
 - Create: `src/index.ts`
 - Create: `src/bun.ts`
 - Create: `scripts/build.ts`
-- Modify: `package.json` (pola `exports`, `bin`, `files`)
+- Modify: `package.json` (fields `exports`, `bin`, `files`)
 - Create: `tests/support/run-built-entrypoints.ts`
 - Test: `tests/package.test.ts`
 
