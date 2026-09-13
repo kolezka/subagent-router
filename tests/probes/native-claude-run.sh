@@ -49,7 +49,13 @@ CLAUDE_BIN="$RUN/client-binary"
 /bin/chmod 500 "$CLAUDE_BIN" || exit 1
 printf '%s\n' "$CLAUDE_BIN_SOURCE" > "$RUN/capture/client-binary-source"
 printf '%s\n' "$CLAUDE_BIN" > "$RUN/capture/client-binary"
-/usr/bin/shasum -a 256 "$CLAUDE_BIN" | awk '{print $1}' > "$RUN/capture/client-binary.sha256" || exit 1
+# sha256sum (GNU) vs shasum (BSD/macOS, also needs -a 256): pick whichever exists.
+SHA256_BIN="$(command -v sha256sum || command -v shasum)"
+[ -x "$SHA256_BIN" ] || { echo "FAIL: no sha256sum/shasum binary" >&2; exit 1; }
+case "$SHA256_BIN" in
+  */shasum) "$SHA256_BIN" -a 256 "$CLAUDE_BIN" ;;
+  *) "$SHA256_BIN" "$CLAUDE_BIN" ;;
+esac | awk '{print $1}' > "$RUN/capture/client-binary.sha256" || exit 1
 
 GW=""
 PACKAGED_SERVE=""
