@@ -1,0 +1,40 @@
+{
+  "client": "claude-code",
+  "version": "2.1.270",
+  "status": "supported",
+  "correlation": true,
+  "correlationEntropy": "passed",
+  "fork": false,
+  "adapterMarkerPosition": "unknown",
+  "parentPromptPosition": "after-native-context-v2",
+  "probes": {
+    "M1": "passed",
+    "M2": "pending",
+    "M3": "pending",
+    "M3-B2": "pending",
+    "M3-A": "passed",
+    "M4": "pending",
+    "M10": "passed",
+    "M10-freshness": "pending"
+  },
+  "lifecycle": {
+    "next-turn": "passed",
+    "resume": "passed",
+    "compaction": "passed",
+    "nested": "passed",
+    "parallel": "passed"
+  },
+  "diagnostics": [
+    "measured:M1=passed;run=handler-kyiSId;at=2026-09-13T03:05:48.611Z",
+    "measured:M3-A=passed;run=handler-kyiSId;at=2026-09-13T03:05:48.611Z",
+    "measured:correlation=true;run=handler-kyiSId;at=2026-09-13T03:05:48.611Z",
+    "measured:correlationEntropy=passed;run=handler-kyiSId;at=2026-09-13T03:05:48.611Z",
+    "measured:lifecycle.next-turn=passed;run=next-turn-o9fXBA;at=2026-09-13T03:06:55.289Z",
+    "measured:lifecycle.parallel=passed;run=next-turn-o9fXBA;at=2026-09-13T03:06:55.289Z",
+    "measured:lifecycle.nested=passed;run=nested-q1p4jK;at=2026-09-13T03:06:55.788Z",
+    "measured:lifecycle.compaction=passed;run=compaction-pDcASg;at=2026-09-13T03:06:56.305Z",
+    "measured:lifecycle.resume=passed;run=resume-rCkw8Z;at=2026-09-13T03:06:56.808Z",
+    "measured:M10=passed;run=resume-rCkw8Z;at=2026-09-13T03:07:05.557Z",
+    "measured:status=supported;run=resume-rCkw8Z;at=2026-09-13T03:07:05.557Z"
+  ]
+}
