@@ -13,11 +13,12 @@ import {
   routePreview,
   type CommandResult,
 } from './read';
+import { uiCommand } from './ui';
 import { configExport, doctorConnect, modelsDescribe, modelsSync, serveCommand } from './write';
 
 const VERSION = '0.0.0';
 
-const TOP_LEVEL_COMMANDS = ['models', 'agents', 'route', 'config', 'doctor', 'serve'] as const;
+const TOP_LEVEL_COMMANDS = ['models', 'agents', 'route', 'config', 'doctor', 'serve', 'ui'] as const;
 
 type CommandHandler = (deps: CliDeps, parsed: ReturnType<typeof parseArgs>) => Promise<CommandResult>;
 
@@ -37,6 +38,8 @@ const COMMANDS: Readonly<Record<string, CommandHandler>> = {
   'config export': configExport,
   doctor,
   serve: serveCommand,
+  // Read-only local web console. A separate listener from `serve`, never a routing path.
+  ui: uiCommand,
 };
 
 // A handful of export- codes are user-input problems (bad client, a target that overlaps a
@@ -82,6 +85,7 @@ Commands:
   config export --client <c> --output <dir> [--dry-run] [--force]
   doctor [--connect]
   serve [--port <n>] [--host <h>] [--claude-version <v>]
+  ui [--port <n>] [--host <h>]
 
 Global options:
   --config <file>  --json  --no-color  --agents-dir <dir>  --help  --version

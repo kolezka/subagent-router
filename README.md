@@ -28,3 +28,17 @@ and [docs/cli/INVARIANTS.md](docs/cli/INVARIANTS.md) for exact behavior, and
 [docs/cli/OPERATIONS.md](docs/cli/OPERATIONS.md) for runnable examples. Native client integration
 (Claude Code, OpenCode, or Codex actually loading an exported config) is still unmeasured; see
 [docs/cli/GAPS.md](docs/cli/GAPS.md).
+
+## Web UI (local)
+
+`subagent-router ui` uruchamia lokalną konsolę WWW tylko do odczytu (domyślnie
+`http://127.0.0.1:8788`). Pokazuje katalog modeli, inwentarz agentów, symulację decyzji routingu,
+wynik `config check` i raport `doctor`. Konsola nasłuchuje osobno od `serve`, nie przekazuje ruchu
+do bramy i nie korzysta z sieci.
+
+```sh
+bun run build
+bun dist/cli.js ui --config ./subagent-router.json --port 8788
+```
+
+Opis kontraktu i ograniczeń: [docs/cli/UI.md](docs/cli/UI.md).
