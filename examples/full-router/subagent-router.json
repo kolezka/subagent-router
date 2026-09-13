@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "modelSource": {
+    "sourceId": "operator-gateway",
+    "baseUrlEnv": "ROUTER_GATEWAY_URL",
+    "endpointPath": "/v1/models",
+    "authEnv": "ROUTER_MODELS_AUTH",
+    "headersEnv": [
+      "ROUTER_MODELS_HEADERS"
+    ],
+    "timeoutMs": 10000,
+    "fetchLimit": 1000,
+    "staleAfterSeconds": 86400
+  },
+  "modelOverrides": {
+    "claude-haiku-4-5-20251001": {
+      "alias": "haiku",
+      "description": "Cheap discovery worker: file lookup, symbol search, small summaries.",
+      "enabled": true
+    },
+    "claude-sonnet-5": {
+      "alias": "sonnet",
+      "description": "Default engineering worker: implementation, refactors, tests.",
+      "enabled": true
+    },
+    "claude-opus-5": {
+      "alias": "opus",
+      "description": "Orchestration and integration. Rarely a child model.",
+      "enabled": true
+    },
+    "gpt-5.6-terra": {
+      "alias": "terra",
+      "description": "Fast independent coding worker for mechanical, isolated changes.",
+      "enabled": true,
+      "clientModel": "sonnet"
+    },
+    "gpt-5.6-sol": {
+      "alias": "sol",
+      "description": "Independent high-capability reviewer and hard-bug specialist.",
+      "enabled": true,
+      "clientModel": "opus"
+    },
+    "gpt-5.6-legacy": {
+      "alias": "legacy",
+      "description": "Advertised by the gateway but not allowed for subagents.",
+      "enabled": false
+    }
+  },
+  "roles": {
+    "claude-code:explorer": {
+      "routeOverride": "haiku"
+    },
+    "claude-code:implementer": {
+      "routeOverride": "terra"
+    },
+    "claude-code:reviewer": {
+      "routeOverride": "sol"
+    }
+  },
+  "defaults": {
+    "child": "sonnet",
+    "unmarkedSubagent": "error"
+  },
+  "agentRoots": {
+    "claude-code": {
+      "configRoot": null
+    },
+    "opencode": {
+      "configRoot": null
+    },
+    "codex": {
+      "configRoot": null
+    }
+  },
+  "gateway": {
+    "urlEnv": "ROUTER_GATEWAY_URL",
+    "headersEnv": [
+      "ROUTER_GATEWAY_HEADERS"
+    ]
+  },
+  "harness": {
+    "claudeCode": {
+      "correlation": "auto",
+      "secretEnv": "ROUTER_SECRET"
+    },
+    "opencode": {
+      "providerId": "operator-gateway"
+    },
+    "codex": {
+      "emitModelCatalog": true
+    }
+  }
+}

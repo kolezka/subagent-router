@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sourceId": "operator-gateway",
+  "sourceFingerprint": "replace-with-your-models-sync-output",
+  "fetchedAt": "2026-09-14T00:00:00.000Z",
+  "models": [
+    { "id": "claude-haiku-4-5-20251001", "alias": "claude-haiku-4-5-20251001", "status": "available", "metadata": { "displayName": "Claude Haiku 4.5" } },
+    { "id": "claude-sonnet-5", "alias": "claude-sonnet-5", "status": "available", "metadata": { "displayName": "Claude Sonnet 5" } },
+    { "id": "claude-opus-5", "alias": "claude-opus-5", "status": "available", "metadata": { "displayName": "Claude Opus 5" } },
+    { "id": "gpt-5.6-terra", "alias": "gpt-5.6-terra", "status": "available", "metadata": { "displayName": "GPT-5.6 Terra" } },
+    { "id": "gpt-5.6-sol", "alias": "gpt-5.6-sol", "status": "available", "metadata": { "displayName": "GPT-5.6 Sol" } },
+    { "id": "gpt-5.6-legacy", "alias": "gpt-5.6-legacy", "status": "available", "metadata": { "displayName": "GPT-5.6 Legacy" } }
+  ]
+}
