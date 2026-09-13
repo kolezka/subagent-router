@@ -1,0 +1,33 @@
+{
+  "client": "claude-code",
+  "version": "2.1.270",
+  "method": "dd",
+  "binaryPath": "/home/me/.local/share/claude/versions/2.1.270",
+  "inspectedAt": "2026-09-13T00:00:00Z",
+  "randomBytes": 8,
+  "bits": 64,
+  "entropySource": "crypto.randomBytes",
+  "idPattern": "^a[0-9a-f]{16}$",
+  "sites": [
+    {
+      "name": "generator",
+      "offset": 184860708,
+      "literal": "let t=xn(8).toString(\"hex\");return e?`a${e}-${t}`:`a${t}`"
+    },
+    {
+      "name": "import",
+      "offset": 184859781,
+      "literal": "randomBytes as xn}from\"crypto\""
+    },
+    {
+      "name": "spawn",
+      "offset": 193946454,
+      "literal": "vn=U?.agentId?U.agentId:ly()"
+    },
+    {
+      "name": "header",
+      "offset": 192165970,
+      "literal": "\"x-claude-code-agent-id\":DFn(L.agentId)"
+    }
+  ]
+}

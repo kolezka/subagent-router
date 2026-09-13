@@ -53,6 +53,52 @@ const notExecutablePath = join(fixtureRoot, "not-executable-client");
 const failingReadlinkPath = join(fixtureRoot, "fake-readlink-always-fails");
 const launcherCopyPath = join(fixtureProbesDir, "native-claude-run.sh");
 
+// Resolves a bare command the way the launcher's own shell would, using the real
+// PATH this test runner has (never the isolated one built for a scenario below).
+function resolveTool(name: string): string | undefined {
+  const found = spawnSync("/bin/bash", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim();
+  return found || undefined;
+}
+
+// PATH with every directory that provides `shasum` removed, so only sha256sum remains
+// reachable. Everything else the delegate path needs (mkdir, mktemp, awk, ...) still lives
+// in the directories that are left, so nothing else needs rebuilding for this scenario.
+function pathWithoutShasum(): string {
+  return (process.env.PATH ?? "/usr/bin:/bin")
+    .split(":")
+    .filter((dir) => dir !== "" && !existsSync(join(dir, "shasum")))
+    .join(":");
+}
+
+// Positive control for the scenarios below: each one only proves anything if the tool it
+// claims to remove is really unreachable. A machine shipping both tools in one directory
+// would otherwise pass while exercising neither branch.
+function pathProvides(searchPath: string, tool: string): boolean {
+  return searchPath.split(":").some((dir) => dir !== "" && existsSync(join(dir, tool)));
+}
+
+// Bare commands (besides the hashing tool itself) the delegate/simple code path resolves
+// via PATH rather than an absolute path.
+const BARE_TOOLS_DELEGATE_MODE = ["dirname", "mkdir", "mktemp", "awk", "seq", "sleep", "env", "cat", "ls", "timeout", "node"];
+
+// A whitelist PATH for the shasum-only scenario: a shim dir holding every other bare
+// command the launcher needs, plus shasum's own real directory. sha256sum lives in the
+// same system directory (/usr/bin) as several of those other commands, so it cannot be
+// excluded by removing one directory; instead this never includes that directory at all.
+// undefined when shasum cannot be resolved on this machine at all.
+const shasumRealPath = resolveTool("shasum");
+let shasumOnlyPath: string | undefined;
+if (shasumRealPath) {
+  const shasumOnlyBinDir = join(fixtureRoot, "shasum-only-bin");
+  mkdirSync(shasumOnlyBinDir, { recursive: true });
+  for (const tool of BARE_TOOLS_DELEGATE_MODE) {
+    const resolved = resolveTool(tool);
+    if (!resolved) throw new Error(`test setup: could not resolve ${tool} via PATH on this machine`);
+    symlinkSync(resolved, join(shasumOnlyBinDir, tool));
+  }
+  shasumOnlyPath = [shasumOnlyBinDir, join(shasumRealPath, "..")].join(":");
+}
+
 beforeAll(() => {
   mkdirSync(fixtureProbesDir, { recursive: true });
   mkdirSync(fixtureHome, { recursive: true });
@@ -274,6 +320,44 @@ test("launcher records a digest of the executable used by the run", () => {
   expect(readFileSync(join(runDir!, "capture", "client-binary"), "utf8").trim()).toBe(join(runDir!, "client-binary"));
   expect(readFileSync(join(runDir!, "capture", "client-binary-source"), "utf8").trim()).toBe(realpathSync(fakeClaudePath));
   expect(readFileSync(join(runDir!, "capture", "client-binary.sha256"), "utf8").trim()).toBe(digest);
+});
+
+// Locks the invariant behind the sha256 portability fix: the launcher must digest the
+// client binary with whichever of sha256sum/shasum is actually reachable, never assume
+// or hardcode one specific tool. Each scenario below removes the OTHER tool from PATH
+// entirely, so a regression back to a single hardcoded tool fails at least one of these.
+test("launcher digest works when only sha256sum is on PATH (shasum removed)", () => {
+  const scenarioPath = pathWithoutShasum();
+  expect(pathProvides(scenarioPath, "shasum")).toBe(false);
+  expect(pathProvides(scenarioPath, "sha256sum")).toBe(true);
+  const { result, runDir } = runCopy("delegate", { PATH: scenarioPath });
+  if (runDir === undefined) throw new Error(`launcher did not start: ${result.stdout}\n${result.stderr}`);
+  expect(result.status).toBe(FAKE_EXIT_CODE);
+  const digest = readFileSync(join(runDir, "capture", "client-binary.sha256"), "utf8").trim();
+  expect(digest).toMatch(/^[0-9a-f]{64}$/);
+  expect(digest).toBe(createHash("sha256").update(readFileSync(fakeClaudePath)).digest("hex"));
+});
+
+// Skipped only if this machine has no `shasum` anywhere on PATH to build the scenario from;
+// not a stand-in for actually running it where the tool exists (it does on this box: Manjaro
+// ships shasum as a perl script outside the default PATH, resolvable via `command -v`).
+test.skipIf(shasumOnlyPath === undefined)(
+  "launcher digest works when only shasum is on PATH (sha256sum removed)",
+  () => {
+    expect(pathProvides(shasumOnlyPath!, "sha256sum")).toBe(false);
+    expect(pathProvides(shasumOnlyPath!, "shasum")).toBe(true);
+    const { result, runDir } = runCopy("delegate", { PATH: shasumOnlyPath! });
+    if (runDir === undefined) throw new Error(`launcher did not start: ${result.stdout}\n${result.stderr}`);
+    expect(result.status).toBe(FAKE_EXIT_CODE);
+    const digest = readFileSync(join(runDir, "capture", "client-binary.sha256"), "utf8").trim();
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(digest).toBe(createHash("sha256").update(readFileSync(fakeClaudePath)).digest("hex"));
+  },
+);
+
+test("native-claude-run.sh never hardcodes an absolute path to a hashing binary", () => {
+  const script = readFileSync(REAL_SCRIPT_PATH, "utf8");
+  expect(script).not.toMatch(/\/(usr\/bin|bin)\/(shasum|sha256sum)\b/);
 });
 
 test("launcher reaches the client for simple mode too", () => {
