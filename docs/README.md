@@ -21,6 +21,18 @@ The configuration, its adjacent `models.lock.json` snapshot, and the configured 
 
 Builds are non-destructive. A custom `BUILD_OUTPUT_DIR` must name a new or empty `dist` directory. Repeated default builds archive the previous `dist` under ignored `.build-history`.
 
+## Inspect the configuration in a browser
+
+`ui` starts a local read-only web console over the same offline inspection commands the CLI
+exposes. It is a separate listener from `serve`, never forwards a request upstream and never
+reaches the network.
+
+```bash
+bun dist/cli.js ui --config <operator-config> --port 8788
+```
+
+See [cli/UI.md](cli/UI.md) for the endpoint contract, the invariants and the gaps.
+
 ## Reproduce the local packaged check
 
 The opt-in loopback check starts the built `dist/cli.js serve` package and uses a scripted local provider. It verifies routing and lifecycle behavior, not paid-model quality.
