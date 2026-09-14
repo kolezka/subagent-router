@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "modelSource": {
+    "sourceId": "cliproxyapi",
+    "baseUrlEnv": "CLIPROXYAPI_URL",
+    "endpointPath": "/v1/models",
+    "authEnv": "CLIPROXYAPI_MODELS_AUTH",
+    "headersEnv": [],
+    "timeoutMs": 10000,
+    "fetchLimit": 1000,
+    "staleAfterSeconds": 86400
+  },
+  "modelOverrides": {
+    "claude-haiku-4-5-20251001": {
+      "alias": "haiku",
+      "description": "Cheap discovery worker: file lookup, symbol search, small summaries.",
+      "enabled": true
+    },
+    "claude-sonnet-5": {
+      "alias": "sonnet",
+      "description": "Default engineering worker: exploration, implementation, refactors, tests.",
+      "enabled": true
+    },
+    "claude-opus-5": {
+      "alias": "opus",
+      "description": "General implementation and integration work.",
+      "enabled": true
+    },
+    "claude-fable-5-1": {
+      "alias": "fable",
+      "description": "Architecture escalation, long-horizon planning, difficult reasoning.",
+      "enabled": true
+    },
+    "gpt-5.6-terra": {
+      "alias": "terra",
+      "description": "Fast independent coding worker for straightforward, parallel, mechanical changes.",
+      "enabled": true,
+      "clientModel": "sonnet"
+    },
+    "gpt-5.6-sol": {
+      "alias": "sol",
+      "description": "Independent high-capability reviewer, hard bugs, security-sensitive changes.",
+      "enabled": true,
+      "clientModel": "opus"
+    }
+  },
+  "roles": {
+    "claude-code:explorer": { "routeOverride": "haiku" },
+    "claude-code:codebase-researcher": { "routeOverride": "sonnet" },
+    "claude-code:implementer": { "routeOverride": "terra" },
+    "claude-code:test-engineer": { "routeOverride": "terra" },
+    "claude-code:reviewer": { "routeOverride": "sol" },
+    "claude-code:security-reviewer": { "routeOverride": "sol" },
+    "claude-code:debugger": { "routeOverride": "sol" },
+    "claude-code:architect": { "routeOverride": "fable" }
+  },
+  "defaults": {
+    "child": "sonnet",
+    "unmarkedSubagent": "error"
+  },
+  "agentRoots": {
+    "claude-code": { "configRoot": null },
+    "opencode": { "configRoot": null },
+    "codex": { "configRoot": null }
+  },
+  "gateway": {
+    "urlEnv": "CLIPROXYAPI_URL",
+    "headersEnv": ["CLIPROXYAPI_GATEWAY_HEADERS"]
+  },
+  "harness": {
+    "claudeCode": { "correlation": "auto", "secretEnv": "ROUTER_SECRET" },
+    "opencode": { "providerId": "cliproxyapi" },
+    "codex": { "emitModelCatalog": false }
+  }
+}
