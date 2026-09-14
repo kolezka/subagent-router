@@ -111,9 +111,14 @@ if is_handler_like; then
       compaction)
         PROBE_CHILD_READ_FILE="$WORK/probe-child-read.txt"
         python3 -c 'import sys; sys.stdout.write("probe compaction filler line carrying enough words to be worth counting\n" * 400)' > "$PROBE_CHILD_READ_FILE"
-        PROBE_CHILD_READ_ROUNDS=6
-        PROBE_CHILD_USAGE_INPUT_TOKENS=5000
-        PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS=3
+        # Defaults kept exactly as measured before. They are overridable because the numbers that
+        # make the compactor fire are client-build and machine dependent: on Linux with client
+        # 2.1.270 the ramp trips while a child still has too few assistant turns, and the client
+        # logs "no assistant messages in summarize set, bailing" instead of compacting. Tuning the
+        # ramp is a probe-scenario knob, never a change to what the router does.
+        PROBE_CHILD_READ_ROUNDS="${PROBE_CHILD_READ_ROUNDS:-6}"
+        PROBE_CHILD_USAGE_INPUT_TOKENS="${PROBE_CHILD_USAGE_INPUT_TOKENS:-5000}"
+        PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS="${PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS:-3}"
         PROBE_ANSWER_COMPACTION_SUMMARIES=1
         export PROBE_CHILD_READ_FILE PROBE_CHILD_READ_ROUNDS PROBE_CHILD_USAGE_INPUT_TOKENS PROBE_CHILD_USAGE_RAMP_AFTER_ROUNDS PROBE_ANSWER_COMPACTION_SUMMARIES
         ;;
