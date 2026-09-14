@@ -1,0 +1,278 @@
+{
+  "version": 1,
+  "sourceId": "operator-gateway",
+  "sourceFingerprint": "5b11be364284467da8778d9badc449217d01f0a7ba2be214b57de51b8be89047",
+  "fetchedAt": "2026-09-14T00:25:36.054Z",
+  "models": [
+    {
+      "id": "Hetzner/Qwen/Qwen3.6-35B-A3B-FP8",
+      "alias": "m-c63338bc7f71b9c7ffe8342de806cf8598cd311581152591b6818435194015a2",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "Hetzner/Qwen3.8-27B",
+      "alias": "m-d4458851dbdb7dfdb2c8a76672a815cab4c1ea1b1f511a7203a99a39ca5f300e",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "bge-m3",
+      "alias": "m-8c041954a2909f2bdb9b04870bf27d3733396941c66698cfa29824014672f44d",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-3-5-haiku-20241022",
+      "alias": "m-162eda995e0e11ab9ef738d7e70fab5f5d61ee993db9a65bd87286ff16bc8e27",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-3-7-sonnet-20250219",
+      "alias": "m-afc6dcfc4a3e5286cc8d0180bf63af0ba135ef48bf360638fa4caf6739daa13d",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-fable-5",
+      "alias": "m-2858afd746a6799bab8dd93ea9e1eead61d84380462bbbc27c4a153d66b593e9",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-fable-5-1",
+      "alias": "m-f8064a2325012d60e0f78e484ecfcbf62f75ac746f8a23ca90d797bb5108350e",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "alias": "m-09d0ceca06974190cf3cc91ff46a5df72e81eda40b3e203c6cc223e89e06796e",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-opus-4-1-20250805",
+      "alias": "m-7a604dbbd6a8912465a67b48e9f8505bee090095c4af42c2a25e35efa8c84c72",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-opus-4-20250514",
+      "alias": "m-2b453e4159634d29f0cda05f724e80a139f71ceb87362cf0ad5d771d30846160",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-opus-4-5-20251101",
+      "alias": "m-7c14840786cd1de2a13d1e7ed90f4ac520fc624083b25a224c1bcb7dd7fc7a2e",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-opus-4-6",
+      "alias": "m-0b03295f7750439e66a3044b54e85531975f6e8349b4414cdf238fad923bf778",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-opus-4-7",
+      "alias": "m-b1171b42034bb046e20ff326e2ce2c05bd5b3b308ba2e5278dcf62f6fcc22522",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-opus-4-8",
+      "alias": "m-47a46a22f0c9fb105db3f0d8bda83ad51bd59369ab8c8c30cc32ba6356ac5a4a",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-opus-5",
+      "alias": "m-f9ef6eedd766691f041bc3387784d8ddf620e282f9997a00e4d54059e1f12f59",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-sonnet-4-20250514",
+      "alias": "m-8cb50e5cf14a42a30f0fd9b4c58731db288d740e66f221539f4b3e02011ab362",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-sonnet-4-5-20250929",
+      "alias": "m-efcf30858a13f54daacabfb6324aee1d5e595756e930bedcc3e3edcdbe9a940a",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "alias": "m-7d811269d13fd7df0fd2cb573cbd1b11679a1ae347c179b3daf22b12408604c4",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "claude-sonnet-5",
+      "alias": "m-4b07d9a517e35f5852d8385b4a192070b78ed4722b3b043b5737ddd7570283d7",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "codex-auto-review",
+      "alias": "m-db836f93467ed6ffc84e5821d4d065ac89070ec0ea2164db220f94cd49ddc7c4",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "deepseek-r1:14b",
+      "alias": "m-13f310a4d509c64c17e105e7cf26a422311a5b259f8657cb0e7d9ece477f2113",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash",
+      "alias": "m-6d0dcdfbe2d7fa1891744b4d7cb01c9523959bd052f9866984a7020c6f422f68",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro",
+      "alias": "m-4247e801b57d22e37344f920ea7e68b366792e479e507d5cb44bb305c2512fb3",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "defiant-fable-9b:q8_0",
+      "alias": "m-1c5babb9b539c36b979f6443d14b2c44f4e3f4a7248a6f52405924736a72d52c",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gemma3:12b",
+      "alias": "m-2e2d38fdd5101b9e97281b00927cbdf357e80027e24850f078b05c7ff4840c8a",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gpt-5.3-codex-spark",
+      "alias": "m-aa0caa1cd971721de2287570ac837c8f24ce12bb5d9346c4144f3f7a3e224b13",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gpt-5.5",
+      "alias": "m-ffc50c70661c227edf8daae6f8dbed2dd0645386c12d43bc7fc44da166e043bd",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "alias": "m-e33230db3dd7d2f0153debcbb9fabc3386faac005477571931af855d70c4ae9b",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "alias": "m-419255f2bb4c6801939e868fe2cdbbdc34d51742400939d1842d262a1fec749c",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "alias": "m-deda3dc02a1d1575f15d5c9f9b3e31cf0c768a55508c31e7ff0f4fc8f33fc669",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gpt-6-astra",
+      "alias": "m-576a599a64cb3dde05f18ebb3e26e3d5bcbf4b108ff92da24f5229188fa0972a",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gpt-image-1.5",
+      "alias": "m-2e02161d2494e3384ff7578cc8e1f88ad94bb2499418eaf45971a854d763bdca",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gpt-image-2",
+      "alias": "m-9ba2827204791ed85334d9169cfdc7568e85f54747d31d3132d798d7dabc231b",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gpt-image-2.5",
+      "alias": "m-5852951affa4b96d7164f9099c0a988758ecd3e94a78bf7ccdc15867747c6aec",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gpt-image-2.5-flare",
+      "alias": "m-033fed5b2016e697e68bd5c6c1081ad36fe73d89b0937f86312ea1a65a5cb4b9",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "gpt-image-2.5-sunburst",
+      "alias": "m-525c8a572fc5e6a1587449dac6b83a31ab0fbca05d1f8986bc9d25a4ec12d6ee",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "mistral-small3.1:24b",
+      "alias": "m-a08ec3cc31b7cd3bb28d97c4bbc011c29c1a4460f47674a9f3266c66db2a8c5c",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "qwen2.5-coder:14b",
+      "alias": "m-d9316f5ebed67d4014bd1b1c03076e665b7deeb53be6238120bedebf2c26f0c7",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "qwen3.5:9b-q4_K_M",
+      "alias": "m-2b67272002179d690da983f0f8e1acbb09fe3b993cd097b531351758d2d6a044",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "qwen3:14b",
+      "alias": "m-613573f7b5c9989c5860d1072fec711f3944931fdabb89d8abf292d21a3b7f20",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "qwen3:4b",
+      "alias": "m-c351ea7c6d3f98734f1e1abf0d30c444a14c3fc8dfa7b2e0e6417a2d1c4d37ea",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "richardyoung/qwen3-14b-abliterated:Q4_K_M",
+      "alias": "m-a8c2dba2f06f854da850a9f10c4a9cec767bffb196682e5bfd58ec5037377eff",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "zai/glm-5-turbo",
+      "alias": "m-9508d6c0065f414660d2aca729fdac9e7e8f172f7ef41e3e8e1b0deb3a86bca6",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "zai/glm-5.3",
+      "alias": "m-b3d0bbd8c91e540cf2c81cc51bece9d57e5bb5e30242f1f24ac8ef26aa85352f",
+      "status": "available",
+      "metadata": {}
+    },
+    {
+      "id": "zai/glm-5.3-flash",
+      "alias": "m-9d958d90f8f660b7aeb00e42f401891dd1ae20fe81adabe77db4e447765afa51",
+      "status": "available",
+      "metadata": {}
+    }
+  ]
+}
