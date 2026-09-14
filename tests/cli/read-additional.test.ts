@@ -117,6 +117,26 @@ describe('config check: routeOverride referencing an unknown model', () => {
   });
 });
 
+describe('config check: the snapshot must match the configured source', () => {
+  // Regression for a real product failure: `serve` calls validateSource() and refuses to start on a
+  // snapshot that was not fingerprinted against the configured source, but `config check` skipped
+  // that check and answered "no problems found". Following the documented order (config check, then
+  // serve) therefore reported a healthy config and then failed to start. The invariant locked here
+  // is that config check rejects every snapshot serve would reject, whatever makes them differ.
+  test('a snapshot fingerprinted against another gateway URL is a problem, not a clean check', async () => {
+    const moved = deps({ env: { ...deps().env, GATEWAY_URL: 'http://127.0.0.1:9000/v1' } });
+    expect(await runCli(['config', 'check', '--json'], moved)).toBe(2);
+    expect(JSON.stringify(lastJson().problems)).toContain('snapshot-source-mismatch');
+  });
+
+  test('a snapshot written by a different sourceId is a problem, not a clean check', async () => {
+    const foreign = { ...(await snapshotFixture()), sourceId: 'other-gateway' };
+    await writeFile(join(dir, 'models.lock.json'), JSON.stringify(foreign));
+    expect(await runCli(['config', 'check', '--json'], deps())).toBe(2);
+    expect(JSON.stringify(lastJson().problems)).toContain('snapshot-source-mismatch');
+  });
+});
+
 describe('route preview: never depends on a capability-profile lookup', () => {
   // Regression for a real built-CLI failure: routePreview used to call deps.loadProfile(client,
   // 'unspecified') even though previewRoute never consumed the result. A real loadProfile (unlike
