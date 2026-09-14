@@ -29,7 +29,7 @@ export ROUTER_GATEWAY_HEADERS='{"Authorization":"Bearer <gateway-token>"}'
 
 Use the gateway's actual API base, including `/v1` if required. The model-discovery URL is resolved to `/v1/models` without duplicating `/v1`. `ROUTER_MODELS_AUTH` is used as a Bearer token for discovery; gateway request headers come from `ROUTER_GATEWAY_HEADERS`.
 
-The included `models.lock.json` is a synthetic sample, not a catalog fetched from your gateway. Replace it before serving:
+The included `models.lock.json` is a synthetic sample, not a catalog fetched from your gateway. Its `sourceFingerprint` is a placeholder, so `config check` reports `snapshot-source-mismatch` and `serve` refuses to start until `models sync` replaces it:
 
 ```bash
 bun dist/cli.js models sync --config examples/minimal-router/subagent-router.json
@@ -72,7 +72,7 @@ For review, use `model="sol"` in that first line. Do not put the full GPT ID in 
 
 ## Validation and limits
 
-The pinned 2.1.269 client passed model selection, next-turn, parallel, nested, compaction and same-child resume through the existing router and the packaged `serve` command on loopback. No real provider call was needed for that validation. Your gateway URL, credentials and advertised model catalog must still be configured and checked in your environment.
+The pinned 2.1.269 client passed model selection, next-turn, parallel, nested, compaction and same-child resume through the existing router and the packaged `serve` command on loopback. The pinned 2.1.270 client was re-checked for 0.1.0 and passed model selection, next-turn, parallel, nested and same-child resume; compaction did not reproduce on Linux, see [docs/README.md](../../docs/README.md). No real provider call was needed for that validation. Your gateway URL, credentials and advertised model catalog must still be configured and checked in your environment.
 
 Correlation bindings are in memory, expire after inactivity and do not survive a router restart. The example does not enable unmeasured fork or hook-based default-selection paths.
 

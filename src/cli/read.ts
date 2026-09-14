@@ -16,6 +16,7 @@ import type {
   RouteDecision,
   RouteInput,
 } from '../core/types';
+import { resolveSource, validateSource } from '../io/environment';
 import { loadState } from '../io/store';
 import type { ParsedArgs } from './args';
 import { escapeControl } from './output';
@@ -291,6 +292,17 @@ export async function configCheck(deps: CliDeps, parsed: ParsedArgs): Promise<Co
 
   let catalog: EffectiveCatalog | undefined;
   if (state.snapshot !== undefined) {
+    // Same offline check serve performs before it binds a port. Without it this command answered
+    // "no problems found" for a snapshot serve then refused to start on. No snapshot means nothing
+    // to validate yet, so the source environment stays unread and this command stays runnable
+    // before the first models sync.
+    try {
+      await validateSource(resolveSource(state.config, deps.env), state.snapshot);
+    } catch (error) {
+      if (error instanceof RouterError) problems.push(`${error.code}: ${error.message}`);
+      else throw error;
+    }
+
     try {
       catalog = buildCatalog(state.config, state.snapshot);
     } catch (error) {
