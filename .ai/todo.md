@@ -98,3 +98,56 @@ Waiting on the owner:
 - [ ] Push the branch and open the PR against `kolezka/subagent-router`.
 - [ ] Add the entry to `kolezka/marketplace` (merge only after this lands on `main`, because the
       entry uses `ref: main`).
+
+## 2026-09-14 — web console split, Svelte, installer and status view
+
+Branch `web-ui-svelte-split-installer`. Request: move the web out of `src/cli`, rebuild it in
+Svelte, make it install/configure/manage the whole installation (claude-code-router as the
+reference), simplify installation, add auto-detection, add a status/activity/logs view.
+
+### Plan, all done
+
+- [x] Move the console out of the CLI block. `src/cli/ui.ts` and `src/cli/ui-page.ts` deleted,
+      `src/web/*` created: `server.ts`, `routes.ts`, `status.ts`, `detect.ts`, `mutate.ts`,
+      `supervisor.ts`, `events.ts`, `assets.ts`, `api-types.ts`, `index.ts`.
+- [x] Svelte 5 app in `src/web/app`, bundled by `scripts/build-web.ts` into `dist/web/`
+      (`index.html`, `main.js`, `main.css`, fixed names, no hash). Build refuses a partial
+      bundle, an inline script or style, and any off-origin request.
+- [x] `web` command (`ui` kept as an alias), `--port`, `--host`, `--read-only`.
+      `--config` optional: no config is a reported state, not a start-up failure.
+- [x] Write endpoints: `config init` (project or home scope), model overrides, roles, defaults,
+      source, agent roots, `models sync`, `install`, router start/stop/restart. Every write
+      carries `expectedGeneration`; a stale one is 409 `config-generation-conflict`.
+- [x] Auto-detection endpoint: clients and versions, capability-profile coverage, agent roots and
+      counts, expected environment variables (names plus presence only), earlier bundles,
+      opt-in loopback gateway probe.
+- [x] Status, activity and logs: `/api/system/status`, a bounded in-memory `EventLog`, and
+      `/api/events/stream` (SSE) fed by a new fire-and-forget observer seam on the transport
+      handler.
+- [x] Security guards: Host allowlist against DNS rebinding, Origin check plus mandatory
+      `content-type: application/json` on writes, forced read-only off loopback, lockdown CSP.
+- [x] Tests `tests/web/*` and `tests/transport/handler-observer.test.ts`.
+- [x] Docs: `docs/web/README.md` added, `docs/cli/UI.md` removed, `docs/README.md`,
+      `docs/cli/README.md`, `README.md` and `CHANGELOG.md` updated.
+
+### Review
+
+- Tree gate: `bun run typecheck` clean, `bun test` 944 pass / 1 skip / 0 fail over 66 files,
+  `bun run build` writes 6 entrypoints plus `dist/web/` with the CSP check passing.
+- End-to-end on a config-less `/tmp` directory with `bun dist/cli.js web --port 8899`: status
+  reports `configHealth: "missing"`, detect finds `claude` 2.1.270 with 12 agents,
+  `config init` creates the file and the next status reads `ok` with a generation, a
+  cross-origin POST is 403, a form-encoded POST is 400, SSE streams.
+- In a browser: all eight views render with no console error, the environment table shows names
+  and a missing state and never a value, a same-origin write returns 200 and the same write
+  replayed with the stale generation returns 409.
+- Known cosmetic issue, not fixed: one environment variable that serves two purposes renders as
+  two rows in `EnvTable`. It is name-plus-purpose pairs by design; check the keying if it
+  confuses operators.
+- No GitHub issue or discussion exists in `kolezka/subagent-router` (both lists empty on
+  2026-09-14), so nothing to link or close.
+
+### Waiting on the owner
+
+- [ ] Commit, push the branch and open the PR.
+- [ ] Replace the `verified_against` value in `docs/web/README.md` with the merge commit.

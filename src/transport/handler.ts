@@ -303,6 +303,25 @@ async function forwardJson(
   });
 }
 
+/**
+ * One operator-facing telemetry record, emitted at a terminal point of handleRoutable. Carries no
+ * request content: no prompt text, no header value, no gateway URL and no credential. The only
+ * identifiers on it (`role`, `agentId`) come from the already-normalized request.
+ */
+export interface HandlerEvent {
+  kind: 'route-decision' | 'route-error';
+  scope: 'parent' | 'child';
+  role?: string;
+  agentId?: string;
+  decision?: 'route' | 'pass-through' | 'error';
+  source?: string;
+  upstreamModel?: string;
+  code?: string;
+  path: string;
+  status?: number;
+  durationMs: number;
+}
+
 export interface CreateHandlerOptions {
   config: OperatorConfig;
   snapshot: CatalogSnapshot;
@@ -316,6 +335,8 @@ export interface CreateHandlerOptions {
   now: () => number;
   nonce: () => string;
   instanceId: () => string;
+  /** Optional observer for operator-facing telemetry. Never affects routing; failures are swallowed. */
+  onEvent?: (event: HandlerEvent) => void;
 }
 
 function assertTransportProfileReady(transportProfile: TransportCapabilityProfile, fetchAdapter: { id: string; runtimeVersion: string }): void {
@@ -375,23 +396,51 @@ interface RoutableContext {
   fetch: FetchLike;
   trustedContext: (request: Request) => TrustedLifecycleContext;
   gatewayBase: string;
+  now: () => number;
+  onEvent?: (event: HandlerEvent) => void;
 }
 
 function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Fire and forget telemetry. Called only at a terminal point, with values already in hand, so it
+ * never reads, buffers or re-reads a request or response body and never sits on the
+ * pass-through-to-upstream path. An observer that throws is the observer's problem: the error is
+ * discarded and the response the caller gets is byte for byte the one it would have got anyway.
+ */
+function emitHandlerEvent(ctx: RoutableContext, startedAt: number, event: Omit<HandlerEvent, 'durationMs'>): void {
+  if (ctx.onEvent === undefined) return;
+  try {
+    ctx.onEvent({ ...event, durationMs: ctx.now() - startedAt });
+  } catch {
+    // Intentionally empty; see the ruling above.
+  }
+}
+
 async function handleRoutable(request: Request, url: URL, ctx: RoutableContext): Promise<Response> {
+  // No observer means no clock read, so the seam adds nothing at all to the measured path.
+  const startedAt = ctx.onEvent === undefined ? 0 : ctx.now();
+  const path = url.pathname;
+  // Scope before normalization can only be 'parent': a child is recognized by a billing block in
+  // the body, and a body that did not parse carries no block.
+  const unparsed = { kind: 'route-error', scope: 'parent', decision: 'error', code: 'invalid-json', path, status: 400 } as const;
+
   let parsed: unknown;
   try {
     parsed = await request.json();
   } catch {
+    emitHandlerEvent(ctx, startedAt, unparsed);
     return errorResponse(400, 'invalid-json');
   }
   // Valid JSON that is not a plain object (null, an array, or a bare scalar) has no properties
   // to route on. Rejecting it here with 400 keeps later `body.system`/`body.model` style property
   // access from throwing an uncaught TypeError on a non-object value.
-  if (!isPlainJsonObject(parsed)) return errorResponse(400, 'invalid-json');
+  if (!isPlainJsonObject(parsed)) {
+    emitHandlerEvent(ctx, startedAt, unparsed);
+    return errorResponse(400, 'invalid-json');
+  }
   const body = parsed;
 
   const normalized = await normalizeClaudeRequest(body, request.headers, {
@@ -404,8 +453,18 @@ async function handleRoutable(request: Request, url: URL, ctx: RoutableContext):
 
   const targetUrl = buildUpstreamUrl(url.pathname, url.search, ctx.gatewayBase);
 
+  // Every field an event may carry about this request, taken once from the normalized form. No
+  // later emit reaches back into the body or the headers for anything.
+  const about = {
+    scope: normalized.input.scope,
+    path,
+    ...(normalized.input.role !== undefined ? { role: normalized.input.role } : {}),
+    ...(normalized.agentId !== undefined ? { agentId: normalized.agentId } : {}),
+  };
+
   if (normalized.input.scope === 'parent') {
     const enriched = enrichParentTools(normalized.forwardBody, ctx.catalog);
+    emitHandlerEvent(ctx, startedAt, { kind: 'route-decision', ...about, decision: 'pass-through' });
     return forwardJson(request, targetUrl, ctx.source.gatewayHeaders, ctx.fetch, enriched);
   }
 
@@ -413,7 +472,10 @@ async function handleRoutable(request: Request, url: URL, ctx: RoutableContext):
   try {
     assertCapability(ctx.profile, 'claude-marker', context);
   } catch (error) {
-    if (error instanceof RouterError) return errorResponse(422, error.code);
+    if (error instanceof RouterError) {
+      emitHandlerEvent(ctx, startedAt, { kind: 'route-error', ...about, decision: 'error', code: error.code, status: 422 });
+      return errorResponse(422, error.code);
+    }
     throw error;
   }
 
@@ -429,6 +491,7 @@ async function handleRoutable(request: Request, url: URL, ctx: RoutableContext):
       if (receipt.role === channelBRole) {
         freshDelegation = true;
       } else {
+        emitHandlerEvent(ctx, startedAt, { kind: 'route-error', ...about, decision: 'error', code: 'conflicting-markers', status: 422 });
         return errorResponse(422, 'conflicting-markers');
       }
     } else {
@@ -462,9 +525,13 @@ async function handleRoutable(request: Request, url: URL, ctx: RoutableContext):
 
   const decision = resolveRoute(routeInput, ctx.config, ctx.catalog);
 
-  if (decision.kind === 'error') return errorResponse(422, decision.code);
+  if (decision.kind === 'error') {
+    emitHandlerEvent(ctx, startedAt, { kind: 'route-error', ...about, decision: 'error', code: decision.code, status: 422 });
+    return errorResponse(422, decision.code);
+  }
 
   if (decision.kind === 'pass-through') {
+    emitHandlerEvent(ctx, startedAt, { kind: 'route-decision', ...about, decision: 'pass-through' });
     return forwardJson(request, targetUrl, ctx.source.gatewayHeaders, ctx.fetch, normalized.forwardBody);
   }
 
@@ -472,11 +539,21 @@ async function handleRoutable(request: Request, url: URL, ctx: RoutableContext):
     try {
       ctx.correlationStore.bind(agentId, decision.upstreamModel);
     } catch (error) {
-      if (error instanceof RouterError) return errorResponse(422, error.code);
+      if (error instanceof RouterError) {
+        emitHandlerEvent(ctx, startedAt, { kind: 'route-error', ...about, decision: 'error', code: error.code, status: 422 });
+        return errorResponse(422, error.code);
+      }
       throw error;
     }
   }
 
+  emitHandlerEvent(ctx, startedAt, {
+    kind: 'route-decision',
+    ...about,
+    decision: 'route',
+    source: decision.source,
+    upstreamModel: decision.upstreamModel,
+  });
   const forwardBody = { ...normalized.forwardBody, model: decision.upstreamModel };
   return forwardJson(request, targetUrl, ctx.source.gatewayHeaders, ctx.fetch, forwardBody);
 }
@@ -511,6 +588,8 @@ export function createHandler(options: CreateHandlerOptions): (request: Request)
     fetch: options.fetch,
     trustedContext: options.trustedContext,
     gatewayBase,
+    now: options.now,
+    ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
   };
 
   return async (request: Request): Promise<Response> => {

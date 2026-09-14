@@ -14,11 +14,11 @@ import {
   type CommandResult,
 } from './read';
 import { installCommand } from './install';
-import { uiCommand } from './ui';
 import { VERSION } from './version';
+import { webCommand } from '../web';
 import { configExport, doctorConnect, modelsDescribe, modelsSync, serveCommand } from './write';
 
-const TOP_LEVEL_COMMANDS = ['models', 'agents', 'route', 'config', 'doctor', 'serve', 'ui', 'install'] as const;
+const TOP_LEVEL_COMMANDS = ['models', 'agents', 'route', 'config', 'doctor', 'serve', 'web', 'ui', 'install'] as const;
 
 type CommandHandler = (deps: CliDeps, parsed: ReturnType<typeof parseArgs>) => Promise<CommandResult>;
 
@@ -38,8 +38,10 @@ const COMMANDS: Readonly<Record<string, CommandHandler>> = {
   'config export': configExport,
   doctor,
   serve: serveCommand,
-  // Read-only local web console. A separate listener from `serve`, never a routing path.
-  ui: uiCommand,
+  // Local web console: install, configure and watch the router. A separate listener from `serve`,
+  // never a routing path. `ui` stays as the name the earlier read-only console shipped under.
+  web: webCommand,
+  ui: webCommand,
   // Generates client integration files into a directory the operator names. It never edits an
   // installed client configuration.
   install: installCommand,
@@ -91,7 +93,7 @@ Commands:
   config export --client <c> --output <dir> [--dry-run] [--force]
   doctor [--connect]
   serve [--port <n>] [--host <h>] [--claude-version <v>]
-  ui [--port <n>] [--host <h>]
+  web [--port <n>] [--host <h>] [--read-only]      (alias: ui)
   install --output <dir> [--client claude-code] [--port <n>] [--host <h>]
           [--claude-version <v>] [--parent-model <m>] [--dry-run] [--force]
 

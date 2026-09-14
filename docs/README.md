@@ -21,17 +21,20 @@ The configuration, its adjacent `models.lock.json` snapshot, and the configured 
 
 Builds are non-destructive. A custom `BUILD_OUTPUT_DIR` must name a new or empty `dist` directory. Repeated default builds archive the previous `dist` under ignored `.build-history`.
 
-## Inspect the configuration in a browser
+## Set it up in a browser
 
-`ui` starts a local read-only web console over the same offline inspection commands the CLI
-exposes. It is a separate listener from `serve`, never forwards a request upstream and never
-reaches the network.
+`web` starts a local console that detects what is installed, writes the first configuration, edits
+models and routing, generates the client bundle, starts and stops the router, and shows its live
+events. It is a separate listener from `serve` and never forwards a request upstream.
 
 ```bash
-bun dist/cli.js ui --config <operator-config> --port 8788
+bun dist/cli.js web --port 8788
 ```
 
-See [cli/UI.md](cli/UI.md) for the endpoint contract, the invariants and the gaps.
+`--config` is optional. A machine with no configuration is a state the console reports and repairs.
+Bind off loopback and the console forces itself read-only, because it has no authentication.
+
+See [web/README.md](web/README.md) for the endpoint contract, the invariants and the gaps.
 
 ## Reproduce the local packaged check
 

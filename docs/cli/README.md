@@ -50,7 +50,7 @@ to the configured gateway. None of these commands proves native-client compatibi
 | `config export --client <c> --output <dir> [--dry-run] [--force]` | no | artifact tree under `<dir>/<client>/` (unless `--dry-run`) |
 | `doctor [--connect]` | only with `--connect` | no |
 | `serve [--port <n>] [--host <h>] [--claude-version <v>]` | per request, via the configured gateway | no |
-| `ui [--port <n>] [--host <h>]` | no | no |
+| `web [--port <n>] [--host <h>] [--read-only]` (alias: `ui`) | only what the console is asked to do | config file and bundles, through the console |
 | `install --output <dir> [--client claude-code] [--port <n>] [--host <h>] [--claude-version <v>] [--parent-model <m>] [--dry-run] [--force]` | no | integration bundle under `<dir>` (unless `--dry-run`) |
 
 See [CONTRACTS.md](CONTRACTS.md) for exact per-command behavior and [INVARIANTS.md](INVARIANTS.md)
@@ -58,9 +58,9 @@ for what must hold across all of them.
 
 ## Related documentation
 
-- [UI.md](UI.md): the `ui` command, a local read-only web console over the inspection commands
-  above. It is newer than this document's `verified_against` stamp, so nothing in the YAML header
-  here covers `src/cli/ui.ts` or `src/cli/ui-page.ts`.
+- [../web/README.md](../web/README.md): the `web` command, a local console that installs,
+  configures and watches the router. It is its own block (`src/web/*`) with its own stamp, so
+  nothing in the YAML header here covers it.
 - [INSTALL.md](INSTALL.md): the `install` command and the Claude Code bundle it generates. Also
   newer than the stamp above, so `src/cli/install.ts` and `src/install/claude-code.ts` are not
   covered by it either.
