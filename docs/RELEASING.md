@@ -25,6 +25,14 @@ bun dist/cli.js ui --config ./subagent-router.json --port 8788
 
 Open `http://127.0.0.1:8788` and confirm the catalog, agents, route preview and diagnostics render.
 
+Then generate an integration bundle into a scratch directory and start a client with it, against a
+loopback test gateway. Confirm the gateway sees the request.
+
+```sh
+bun dist/cli.js install --output /tmp/router-bundle --config ./subagent-router.json
+env -u ANTHROPIC_BASE_URL /tmp/router-bundle/claude-router -p "say ok"
+```
+
 ## 3. Re-measure the client you claim to support
 
 ```sh
@@ -40,7 +48,7 @@ Repeat for `next-turn`, `nested` and `resume`. Read the model out of each
 
 ## 4. Bump the version
 
-`package.json` and the `VERSION` literal in `src/cli/main.ts` must match. The test
+`package.json` and the `VERSION` literal in `src/cli/version.ts` must match. The test
 `the version the CLI prints is the version the package declares` fails if they drift.
 
 ## 5. Write the changelog entry

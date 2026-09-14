@@ -30,7 +30,7 @@ stamp is refreshed.
 
 - Read-only inspection: `models list`, `models show`, `agents list`, `agents show`, `route
   preview`, `config show`, `config check`, `doctor`.
-- Writes: `models sync`, `models describe`, `config export`, `doctor --connect`, `serve`.
+- Writes: `models sync`, `models describe`, `config export`, `doctor --connect`, `serve`, `install`.
 
 Inspection and config export use local config, snapshots and native agent files. `models sync`
 and `doctor --connect` contact the model source; `serve` listens for requests and forwards them
@@ -51,6 +51,7 @@ to the configured gateway. None of these commands proves native-client compatibi
 | `doctor [--connect]` | only with `--connect` | no |
 | `serve [--port <n>] [--host <h>] [--claude-version <v>]` | per request, via the configured gateway | no |
 | `ui [--port <n>] [--host <h>]` | no | no |
+| `install --output <dir> [--client claude-code] [--port <n>] [--host <h>] [--claude-version <v>] [--parent-model <m>] [--dry-run] [--force]` | no | integration bundle under `<dir>` (unless `--dry-run`) |
 
 See [CONTRACTS.md](CONTRACTS.md) for exact per-command behavior and [INVARIANTS.md](INVARIANTS.md)
 for what must hold across all of them.
@@ -60,6 +61,9 @@ for what must hold across all of them.
 - [UI.md](UI.md): the `ui` command, a local read-only web console over the inspection commands
   above. It is newer than this document's `verified_against` stamp, so nothing in the YAML header
   here covers `src/cli/ui.ts` or `src/cli/ui-page.ts`.
+- [INSTALL.md](INSTALL.md): the `install` command and the Claude Code bundle it generates. Also
+  newer than the stamp above, so `src/cli/install.ts` and `src/install/claude-code.ts` are not
+  covered by it either.
 - [../poc.md](../poc.md): local HTTP demo and the external-gateway entry point `serve` uses.
 - [../gateways/cliproxyapi.md](../gateways/cliproxyapi.md): CLIProxyAPI as a concrete external
   gateway.

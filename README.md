@@ -32,7 +32,22 @@ bun dist/cli.js serve --config ./subagent-router.json --claude-version "$(claude
 `config check` reports `snapshot-source-mismatch` until you replace it with your own gateway's
 catalog. Pass the version number only to `--claude-version`, for example `2.1.270`.
 
-Point one Claude Code process at the router without touching your installed configuration:
+## Connect your Claude Code
+
+`install` generates the integration files into a directory you name. It never edits your installed
+Claude Code configuration.
+
+```sh
+bun dist/cli.js install --output ./router-bundle --config ./subagent-router.json --claude-version 2.1.270
+./router-bundle/claude-router
+```
+
+The launcher checks the router, then runs `claude --settings ./router-bundle/settings.json` and
+passes your arguments through. The bundle also carries an optional plugin with a session-start
+check and a `/subagent-router:status` command. Details and the measured results are in
+[docs/cli/INSTALL.md](docs/cli/INSTALL.md).
+
+Without the bundle, one process at a time:
 
 ```sh
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
