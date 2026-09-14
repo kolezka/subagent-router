@@ -18,11 +18,28 @@ what 0.1.0 claims.
 bun install --frozen-lockfile
 bun run build
 
-cp examples/minimal-router/subagent-router.json ./subagent-router.json
 export ROUTER_GATEWAY_URL="https://YOUR-GATEWAY/v1"
 export ROUTER_MODELS_AUTH="<model-discovery-token>"
 export ROUTER_GATEWAY_HEADERS='{"Authorization":"Bearer <gateway-token>"}'
 
+bun dist/cli.js web
+```
+
+Open `http://127.0.0.1:8788` and work down the left side: **Setup** detects your installed clients
+and writes the first config, **Gateway** names the environment variables the credentials come from,
+**Models** runs the catalog sync, **Routing** picks the child models, **Install** generates the
+Claude Code bundle and starts the router. **Status** and **Logs** show what the router is doing.
+
+Export the gateway variables in the shell that starts the console. The config holds variable NAMES;
+the values stay in the process environment and never enter a config file, a bundle or an API
+response. The console tells you which named variable is still missing.
+
+[Full description of the console](docs/web/README.md).
+
+### The same thing from the CLI
+
+```sh
+cp examples/minimal-router/subagent-router.json ./subagent-router.json
 bun dist/cli.js models sync --config ./subagent-router.json
 bun dist/cli.js config check --config ./subagent-router.json
 bun dist/cli.js serve --config ./subagent-router.json --claude-version "$(claude --version)" --host 127.0.0.1 --port 8787
@@ -34,8 +51,8 @@ catalog. Pass the version number only to `--claude-version`, for example `2.1.27
 
 ## Connect your Claude Code
 
-`install` generates the integration files into a directory you name. It never edits your installed
-Claude Code configuration.
+The console's **Install** view generates the integration files into a directory you name. So does
+`install` on the command line. Neither edits your installed Claude Code configuration.
 
 ```sh
 bun dist/cli.js install --output ./router-bundle --config ./subagent-router.json --claude-version 2.1.270
@@ -81,7 +98,7 @@ Implement the requested change.
 ## What 0.1.0 does not cover
 
 - OpenCode and Codex clients. The adapters are present but unmeasured, so no support is claimed.
-- Writes from the web console. The console is read-only.
+- Authentication on the web console. Keep it on loopback; off loopback it forces itself read-only.
 - Survival of routing across client-side compaction. The decision fires on Claude Code 2.1.270 but
   the client's reactive compactor bailed in every local run, so the phase is unproven here.
 - Publishing to a registry. The package stays `private: true`.
@@ -108,16 +125,22 @@ and [docs/cli/INVARIANTS.md](docs/cli/INVARIANTS.md) for exact behavior, and
 measured against a pinned client binary; OpenCode and Codex are not. See
 [docs/cli/GAPS.md](docs/cli/GAPS.md).
 
-## Web UI (local)
+## Web console (local)
 
-`subagent-router ui` runs a local, read-only web console (default
-`http://127.0.0.1:8788`). It shows the model catalog, the agent inventory, a simulation of routing
-decisions, the `config check` result, and the `doctor` report. The console listens separately from
-`serve`, does not forward traffic to the gateway, and does not use the network.
+`subagent-router web` runs a local console (default `http://127.0.0.1:8788`, alias `ui`). It is a
+Svelte app in `src/web/app`, served by `src/web/*`, and it manages the whole installation: it
+detects installed clients and local gateways, writes the first config, edits the model catalog and
+the routing rules, generates the Claude Code bundle, starts and stops the router, and streams its
+events. The console listens separately from `serve` and never forwards traffic to the gateway.
 
 ```sh
 bun run build
-bun dist/cli.js ui --config ./subagent-router.json --port 8788
+bun dist/cli.js web --port 8788
 ```
 
-Contract and limitations description: [docs/cli/UI.md](docs/cli/UI.md).
+`--config` is optional; a machine with no config is the console's starting point, not an error.
+Writes need a same-origin JSON request and the config generation you last read, so two open tabs
+cannot overwrite each other. `--read-only` refuses every write, and a bind off loopback forces
+read-only, because the console has no authentication.
+
+Contract, invariants and limitations: [docs/web/README.md](docs/web/README.md).

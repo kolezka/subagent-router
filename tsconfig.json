@@ -13,5 +13,7 @@
     "emitDeclarationOnly": true,
     "outDir": "dist/types"
   },
-  "include": ["src", "tests", "scripts"]
+  "include": ["src", "tests", "scripts"],
+  "comment": "src/web/app is browser code compiled by bun-plugin-svelte: tsc must not emit declarations for it, and it uses Svelte runes tsc does not know. scripts/build-web.ts is excluded for a different reason: bun-plugin-svelte@0.0.6 ships TypeScript source with no declarations, so tsc follows the import into node_modules and reports three errors inside the plugin under this project's exactOptionalPropertyTypes. Excluding the importing root is the only way to keep `tsc --noEmit` clean without relaxing a compiler option for the whole repository.",
+  "exclude": ["src/web/app", "scripts/build-web.ts"]
 }

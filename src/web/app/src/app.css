@@ -1,0 +1,335 @@
+/*
+ * The console's only global stylesheet: design tokens, element defaults and the handful of layout
+ * and control classes every view shares. Component-scoped rules live in each component's own
+ * <style> block, which the Svelte plugin extracts into the same main.css.
+ *
+ * Dark is the default because this is a terminal-adjacent tool. Light is a full token override
+ * rather than a separate sheet, so a colour is defined exactly once per scheme.
+ */
+
+:root {
+  color-scheme: dark light;
+
+  --bg: #14161a;
+  --panel: #1c1f26;
+  --panel-2: #22262f;
+  --panel-3: #2a2f3a;
+  --border: #333846;
+  --border-strong: #454b5c;
+  --text: #d9dce3;
+  --text-strong: #f2f4f8;
+  --muted: #8b91a0;
+  --accent: #5aa9ff;
+  --red: #ff6b6b;
+  --amber: #e0a83b;
+  --green: #5bd68f;
+  --focus: #7cc0ff;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --radius-1: 4px;
+  --radius-2: 6px;
+  --radius-pill: 999px;
+
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --size-1: 11px;
+  --size-2: 12px;
+  --size-3: 13px;
+  --size-4: 14px;
+  --size-5: 16px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #f0f2f5;
+    --panel-3: #e4e8ee;
+    --border: #d6dae1;
+    --border-strong: #b6bcc7;
+    --text: #23272f;
+    --text-strong: #0d1017;
+    --muted: #5d6572;
+    --accent: #0b62c4;
+    --red: #c02626;
+    --amber: #8a5d00;
+    --green: #16743c;
+    --focus: #0b62c4;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--size-4);
+  line-height: 1.45;
+}
+
+h1,
+h2,
+h3 {
+  color: var(--text-strong);
+  margin: 0;
+  font-weight: 600;
+}
+
+a {
+  color: var(--accent);
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--size-2);
+}
+
+pre {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  padding: var(--space-3);
+  overflow: auto;
+  max-height: 70vh;
+  margin: 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ----------------------------------------------------------------------- */
+/* Controls                                                                 */
+/* ----------------------------------------------------------------------- */
+
+button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  padding: 6px 12px;
+  font-size: var(--size-3);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--panel-3);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+button.danger {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+button.link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 0;
+  text-decoration: underline;
+}
+
+input[type='text'],
+input[type='number'],
+input[type='search'],
+select,
+textarea {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  padding: 6px 8px;
+  font-size: var(--size-3);
+  font-family: inherit;
+  min-width: 0;
+}
+
+input::placeholder {
+  color: var(--muted);
+}
+
+label {
+  font-size: var(--size-2);
+  color: var(--muted);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.field > span {
+  color: var(--muted);
+  font-size: var(--size-2);
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--size-3);
+  color: var(--text);
+}
+
+.check input {
+  margin-top: 3px;
+}
+
+/* ----------------------------------------------------------------------- */
+/* Layout                                                                   */
+/* ----------------------------------------------------------------------- */
+
+.row {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.row.tight {
+  gap: var(--space-2);
+}
+
+.row.center {
+  align-items: center;
+}
+
+.grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: var(--size-2);
+}
+
+.note {
+  color: var(--muted);
+  font-size: var(--size-2);
+  margin: 0;
+}
+
+.warn-text {
+  color: var(--amber);
+}
+
+.bad-text {
+  color: var(--red);
+}
+
+.ok-text {
+  color: var(--green);
+}
+
+/* ----------------------------------------------------------------------- */
+/* Tables                                                                   */
+/* ----------------------------------------------------------------------- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--size-3);
+}
+
+th,
+td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: var(--size-2);
+  white-space: nowrap;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+tbody tr:hover td {
+  background: var(--panel-2);
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+/* ----------------------------------------------------------------------- */
+/* Key/value rows                                                           */
+/* ----------------------------------------------------------------------- */
+
+.kv {
+  display: flex;
+  gap: var(--space-2);
+  padding: 3px 0;
+  font-size: var(--size-3);
+  flex-wrap: wrap;
+}
+
+.kv > .k {
+  color: var(--muted);
+  width: 170px;
+  flex-shrink: 0;
+}
+
+.kv > .v {
+  word-break: break-word;
+}
+
+ul.plain {
+  margin: 0;
+  padding-left: 18px;
+  font-size: var(--size-3);
+}
+
+ul.plain.problems li {
+  color: var(--red);
+}
+
+ul.plain.warnings li {
+  color: var(--amber);
+}

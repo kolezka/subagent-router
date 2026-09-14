@@ -3,6 +3,7 @@ import { RouterError } from '../core/errors';
 import { resolveSource, validateSource } from '../io/environment';
 import { loadState } from '../io/store';
 import { createHandler } from '../transport/handler';
+import type { HandlerEvent } from '../transport/handler';
 import type { CapabilityProfile, CliDeps } from '../core/types';
 
 export interface ServeHandle {
@@ -46,7 +47,7 @@ function assertClientProfileSupported(profile: CapabilityProfile): void {
 export async function startServer(
   configPath: string,
   deps: CliDeps,
-  options: { port: number; host: string; claudeVersion?: string },
+  options: { port: number; host: string; claudeVersion?: string; onEvent?: (event: HandlerEvent) => void },
 ): Promise<ServeHandle> {
   const state = await loadState(configPath);
   if (state.snapshot === undefined) {
@@ -81,6 +82,7 @@ export async function startServer(
     now: () => deps.now().getTime(),
     nonce: () => crypto.randomUUID(),
     instanceId: () => crypto.randomUUID(),
+    ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
   });
 
   const server = Bun.serve({

@@ -39,6 +39,8 @@ const OPTIONS = {
   // config export
   output: { type: 'string' as const },
   force: { type: 'boolean' as const },
+  // web console: refuse every write even on a loopback bind
+  'read-only': { type: 'boolean' as const },
 };
 
 /**

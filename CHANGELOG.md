@@ -8,6 +8,31 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `subagent-router web` replaces the read-only `ui` console (`ui` stays as an alias). The console is
+  now its own block, `src/web/*`, with a Svelte 5 app in `src/web/app` bundled by
+  `scripts/build-web.ts` into `dist/web/`. It manages a whole installation from the browser: eight
+  views for status, setup, gateway, models, routing, install, logs and diagnostics. See
+  [docs/web/README.md](docs/web/README.md).
+- Auto-detection (`GET /api/detect`): installed clients with their versions, whether a capability
+  profile covers that version, agent roots and agent counts, the environment variables the config
+  expects (names and a presence boolean, never a value), previously generated bundles, and, opt-in
+  with `?probe=1`, well-known gateway ports on loopback only.
+- Write endpoints for the whole configuration: first config (`config init`, project or home scope),
+  model overrides, per-agent roles, defaults, model source, agent roots, `models sync` and
+  `install`. Every write carries `expectedGeneration` and is refused with
+  `config-generation-conflict` and HTTP 409 if the file moved underneath it.
+- Router supervision from the console: start, stop and restart an in-process router through the
+  same `startServer` the CLI's `serve` uses. A router started outside the console is detected by a
+  bounded loopback health probe and reported as running but not owned.
+- A status and activity view: config health, router state, snapshot freshness, environment variable
+  presence, plus an event log and a live `GET /api/events/stream` Server-Sent Events feed fed by a
+  new fire-and-forget observer seam on the transport handler.
+- `bun run build:web`, and `bun run build` now chains the package build and the web build in that
+  order. The web build fails on a partial bundle, on an inline script or style, and on an
+  off-origin request, so the bundle can never outrun the lockdown CSP the server sends.
+- `tests/web/*` covers the endpoint table, the refusals, detection, mutations, the supervisor and
+  the event log, with a secret in the environment as a positive control for a leak.
+
 - The repository is now a Claude Code plugin and its own plugin marketplace, so it installs with
   `/plugin marketplace add kolezka/marketplace` and `/plugin install subagent-router@kolezka`. The
   plugin adds a session-start router check, `/subagent-router:status`, `/subagent-router:setup`, and
@@ -16,8 +41,21 @@ All notable changes to this project are recorded here. The format follows
 - `tests/plugin.test.ts` locks the manifests against `package.json` and the four session-check
   cases, including a positive control for the silent one.
 
+### Changed
+
+- The console accepts writes on loopback. It refuses all of them with `--read-only`, and it forces
+  read-only when it binds off loopback, because it has no authentication. Writes also need a
+  same-origin request and `content-type: application/json`.
+- `--config` is now optional for the console. A machine with no config file is a reported state
+  that the setup view repairs, not a start-up failure. The console retargets itself when it writes
+  a config at a new path, and refuses to retarget while it owns a running router.
+- `docs/cli/UI.md` is superseded by [docs/web/README.md](docs/web/README.md).
+
 ### Known limits
 
+- The console has no authentication. Anyone who can reach the port can read the config and, on a
+  loopback bind, change it. Its event log lives in memory and does not survive a restart.
+- A router the console starts stops with the console. There is no fork, no pid file and no respawn.
 - The plugin does not route by itself and never will: a plugin cannot set `ANTHROPIC_BASE_URL` for
   the session that loads it. The bundle from `install`, or the variable, still makes the
   connection.

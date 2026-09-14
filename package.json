@@ -42,12 +42,15 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "build": "bun run scripts/build.ts",
+    "build": "bun run scripts/build.ts && bun run scripts/build-web.ts",
+    "build:web": "bun run scripts/build-web.ts",
     "poc:demo": "bun run scripts/poc-demo.ts",
     "poc:serve": "bun run scripts/poc-serve.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.1",
+    "bun-plugin-svelte": "^0.0.6",
+    "svelte": "^5.57.0",
     "typescript": "^7.0.2"
   }
 }

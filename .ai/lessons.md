@@ -38,3 +38,26 @@ secret was only trustworthy after it was made to fail on purpose: injecting the 
 string into the generated README turned the suite to 10 pass / 1 fail, and reverting it
 restored 11 pass. A green assertion over an empty or unreachable set proves nothing. Make a
 new guard fail once before trusting it.
+
+## A date-dependent fixture makes a test that passes today and fails next week
+
+2026-09-14, `tests/web/server.test.ts`. The status test asserted `stale: false` on a snapshot
+fixture dated 2026-09-06 with `staleAfterSeconds: 86400`. It passed when the fixture was written
+and failed eight days later, because staleness is computed against the current clock.
+
+Rule: never assert a clock-derived field against a literal taken from a fixed fixture date. Assert
+the fields that do not move (`present`, `modelCount`, the type of `fetchedAt`), or make the fixture
+date relative to `Date.now()` in the test setup.
+
+## Build order: the package build rotates dist/, so the web build runs second
+
+2026-09-14. `scripts/build.ts` archives and recreates `dist/`, so `dist/web/` written first
+disappears. `"build": "bun run scripts/build.ts && bun run scripts/build-web.ts"` is the only
+correct order, and the two scripts must stay in that order in `package.json`.
+
+## pgrep/pkill self-match: third occurrence
+
+2026-09-14, cleaning up a smoke test: `pkill -f 'cli.js web --port 8899'` returned 144 because the
+pattern matched the shell running it. The rule above was already written and I still reached for
+`pkill`. Read that rule before any cleanup step that kills a process by pattern: take the PID from
+`ss -ltnp` or from the job, and kill that number.
