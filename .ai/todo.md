@@ -78,3 +78,23 @@ is outside its own catalog. Lesson recorded in `.ai/lessons.md`.
 
 OpenCode and Codex certification, new hook channels, model-quality benchmarks, any write
 path in the web console.
+
+## 2026-09-14 — marketplace install
+
+Done on branch `subagent-router-marketplace-install`, commit `7ca3958`:
+
+- [x] Repository root is a plugin root: `.claude-plugin/plugin.json`, `hooks/`, `commands/`, `bin/`.
+- [x] Repository is its own marketplace: `.claude-plugin/marketplace.json`, plugin `source: "./"`.
+- [x] Session check derives the router address from `ANTHROPIC_BASE_URL` and requires a
+      `handlerInstanceId` body. Exits 0 in all four measured cases.
+- [x] `bin/subagent-router-plugin` runs the installed plugin's `src/bun.ts` with Bun, no build,
+      no `node_modules`.
+- [x] `tests/plugin.test.ts`, 7 tests, both guards made to fail once before being trusted.
+- [x] Measured against Claude Code 2.1.270 with an isolated `CLAUDE_CONFIG_DIR`:
+      validate, marketplace add, install, details (2 skills, 1 hook).
+
+Waiting on the owner:
+
+- [ ] Push the branch and open the PR against `kolezka/subagent-router`.
+- [ ] Add the entry to `kolezka/marketplace` (merge only after this lands on `main`, because the
+      entry uses `ref: main`).

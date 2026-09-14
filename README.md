@@ -53,6 +53,22 @@ Without the bundle, one process at a time:
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
 ```
 
+## Install from a marketplace
+
+The repository is also a Claude Code plugin and its own marketplace. In Claude Code:
+
+```text
+/plugin marketplace add kolezka/marketplace
+/plugin install subagent-router@kolezka
+```
+
+`kolezka/subagent-router` works as a marketplace too, if you prefer the single-repository catalog.
+
+The plugin adds a session-start check, `/subagent-router:status`, `/subagent-router:setup`, and the
+router CLI on the Bash tool's `PATH`. It does not route by itself: a plugin cannot set
+`ANTHROPIC_BASE_URL` for the session, so the connection still comes from the bundle above or from
+the variable. Details in [docs/plugin/README.md](docs/plugin/README.md).
+
 Select a child model with a marker on the first line of the Agent prompt:
 
 ```

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "subagent-router",
+  "description": "Explicit upstream model routing for native Claude Code subagents",
+  "owner": { "name": "Mariusz Rakus" },
+  "plugins": [
+    {
+      "name": "subagent-router",
+      "description": "Session-start router check, a status command and the router CLI for explicit subagent model routing",
+      "source": "./",
+      "category": "development"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "subagent-router",
+  "version": "0.1.0",
+  "description": "Explicit upstream model routing for native Claude Code subagents. The plugin adds a session-start router check, a status command and the router CLI; routing itself stays in ANTHROPIC_BASE_URL.",
+  "author": { "name": "Mariusz Rakus" },
+  "repository": "https://github.com/kolezka/subagent-router",
+  "keywords": ["routing", "subagents", "models", "gateway", "proxy"]
+}

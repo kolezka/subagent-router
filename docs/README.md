@@ -56,4 +56,11 @@ On 2026-09-14, for the 0.1.0 release, the same driver was re-run on Linux agains
 
 Compaction did not reproduce on that platform. Three runs (`compaction-rF0PxW`, `compaction-cq1wJY`, `compaction-quBrJZ`, the last with a later usage ramp and 14 rounds) all reached `level=compact` in the client's own debug log and then bailed with "fewer than 2 groups, nothing to compact" or "no assistant messages in summarize set". No compaction boundary was produced, so nothing was routed across one. The 2.1.270 profile's `lifecycle.compaction: passed` comes from run `compaction-pDcASg` on 2026-09-13 and was left untouched; treat it as unconfirmed on Linux until a run produces a boundary.
 
+## Install it as a Claude Code plugin
+
+The repository is also a plugin and its own marketplace: `/plugin marketplace add kolezka/marketplace`
+then `/plugin install subagent-router@kolezka`. The plugin carries the session-start check, the
+status and setup commands, and the CLI on the Bash tool's `PATH`. It does not set
+`ANTHROPIC_BASE_URL`, so it never routes on its own. See [plugin/README.md](plugin/README.md).
+
 See [transport/GAPS.md](transport/GAPS.md) for boundaries and historical measurements, and [cli/README.md](cli/README.md) for the command reference.

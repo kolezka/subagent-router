@@ -1,0 +1,19 @@
+#!/bin/sh
+# Runs the plugin's own copy of the subagent-router CLI from source with Bun. Claude Code puts
+# this directory on the Bash tool's PATH while the plugin is enabled.
+#
+# The name is not `subagent-router` on purpose: an operator who already has the CLI installed
+# under that name keeps it, and nothing here shadows it.
+set -eu
+
+ROOT=${CLAUDE_PLUGIN_ROOT:-}
+if [ -z "$ROOT" ]; then
+  ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+fi
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "subagent-router: bun is not on PATH, so the plugin's CLI cannot run. See https://bun.sh." >&2
+  exit 127
+fi
+
+exec bun "$ROOT/src/bun.ts" "$@"

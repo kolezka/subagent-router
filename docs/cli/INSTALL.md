@@ -37,6 +37,10 @@ command. Loading it is optional:
 claude --settings ./router-bundle/settings.json --plugin-dir ./router-bundle
 ```
 
+The marketplace plugin ([../plugin/README.md](../plugin/README.md)) carries the same two components
+under the same plugin name, with values derived at run time instead of baked in. Enable one of the
+two, not both.
+
 ## Provider independence
 
 The bundle names one address: the loopback router. The router forwards to the gateway named by

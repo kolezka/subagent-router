@@ -4,6 +4,25 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- The repository is now a Claude Code plugin and its own plugin marketplace, so it installs with
+  `/plugin marketplace add kolezka/marketplace` and `/plugin install subagent-router@kolezka`. The
+  plugin adds a session-start router check, `/subagent-router:status`, `/subagent-router:setup`, and
+  `subagent-router-plugin` on the Bash tool's `PATH`, which runs the CLI from the installed plugin's
+  source with Bun. See [docs/plugin/README.md](docs/plugin/README.md).
+- `tests/plugin.test.ts` locks the manifests against `package.json` and the four session-check
+  cases, including a positive control for the silent one.
+
+### Known limits
+
+- The plugin does not route by itself and never will: a plugin cannot set `ANTHROPIC_BASE_URL` for
+  the session that loads it. The bundle from `install`, or the variable, still makes the
+  connection.
+- The bundle `install` generates carries a plugin with the same name. Enable one of the two.
+
 ## 0.1.0 - 2026-09-14
 
 First usable release. The package stays `private: true` and is not published to a registry.
