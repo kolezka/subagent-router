@@ -13,12 +13,12 @@ import {
   routePreview,
   type CommandResult,
 } from './read';
+import { installCommand } from './install';
 import { uiCommand } from './ui';
+import { VERSION } from './version';
 import { configExport, doctorConnect, modelsDescribe, modelsSync, serveCommand } from './write';
 
-const VERSION = '0.1.0';
-
-const TOP_LEVEL_COMMANDS = ['models', 'agents', 'route', 'config', 'doctor', 'serve', 'ui'] as const;
+const TOP_LEVEL_COMMANDS = ['models', 'agents', 'route', 'config', 'doctor', 'serve', 'ui', 'install'] as const;
 
 type CommandHandler = (deps: CliDeps, parsed: ReturnType<typeof parseArgs>) => Promise<CommandResult>;
 
@@ -40,6 +40,9 @@ const COMMANDS: Readonly<Record<string, CommandHandler>> = {
   serve: serveCommand,
   // Read-only local web console. A separate listener from `serve`, never a routing path.
   ui: uiCommand,
+  // Generates client integration files into a directory the operator names. It never edits an
+  // installed client configuration.
+  install: installCommand,
 };
 
 // A handful of export- codes are user-input problems (bad client, a target that overlaps a
@@ -66,6 +69,9 @@ function isUsageOrConfigCode(code: string): boolean {
     code === 'model-not-allowed' ||
     code === 'agent-unknown' ||
     code.startsWith('usage-') ||
+    // Every install- code reports something the caller's own arguments or output directory can
+    // fix: an unsupported client, a missing --output, a collision, a protected target.
+    code.startsWith('install-') ||
     EXPORT_USAGE_CODES.has(code)
   );
 }
@@ -86,6 +92,8 @@ Commands:
   doctor [--connect]
   serve [--port <n>] [--host <h>] [--claude-version <v>]
   ui [--port <n>] [--host <h>]
+  install --output <dir> [--client claude-code] [--port <n>] [--host <h>]
+          [--claude-version <v>] [--parent-model <m>] [--dry-run] [--force]
 
 Global options:
   --config <file>  --json  --no-color  --agents-dir <dir>  --help  --version

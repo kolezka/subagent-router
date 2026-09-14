@@ -72,7 +72,7 @@ export function assertPlanPathContained(target: string, clientDir: string, relat
 // space or an apostrophe must survive tokenization as ONE argument. Never apply this to the
 // operator env-var references (`"${VAR}"`): those are meant to expand at hook run time, and
 // single-quoting would suppress that expansion entirely.
-function posixQuote(value: string): string {
+export function posixQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
@@ -95,7 +95,7 @@ async function pathExists(path: string): Promise<boolean> {
 // resolves that ancestor with `realpath`, then rejoins the never-existing suffix unchanged. Only
 // ENOENT triggers the walk-up; any other failure (permission, ENOTDIR, ...) is a real problem and
 // must propagate, never be treated as "nothing here to resolve or protect".
-async function resolveRealPath(path: string): Promise<string> {
+export async function resolveRealPath(path: string): Promise<string> {
   const target = resolve(path);
   try {
     return await realpath(target);
@@ -155,7 +155,7 @@ function resolverOptionsForClient(context: ExportOptions['resolverContext'], con
 // same root-selection rules the file scanners themselves use (agents/inventory.ts's
 // candidateAgentRoots). Includes roots that hold no files, or do not exist, yet: absence of a
 // scanned entry is never treated as absence of the directory's protection.
-function allCandidateNativeRoots(context: ExportOptions['resolverContext'], config: OperatorConfig): string[] {
+export function allCandidateNativeRoots(context: ExportOptions['resolverContext'], config: OperatorConfig): string[] {
   const roots: string[] = [];
   for (const client of ALL_CLIENTS) {
     roots.push(...candidateAgentRoots(client, resolverOptionsForClient(context, config, client)));
@@ -166,7 +166,7 @@ function allCandidateNativeRoots(context: ExportOptions['resolverContext'], conf
 // Resolves every candidate root to its real, symlink-free (or virtual, if not yet created)
 // location once, so repeated collision checks (parent output dir, then the concrete per-client
 // target) do not re-walk the filesystem for the same root twice.
-async function resolveProtectedRoots(candidates: readonly string[]): Promise<string[]> {
+export async function resolveProtectedRoots(candidates: readonly string[]): Promise<string[]> {
   const resolved: string[] = [];
   for (const root of candidates) resolved.push(await resolveRealPath(root));
   return resolved;
@@ -177,7 +177,7 @@ async function resolveProtectedRoots(candidates: readonly string[]): Promise<str
 // anything, against BOTH the parent output directory and (separately, at the call site) the
 // concrete per-client target -- a target that is itself a symlink into a native root can collide
 // even when its parent directory does not.
-function assertNoOverlapWithResolvedRoots(resolvedDir: string, resolvedRoots: readonly string[]): void {
+export function assertNoOverlapWithResolvedRoots(resolvedDir: string, resolvedRoots: readonly string[]): void {
   for (const root of resolvedRoots) {
     if (isSameOrNested(resolvedDir, root)) {
       throw new RouterError('export-native-root', `export-native-root: output directory overlaps a native agent directory (${root})`);
