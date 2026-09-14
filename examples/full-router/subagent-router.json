@@ -40,9 +40,20 @@
       "enabled": true,
       "clientModel": "opus"
     },
-    "gpt-5.6-legacy": {
+    "zai/glm-5.3-flash": {
+      "alias": "glm-flash",
+      "description": "Gateway-hosted open model for cheap throwaway work. The alias hides the slash in the ID.",
+      "enabled": true,
+      "clientModel": "haiku"
+    },
+    "claude-3-7-sonnet-20250219": {
       "alias": "legacy",
-      "description": "Advertised by the gateway but not allowed for subagents.",
+      "description": "Still advertised by the gateway, not allowed for subagents.",
+      "enabled": false
+    },
+    "gpt-image-2.5": {
+      "alias": "image",
+      "description": "Image model, not a chat model. Kept visible in models list, blocked for routing.",
       "enabled": false
     }
   },

@@ -12,7 +12,15 @@ schema accepts and the three places a child's model can come from.
 | `opus` | `claude-opus-5` | (none) | yes | Orchestration, rarely a child |
 | `terra` | `gpt-5.6-terra` | `sonnet` | yes | Fast independent implementation |
 | `sol` | `gpt-5.6-sol` | `opus` | yes | Independent review, hard bugs |
-| `legacy` | `gpt-5.6-legacy` | (none) | no | Advertised by the gateway, blocked for subagents |
+| `glm-flash` | `zai/glm-5.3-flash` | `haiku` | yes | Cheap throwaway work on a gateway-hosted open model |
+| `legacy` | `claude-3-7-sonnet-20250219` | (none) | no | Advertised by the gateway, blocked for subagents |
+| `image` | `gpt-image-2.5` | (none) | no | Image model, blocked for routing |
+
+The snapshot in `models.lock.json` was produced by a real `models sync` against a gateway that
+advertised 45 models. Only the eight above have overrides. The other 37 stay in the catalog with
+a generated `m-<sha256>` alias, enabled, and reachable only by their exact ID. Disable or alias
+them in `modelOverrides` as you see fit; an override for an ID the gateway stops advertising is
+kept and becomes inactive.
 
 Selection order for a fresh child delegation, first match wins:
 
@@ -29,8 +37,9 @@ together with `"unmarkedSubagentAcknowledged": true`; the acknowledgement is req
 upstream ID. `terra` is reported to Claude Code as `sonnet` and `sol` as `opus`. The router does
 not correct any limit mismatch that follows from that pairing.
 
-`legacy` stays in the catalog (so `models list` shows it) but routes to it fail with
-`model-not-allowed`.
+`legacy` and `image` stay in the catalog (so `models list` shows them) but routes to them fail
+with `model-not-allowed`. `glm-flash` shows that an ID with a slash is fine upstream; the alias
+is what goes into a prompt marker.
 
 The parent process always keeps its own model. Correlation is on, so a child's selection survives
 compaction. Codex catalog export is on (`emitModelCatalog: true`).
@@ -52,7 +61,8 @@ export ROUTER_SECRET="<random-secret-for-signed-hook-paths>"
 
 ## Check it offline
 
-The included `models.lock.json` is synthetic. The sample agents under `agents/claude-code/` exist
+The included `models.lock.json` came from a real sync, but its `sourceFingerprint` is bound to
+the URL used at the time, so `models sync` against your gateway will replace it. The sample agents under `agents/claude-code/` exist
 only so the `roles` section resolves; pass that directory with `--agents-dir`.
 
 ```bash
@@ -87,7 +97,7 @@ bun dist/cli.js route preview --client claude-code --agent explorer --model lega
 
 ## Use it for real
 
-Replace the snapshot with your gateway's catalog, then re-check:
+Sync the snapshot against your own gateway, then re-check:
 
 ```bash
 bun dist/cli.js models sync --config examples/full-router/subagent-router.json
