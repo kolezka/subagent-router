@@ -16,7 +16,7 @@ import {
 import { uiCommand } from './ui';
 import { configExport, doctorConnect, modelsDescribe, modelsSync, serveCommand } from './write';
 
-const VERSION = '0.0.0';
+const VERSION = '0.1.0';
 
 const TOP_LEVEL_COMMANDS = ['models', 'agents', 'route', 'config', 'doctor', 'serve', 'ui'] as const;
 

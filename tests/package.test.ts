@@ -123,6 +123,16 @@ describe('package', () => {
     expect((await run('bun', ['dist/cli.js', 'nope'])).code).toBe(2);
   });
 
+  test('the version the CLI prints is the version the package declares', async () => {
+    await build();
+    // src/cli/main.ts carries the version as a literal, so a release bump touches two files and
+    // nothing links them. A CLI that reports a version the package does not declare makes every
+    // bug report ambiguous, so the two are locked together here rather than in a release checklist.
+    const declared = (JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8')) as { version: string }).version;
+    const printed = (await run('bun', ['dist/cli.js', '--version'])).stdout.trim();
+    expect(printed).toBe(declared);
+  });
+
   test('import ./bun nie startuje serwera', async () => {
     await build();
     // Importing the CLI module must be inert: the argv dispatch is guarded by import.meta.main,
