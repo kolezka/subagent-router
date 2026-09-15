@@ -10,6 +10,7 @@ what 0.1.0 claims.
 
 - [Changelog](CHANGELOG.md)
 - [Documentation index](docs/README.md)
+- [License](LICENSE) (source-available, noncommercial use only)
 - [Draft of the model routing specification](docs/superpowers/specs/2026-09-06-subagent-model-routing-design.md)
 
 ## Quickstart from a clean checkout
@@ -144,3 +145,25 @@ cannot overwrite each other. `--read-only` refuses every write, and a bind off l
 read-only, because the console has no authentication.
 
 Contract, invariants and limitations: [docs/web/README.md](docs/web/README.md).
+
+## License
+
+`subagent-router` is released under the [PolyForm Noncommercial License 1.0.0](LICENSE)
+(SPDX: `PolyForm-Noncommercial-1.0.0`). The source is public: you may read it, run it, change it
+and redistribute it, as long as the purpose is noncommercial.
+
+Permitted without asking:
+
+- personal use, hobby projects, private study, research and experiments
+- use by charities, schools, universities, public research bodies and government institutions
+- forks, patches and derived works, under the same terms
+
+Not permitted: any use for a commercial purpose, including use inside a for-profit company, use in
+a paid product or service, and use in consulting work done for a fee.
+
+This is a source-available license, not an OSI-approved open source license. The Open Source
+Definition does not allow a restriction on the field of use, so the noncommercial limit puts this
+project outside that definition.
+
+For a commercial license, contact the maintainer through
+[GitHub](https://github.com/kolezka/subagent-router) before you use the project at work.
