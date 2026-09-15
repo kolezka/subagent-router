@@ -2,6 +2,12 @@
   "name": "subagent-router",
   "version": "0.1.0",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "author": "Mariusz Rakus",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kolezka/subagent-router.git"
+  },
   "type": "module",
   "sideEffects": false,
   "engines": {
@@ -37,7 +43,8 @@
     "subagent-router": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "scripts": {
     "test": "bun test",
