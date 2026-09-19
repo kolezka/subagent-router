@@ -148,6 +148,26 @@ describe('serve: defaults', () => {
     expect(resolveServeOptions(deps(), parseArgs(['serve']))).not.toHaveProperty('claudeVersion');
     expect(resolveServeOptions(deps(), parseArgs(['serve', '--claude-version', '2.1.263']))).toMatchObject({ claudeVersion: '2.1.263' });
   });
+
+  // `serve` and `web` must reject the same strings. Plain Number() accepts all four of these, so
+  // `--port 0x50` used to bind port 80 silently and `install` baked that port into the generated
+  // settings.json and launcher.
+  test('--port takes digits only, never a hex, exponent, padded or decimal form', () => {
+    for (const raw of ['0x50', '1e3', ' 80 ', '3.0', '80abc', '']) {
+      let thrown: unknown;
+      try {
+        resolveServeOptions(deps(), parseArgs(['serve', '--port', raw]));
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(RouterError);
+      expect((thrown as RouterError).code).toBe('usage-invalid-port');
+    }
+  });
+
+  test('a plain decimal port is still accepted', () => {
+    expect(resolveServeOptions(deps(), parseArgs(['serve', '--port', '8787']))).toMatchObject({ port: 8787 });
+  });
 });
 
 describe('serve: successful start', () => {

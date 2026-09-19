@@ -38,6 +38,8 @@ const PROBE_TIMEOUT_MS = 1000;
 // Probing anything else would turn a local operator tool into a scanner.
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
+const DEFAULT_PORT_FOR_SCHEME: Record<string, number | undefined> = { 'http:': 80, 'https:': 443 };
+
 function routerUrl(host: string, port: number): string {
   const authority = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
   return `http://${authority}:${port}`;
@@ -48,8 +50,12 @@ function routerUrl(host: string, port: number): string {
 function addressOf(url: string): { host: string; port: number } | null {
   try {
     const parsed = new URL(url);
-    const port = Number(parsed.port);
-    return Number.isInteger(port) ? { host: parsed.hostname, port } : null;
+    // WHATWG strips a scheme-default port, so `http://127.0.0.1:80` parses with an empty `.port`.
+    // `Number('')` is 0, which used to pass the integer test and record port 0: `status()` then
+    // reported 0 and the external probe dialled port 0 and found nothing.
+    const port = parsed.port === '' ? DEFAULT_PORT_FOR_SCHEME[parsed.protocol] : Number(parsed.port);
+    if (port === undefined || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+    return { host: parsed.hostname, port };
   } catch {
     return null;
   }

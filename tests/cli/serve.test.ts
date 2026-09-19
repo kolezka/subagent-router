@@ -151,3 +151,40 @@ describe('serve', () => {
     }
   });
 });
+
+describe('serve: failures that escape the handler', () => {
+  // Bun's development error page embeds the working directory, absolute source paths, source lines
+  // and a stack. The router answers a client that expects JSON, and `development` defaults to true
+  // whenever NODE_ENV is not 'production', which is every ordinary `serve` run.
+  test('an upstream failure is a JSON 500 that names no source file', async () => {
+    const gateway = await startCaptureGateway();
+    const gatewayEnvUrl = `${gateway.url}/v1`;
+    await writeFixtureState(gatewayEnvUrl);
+    const throwing: FetchLike = () => {
+      throw new Error('upstream exploded');
+    };
+    const errors: string[] = [];
+    const deps: CliDeps = { ...testDeps(gatewayEnvUrl), fetch: throwing, stderr: (text) => errors.push(text) };
+    const server = await startServer(join(dir, 'subagent-router.json'), deps, { port: 0, host: '127.0.0.1' });
+    try {
+      const response = await fetch(`${server.url}/v1/models`);
+      const text = await response.text();
+
+      expect(response.status).toBe(500);
+      expect(response.headers.get('content-type')).toContain('application/json');
+      expect(JSON.parse(text)).toEqual({ error: { code: 'router-internal-error' } });
+      expect(text).not.toContain('src/transport/handler.ts');
+      expect(text).not.toContain('upstream exploded');
+
+      // Turning Bun's error page off also turned off the only line that said anything failed. The
+      // operator keeps a diagnostic: the error class, never its message, which can quote the
+      // configured gateway URL and its credentials.
+      expect(errors.join('')).toContain('serve: request failed: Error');
+      expect(errors.join('')).not.toContain('upstream exploded');
+      expect(errors.join('')).not.toContain(gatewayEnvUrl);
+    } finally {
+      await server.stop();
+      await gateway.close();
+    }
+  });
+});

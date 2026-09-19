@@ -141,6 +141,20 @@ describe('RouterSupervisor start and stop', () => {
     expect(start.calls).toHaveLength(0);
   });
 
+  // WHATWG strips a scheme-default port, so the handle's own url is `http://127.0.0.1` with an
+  // empty `.port`. `Number('')` is 0, which used to be recorded as the running port: status
+  // reported 0, and after a stop the external probe dialled port 0 and called a live router absent.
+  test('a router bound on port 80 reports 80, not the coerced 0', async () => {
+    const start = fakeStart({ boundPort: 80 });
+    const supervisor = new RouterSupervisor({ deps: testDeps(), configPath, log: newLog(), start: start.start });
+
+    const status = await supervisor.start({ port: 80 });
+
+    expect(status.port).toBe(80);
+    expect(status.url).toBe('http://127.0.0.1:80');
+    await supervisor.dispose();
+  });
+
   test('start while already running throws router-already-running and starts nothing', async () => {
     const start = fakeStart();
     const supervisor = new RouterSupervisor({ deps: testDeps(), configPath, log: newLog(), start: start.start });

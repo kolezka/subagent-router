@@ -27,15 +27,21 @@ interface CheckPayload {
 }
 
 // `config check` fails outright when the config is missing or unreadable, which is a state the
-// console has to render rather than error on: a fresh machine starts exactly there. Its findings
-// then become empty and the header falls back to configHealth.
+// console has to render rather than error on: a fresh machine starts exactly there. The caller
+// handles that case by never calling this function when the config did not load.
+//
+// A failure that gets this far is therefore unexpected (an unreadable agent root, for example),
+// and it is reported as a problem. Returning an empty finding list would paint a clean health
+// light for a config that was never actually checked. The code is reported by its fixed label,
+// never by raw failure text, which can quote a configured URL with credentials in it.
 async function checkFindings(deps: CliDeps, parsed: ParsedArgs): Promise<CheckPayload> {
   try {
     const result = await configCheck(deps, parsed);
     const payload = result.payload as CheckPayload;
     return { problems: payload.problems, warnings: payload.warnings };
-  } catch {
-    return { problems: [], warnings: [] };
+  } catch (error) {
+    const code = error instanceof RouterError ? error.code : 'check-failed';
+    return { problems: [code], warnings: [] };
   }
 }
 

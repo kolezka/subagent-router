@@ -225,7 +225,10 @@ export function resolveServeOptions(deps: CliDeps, parsed: ParsedArgs): ServeOpt
   const portRaw = stringOption(parsed, 'port');
   let port = DEFAULT_SERVE_PORT;
   if (portRaw !== undefined) {
-    port = Number(portRaw);
+    // Digits only, the same rule `resolveWebOptions` applies: plain Number() also accepts '0x50',
+    // '1e3', ' 80 ' and '3.0', so a typo would silently bind a port the operator never asked for
+    // and `install` would bake that port into the generated settings.json and launcher.
+    port = /^\d{1,5}$/.test(portRaw) ? Number(portRaw) : Number.NaN;
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
       throw new RouterError('usage-invalid-port', `--port must be an integer between 0 and 65535, got ${JSON.stringify(portRaw)}`);
     }

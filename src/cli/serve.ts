@@ -1,4 +1,5 @@
 // Task 13 contract. Wires the shared createHandler into Bun.serve; does not reimplement routing.
+import { writeDiagnostic } from './output';
 import { RouterError } from '../core/errors';
 import { resolveSource, validateSource } from '../io/environment';
 import { loadState } from '../io/store';
@@ -88,6 +89,22 @@ export async function startServer(
   const server = Bun.serve({
     port: options.port,
     hostname: options.host,
+    // Bun's development error page embeds the working directory, source paths and source lines.
+    // The router answers a client that expects JSON, so anything that escapes the handler gets a
+    // fixed JSON label instead. Same two guards the console already applies in src/web/server.ts.
+    development: false,
+    error: (error: unknown) => {
+      // Bun logs an escaped error itself only while its own error page is on. With the page off,
+      // dropping the error here would make a dead gateway invisible: the forward has no try/catch
+      // and the route event is emitted before it, so the log would show routing and no failure.
+      // The class name only, never the message, which can quote the configured gateway URL and
+      // its credentials.
+      writeDiagnostic(deps, `serve: request failed: ${error instanceof Error ? error.name : 'unknown error'}`);
+      return new Response(JSON.stringify({ error: { code: 'router-internal-error' } }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
     fetch: handler,
   });
 

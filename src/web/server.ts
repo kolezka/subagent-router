@@ -128,16 +128,26 @@ class ConsoleSession {
   }
 
   /**
+   * Throws if the console cannot move to `configPath` right now. `config init` calls this BEFORE
+   * it writes anything: the write used to happen first, so a refused retarget returned an error
+   * for a file that had already been overwritten.
+   */
+  async assertRetargetable(configPath: string): Promise<void> {
+    if (configPath === this.path) return;
+    const status = await this.router.status();
+    if (status.owner === 'in-process') {
+      throw new RouterError('web-router-running', 'stop the router before switching to a different config file');
+    }
+  }
+
+  /**
    * Points the console at a different config file. A router started from the old config keeps
    * serving it, so retargeting under a running router is refused rather than silently leaving the
    * console describing one file while the router answers from another.
    */
   async retarget(configPath: string): Promise<void> {
     if (configPath === this.path) return;
-    const status = await this.router.status();
-    if (status.owner === 'in-process') {
-      throw new RouterError('web-router-running', 'stop the router before switching to a different config file');
-    }
+    await this.assertRetargetable(configPath);
     await this.router.dispose();
     this.path = configPath;
     this.router = this.buildSupervisor();
@@ -227,6 +237,7 @@ export function createWebHandler(options: WebHandlerOptions): (request: Request)
     configPath: () => session.configPath(),
     supervisor: () => session.supervisor(),
     retarget: (path) => session.retarget(path),
+    assertRetargetable: (path) => session.assertRetargetable(path),
   };
 
   return async (request: Request): Promise<Response> => {
