@@ -3,11 +3,12 @@
 // rejects here, which is the positive control for the console's central claim: no endpoint on a
 // read path ever dials the network.
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ParsedArgs } from '../../src/cli/args';
+import { loadState } from '../../src/io/store';
 import { createSession, createWebHandler, resolveWebOptions, startWebServer } from '../../src/web';
 import type { CliDeps } from '../../src/core/types';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
@@ -68,6 +69,10 @@ function handler(options: { readOnly?: boolean } = {}): (request: Request) => Pr
     boundHost: '127.0.0.1',
     console: { url: 'http://127.0.0.1:8788', host: '127.0.0.1', port: 8788, readOnly: options.readOnly ?? false },
   });
+}
+
+async function exists(path: string): Promise<boolean> {
+  return await Bun.file(path).exists();
 }
 
 /** Sends bytes a fetch client refuses to send (an invalid Host header) and returns the raw reply. */
@@ -328,6 +333,53 @@ describe('web: config mutations', () => {
     expect(payload.configPath).toBe(configPath);
   });
 
+  // The refusal used to happen after the write: `config init` wrote the file, then `retarget`
+  // threw web-router-running, so the operator was told nothing happened over a config that had
+  // already been overwritten.
+  test('refuses a scope change under a running router without writing the file first', async () => {
+    const deps = testDeps();
+    const configPath = join(dir, 'subagent-router.json');
+    const homeConfig = join(dir, '.subagent-router', 'subagent-router.json');
+    const session = createSession(deps, configPath, {
+      startRouter: async (path) => ({
+        url: 'http://127.0.0.1:8787',
+        generation: (await loadState(path)).generation,
+        stop: async () => {},
+      }),
+    });
+    const fetcher = createWebHandler({
+      deps,
+      parsed: webArgs(),
+      session,
+      boundHost: '127.0.0.1',
+      console: { url: 'http://127.0.0.1:8788', host: '127.0.0.1', port: 8788, readOnly: false },
+    });
+
+    const started = await post('/api/router/start', {}, fetcher);
+    expect(started.status).toBe(200);
+
+    const { status, body } = await post(
+      '/api/config/init',
+      {
+        scope: 'home',
+        force: true,
+        sourceId: 'test-gateway',
+        endpointPath: '/v1/models',
+        gatewayUrlEnv: 'GATEWAY_URL',
+        gatewayHeadersEnv: [],
+        modelsBaseUrlEnv: 'GATEWAY_URL',
+        modelsHeadersEnv: [],
+        correlationSecretEnv: 'ROUTER_SECRET',
+      },
+      fetcher,
+    );
+
+    expect(status).toBe(400);
+    expect(body.error?.code).toBe('web-router-running');
+    expect(await exists(homeConfig)).toBe(false);
+    await session.dispose();
+  });
+
   test('refuses to overwrite an existing config without force', async () => {
     const { status, body } = await post('/api/config/init', {
       scope: 'project',
@@ -341,6 +393,26 @@ describe('web: config mutations', () => {
     });
     expect(status).toBe(409);
     expect(body.error?.code).toBe('config-exists');
+  });
+});
+
+describe('web: status never reports a clean bill of health it did not earn', () => {
+  // `config check` was wrapped in a bare `catch { return { problems: [], warnings: [] } }`, so an
+  // unreadable agent root made the console render an empty problem list for a config it never
+  // finished checking. root ignores the mode bits, so the check does not apply there.
+  test('an unreadable agent root is reported as a problem, not as no problems', async () => {
+    if (process.getuid?.() === 0) return;
+    const agents = join(dir, '.claude', 'agents');
+    await chmod(agents, 0o000);
+    try {
+      const { body } = await get('/api/system/status');
+      const payload = body.payload as { configHealth: string; problems: string[] };
+
+      expect(payload.configHealth).toBe('ok');
+      expect(payload.problems).toContain('check-failed');
+    } finally {
+      await chmod(agents, 0o755);
+    }
   });
 });
 

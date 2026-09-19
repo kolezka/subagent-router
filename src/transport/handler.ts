@@ -125,15 +125,27 @@ export class FreshDelegationStore {
     private readonly ttlMs: number,
   ) {}
 
-  private sweepExpiredNonces(nowMs: number): void {
+  // Both maps are swept, not only the nonces. A subagent that registers a receipt and then never
+  // issues a routable request (crash, cancel, tool error) leaves an entry nothing else deletes,
+  // and `consumeFreshDelegation` is the only other `entries.delete`. Without this a long-lived
+  // `serve` process keeps one record per such subagent for as long as it runs.
+  private sweepExpired(nowMs: number): void {
     for (const [nonce, record] of this.usedNonces) {
       if (record.expiresAt <= nowMs) this.usedNonces.delete(nonce);
     }
+    for (const [agentId, entry] of this.entries) {
+      if (entry.expiresAt <= nowMs) this.entries.delete(agentId);
+    }
+  }
+
+  /** Live entry count. Exported for the test that proves an abandoned receipt is reclaimed. */
+  get pendingCount(): number {
+    return this.entries.size;
   }
 
   async register(envelope: FreshDelegationEnvelope): Promise<void> {
     const nowMs = this.now();
-    this.sweepExpiredNonces(nowMs);
+    this.sweepExpired(nowMs);
 
     if (envelope.handlerInstanceId !== this.handlerInstanceId) {
       throw new RouterError('stale-instance', 'freshness envelope targets a different handler instance');

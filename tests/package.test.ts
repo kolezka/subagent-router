@@ -168,7 +168,13 @@ describe('package', () => {
       const contents = await readFile(join(ROOT, relative.replace(/^\.\//, '')), 'utf8');
       expect(contents.length).toBeGreaterThan(0);
     }
-    expect(pkg.files).toEqual(['dist']);
+    // The invariant is "built output and the licence, nothing else", not one exact array: an
+    // earlier literal `['dist']` broke the whole suite the day LICENSE was added to the package.
+    // What must never come back is a source, test or config path in the published tarball.
+    expect(pkg.files).toContain('dist');
+    for (const entry of pkg.files) {
+      expect(['dist', 'LICENSE']).toContain(entry);
+    }
   });
 
   test('paczka zawiera profile capability i nie importuje testów', async () => {

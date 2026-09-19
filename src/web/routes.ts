@@ -36,6 +36,8 @@ export interface RouteContext {
   configPath: () => string;
   supervisor: () => RouterSupervisor;
   retarget: (configPath: string) => Promise<void>;
+  /** Refuses the move before a caller writes the file it is about to retarget to. */
+  assertRetargetable: (configPath: string) => Promise<void>;
 }
 
 export interface RouteInput {
@@ -221,6 +223,9 @@ async function handleConfigInit(ctx: RouteContext, { body }: RouteInput): Promis
 
   // 'project' honours the --config the console was started with; only 'home' picks its own path.
   const target = scope === 'home' ? join(ctx.deps.home, '.subagent-router', 'subagent-router.json') : ctx.configPath();
+  // Refuse first, write second. The other order overwrote the file and then answered 400 when the
+  // retarget was refused, so the operator read "nothing happened" over a config that was gone.
+  await ctx.assertRetargetable(target);
   const payload = await initConfig({ configPath: target, config, force: optionalBoolean(source, 'force') === true });
   await ctx.retarget(payload.configPath);
   return { code: 0, payload };

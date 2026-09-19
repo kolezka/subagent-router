@@ -50,6 +50,32 @@ All notable changes to this project are recorded here. The format follows
   that the setup view repairs, not a start-up failure. The console retargets itself when it writes
   a config at a new path, and refuses to retarget while it owns a running router.
 - `docs/cli/UI.md` is superseded by [docs/web/README.md](docs/web/README.md).
+- CI runs the tree gate (`bun run typecheck`, `bun test`, `bun run build`) on every push to `main`
+  and on every pull request. `bun run check` runs the same three steps locally.
+
+### Fixed
+
+- `serve` no longer answers a failed request with Bun's development error page, which embeds the
+  working directory, absolute source paths, source lines and a stack. Any error that escapes the
+  handler is now `{"error":{"code":"router-internal-error"}}` with status 500, plus one stderr line
+  naming the error class. The class only, never the message, which can quote the gateway URL.
+- `--port` on `serve` takes digits only, the rule the console already applied. `--port 0x50` used
+  to bind port 80, and `install` baked that port into the generated `settings.json` and launcher.
+- The freshness store sweeps expired receipts, not only expired nonces. A subagent that registered
+  a receipt and then never issued a routable request used to leave a record for the life of the
+  process.
+- The version probe is bounded again. A client binary that ignores SIGTERM, or one that exits while
+  a grandchild holds the inherited stdout pipe, used to leave the probe pending and hang its
+  caller, including the console's `GET /api/detect`. The probe also cancels the read on the way
+  out, so the leaked pipe no longer holds the event loop open: against a wrapper that leaves a
+  30 s grandchild, the command answered in 301 ms and then exited after 30015 ms, now 316 ms.
+- `config init` in the console refuses a scope change under a running router BEFORE it writes.
+  The old order overwrote the config file and then answered 400.
+- The console reports a failed `config check` as the problem `check-failed` instead of rendering an
+  empty problem list, which used to show a clean health light for a config it never finished
+  checking.
+- A router bound on a scheme-default port (80 or 443) reports that port instead of 0, so the
+  console's external probe dials the address the router is actually on.
 
 ### Known limits
 

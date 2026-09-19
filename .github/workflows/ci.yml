@@ -1,0 +1,39 @@
+# The tree gate every commit in this repository is supposed to pass, run by a machine instead of
+# by hand. It exists because `main` shipped a failing test: commit 8c294ca added LICENSE to
+# package.json `files` and nothing re-ran the suite that asserted the old value.
+#
+# Order matters: typecheck is the cheapest signal, the suite is the real one, and the build runs
+# last because several tests build into dist/ themselves and a broken build fails them first.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned, not "latest": the lockfile and the measured runs in docs/ are tied to a known
+          # Bun. Raise this deliberately, together with `engines.bun` in package.json.
+          bun-version: 1.4.2
+
+      # `--frozen-lockfile` so CI fails on a lockfile that does not match package.json rather than
+      # quietly resolving something else. The build also refuses to run without node_modules,
+      # because it uses the repository's own tsc and never fetches a compiler.
+      - run: bun install --frozen-lockfile
+
+      - run: bun run typecheck
+
+      - run: bun test
+
+      - run: bun run build

@@ -3,7 +3,7 @@ import { loadTransportCapabilityProfile } from '../../src/adapters/capabilities'
 import { signRoleMarker } from '../../src/adapters/markers';
 import type { CapabilityProfile, FetchLike, FreshDelegationEnvelope } from '../../src/core/types';
 import { BUN_RAW_FETCH_ADAPTER, bunRawFetch } from '../../src/transport/bun-fetch';
-import { createHandler, signFreshDelegation } from '../../src/transport/handler';
+import { FreshDelegationStore, createHandler, signFreshDelegation } from '../../src/transport/handler';
 import { FIXTURE_MODEL_ID, configFixture, snapshotFixture } from '../support/fixtures';
 import { nativeContextBlockV1, nativeLayoutUserMessage } from '../support/native-layout';
 
@@ -555,5 +555,44 @@ describe('createHandler: channel-A marker after the measured native context pref
     expect(res.status).toBe(422);
     expect(await res.json()).toEqual({ error: { code: 'missing-selection' } });
     expect(seen).toHaveLength(0);
+  });
+});
+
+describe('FreshDelegationStore: expired receipts are reclaimed', () => {
+  const TTL_MS = 1_000;
+
+  function envelope(agentId: string, nonce: string, issuedAtMs: number): FreshDelegationEnvelope {
+    return { version: 1, handlerInstanceId: 'instance-1', agentId, role: 'fast', nonce, issuedAtMs, proof: 'checked-elsewhere' };
+  }
+
+  // Only `consumeFreshDelegation` used to delete an entry, so a subagent that registered a receipt
+  // and then never issued a routable request (crash, cancel, tool error) left a record a
+  // long-lived `serve` process kept for as long as it ran. The nonces were swept; the entries
+  // were not.
+  test('an abandoned receipt is dropped once it expires, not kept for the life of the process', async () => {
+    let clock = 10_000;
+    const store = new FreshDelegationStore('instance-1', () => clock, TTL_MS);
+
+    await store.register(envelope('agent-abandoned', 'nonce-1', clock));
+    expect(store.pendingCount).toBe(1);
+
+    clock += TTL_MS + 1;
+    await store.register(envelope('agent-second', 'nonce-2', clock));
+
+    expect(store.pendingCount).toBe(1);
+    expect(store.consumeFreshDelegation('agent-abandoned')).toBeUndefined();
+    expect(store.consumeFreshDelegation('agent-second')?.role).toBe('fast');
+  });
+
+  test('a live receipt is never swept by another agent registering', async () => {
+    let clock = 10_000;
+    const store = new FreshDelegationStore('instance-1', () => clock, TTL_MS);
+
+    await store.register(envelope('agent-live', 'nonce-1', clock));
+    clock += 100;
+    await store.register(envelope('agent-other', 'nonce-2', clock));
+
+    expect(store.pendingCount).toBe(2);
+    expect(store.consumeFreshDelegation('agent-live')?.nonce).toBe('nonce-1');
   });
 });

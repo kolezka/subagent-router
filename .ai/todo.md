@@ -151,3 +151,80 @@ reference), simplify installation, add auto-detection, add a status/activity/log
 
 - [ ] Commit, push the branch and open the PR.
 - [ ] Replace the `verified_against` value in `docs/web/README.md` with the merge commit.
+
+## 2026-09-19 — system improvements: CI, a broken main, and seven defects
+
+Branch `general-system-improvements`, started level with `origin/main` (`3c740c4`).
+
+Request: "Improve the system." Read as: find what is actually wrong in this repository and fix it.
+
+### Starting state, measured
+
+- `bun test` on a clean checkout: 11 failures, all from a missing `node_modules`. After
+  `bun install --frozen-lockfile`: 943 pass / 1 skip / **1 fail**.
+- The one real failure was on `main`: commit `8c294ca` added `LICENSE` to `package.json` `files`,
+  and `tests/package.test.ts` asserted `toEqual(['dist'])`. Nothing re-ran the suite.
+- No CI of any kind. `.github/` did not exist.
+
+### Done
+
+- [x] CI (`.github/workflows/ci.yml`): install with `--frozen-lockfile`, typecheck, test, build, on
+      push to `main` and on every pull request. `bun run check` runs the same gate locally.
+- [x] `tests/package.test.ts` asserts the invariant ("built output and the licence, nothing else")
+      instead of one literal array, so adding a packaged file cannot break the suite again.
+- [x] `serve` sets `development: false` and an `error` handler on `Bun.serve`. Bun's dev error page
+      (~50 kB of cwd, source paths, source lines and a stack) used to answer a failed request.
+- [x] `resolveServeOptions` takes a digits-only port, the rule `resolveWebOptions` already applied.
+- [x] `FreshDelegationStore` sweeps expired entries, not only expired nonces.
+- [x] `detectClientVersion` races the read against the deadline and escalates to SIGKILL.
+- [x] `config init` in the console checks the retarget precondition before it writes the file.
+- [x] `systemStatus` reports a failed `config check` as `check-failed` instead of no problems.
+- [x] `addressOf` in the supervisor no longer reads a stripped scheme-default port as 0.
+- [x] Deleted `tests/support/version-probe-check.ts`, a runnable script nothing ran, and replaced it
+      with `tests/cli/version-probe.test.ts`.
+
+### Second pass, from an independent review of the diff
+
+A second model reviewed the whole diff and raised two findings against the fixes themselves. Both
+were reproduced against the source and fixed:
+
+- [x] The new `serve` error handler swallowed every escaped error. With Bun's own error page off,
+      the only line that said anything had failed was gone, and a dead gateway would have been
+      invisible: `forwardRaw`/`forwardJson` have no `try`/`catch` and the route event is emitted
+      before the forward, so the log showed routing and no failure. The handler now writes one
+      stderr diagnostic through `writeDiagnostic`, carrying the error class only. Never the
+      message, which can quote the configured gateway URL with its credentials.
+- [x] The bounded version probe returned on time but abandoned its read. The open pipe held the
+      event loop, so the process itself did not exit. Measured against a `sleep 30 &; exit 0`
+      wrapper: the probe returned after 301 ms and the process exited after **30015 ms**. The probe
+      now reads through an explicit reader and cancels it alongside the SIGKILL; same wrapper,
+      process exit **316 ms**.
+
+### Evidence
+
+Every fix has a regression test, and every one of those tests was made to fail first: the source
+fixes were reverted (`git checkout --` on the seven source files, then a targeted removal of the
+sweep loop), which turned the new tests to 7 failures plus the freshness one, and restoring the
+fixes turned them back to green.
+
+The two second-pass fixes were proved the same way. Removing the `writeDiagnostic` call failed the
+`serve` test with `Received: ""`. Removing the `reader.cancel()` call failed the probe's
+process-exit test at 5001 ms against a 3000 ms bound.
+
+Tree gate after the work: `bun run typecheck` clean, `bun test` 958 pass / 1 skip / 0 fail over 67
+files, `bun run build` writes 6 entrypoints plus `dist/web/` with the CSP check passing.
+
+`kolezka/subagent-router` has no open issues, no closed issues and no discussions (checked
+2026-09-19), so there is nothing to link or close.
+
+### Reported, not changed
+
+`POST /api/install` resolves its `output` field against the working directory and honours an
+absolute path, so the console writes the bundle wherever the request names. The CLI behaves the
+same way and the console is loopback-only, so this is a deliberate-looking design choice, not an
+obvious bug. Constraining it to a directory under the console's cwd is an owner decision.
+
+### Waiting on the owner
+
+- [ ] Push the branch and open the PR.
+- [ ] Decide whether CI should also run on the release branches, and whether to add a lint step.
